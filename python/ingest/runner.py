@@ -584,7 +584,6 @@ def build_result(
             "transfer_rematch",
             "position_rebuild",
             "metric_refresh",
-            "insight_refresh",
         ]
     return summary
 

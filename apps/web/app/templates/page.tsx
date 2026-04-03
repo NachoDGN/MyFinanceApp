@@ -1,6 +1,7 @@
 import { AppShell } from "../../components/app-shell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { TemplateWorkbench } from "../../components/template-workbench";
+import { canonicalFieldOptions } from "../../lib/template-config";
 import { getTemplatesModel } from "../../lib/queries";
 
 export default async function TemplatesPage({
@@ -36,15 +37,25 @@ export default async function TemplatesPage({
 
         <SectionCard title="Canonical Fields" subtitle="What templates can map" span="span-4">
           <div className="legend-list">
-            {[
-              "transaction_date / posted_date",
-              "description_raw / amount_original_signed / currency_original",
-              "external_reference / balance_original / transaction_type_raw",
-              "security_symbol / security_name / quantity / unit_price_original",
-            ].map((item) => (
-              <span key={item} className="pill">
-                {item}
-              </span>
+            {canonicalFieldOptions.map((field) => (
+              <div key={field.key} className="legend-row">
+                {(() => {
+                  const isRequired = "required" in field && field.required;
+                  return (
+                    <>
+                      <div>
+                        <span className="timeline-label">{field.label}</span>
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          {field.detail}
+                        </div>
+                      </div>
+                      <span className={`pill${isRequired ? " warning" : ""}`}>
+                        {isRequired ? "Required" : "Optional"}
+                      </span>
+                    </>
+                  );
+                })()}
+              </div>
             ))}
           </div>
         </SectionCard>

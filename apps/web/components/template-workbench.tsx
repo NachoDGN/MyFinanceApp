@@ -5,34 +5,50 @@ import { useState, useTransition } from "react";
 
 import type { ImportTemplate } from "@myfinance/domain";
 import { createTemplateAction } from "../app/actions";
+import {
+  accountTypeOptions,
+  canonicalFieldOptions,
+  createDefaultColumnMappings,
+  fileKindOptions,
+  signModeOptions,
+  type TemplateColumnMapping,
+  type TemplateSignMode,
+} from "../lib/template-config";
 
-const defaultColumnMap = `{
-  "transaction_date": "Date",
-  "posted_date": "Posted Date",
-  "description_raw": "Description",
-  "amount_original_signed": "Amount",
-  "currency_original": "Currency",
-  "external_reference": "Reference",
-  "balance_original": "Balance",
-  "security_symbol": "Symbol",
-  "security_name": "Security",
-  "quantity": "Quantity",
-  "unit_price_original": "Price",
-  "transaction_type_raw": "Type"
-}`;
+const signModeLabels: Record<TemplateSignMode, string> = {
+  signed_amount: "Signed amount column",
+  amount_direction_column: "Amount plus direction column",
+  debit_credit_columns: "Separate debit and credit columns",
+};
 
-const defaultSignLogic = `{
-  "mode": "signed_amount"
-}`;
+const defaultDirectionValues = {
+  debit: "debit, out, sell, withdrawal",
+  credit: "credit, in, buy, deposit",
+};
 
-const defaultNormalizationRules = `{
-  "date_day_first": true
-}`;
+function updateMappingRow(
+  rows: TemplateColumnMapping[],
+  index: number,
+  patch: Partial<TemplateColumnMapping>,
+) {
+  return rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row));
+}
 
 export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState<string | null>(null);
+  const [columnMappings, setColumnMappings] = useState<TemplateColumnMapping[]>(() =>
+    createDefaultColumnMappings(),
+  );
+  const [signMode, setSignMode] = useState<TemplateSignMode>("signed_amount");
+  const [invertSign, setInvertSign] = useState(false);
+  const [directionColumn, setDirectionColumn] = useState("");
+  const [debitColumn, setDebitColumn] = useState("");
+  const [creditColumn, setCreditColumn] = useState("");
+  const [debitValuesText, setDebitValuesText] = useState(defaultDirectionValues.debit);
+  const [creditValuesText, setCreditValuesText] = useState(defaultDirectionValues.credit);
+  const [dateDayFirst, setDateDayFirst] = useState(true);
 
   async function handleSubmit(formData: FormData) {
     setMessage(null);
@@ -54,9 +70,15 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
       thousandsSeparator: String(formData.get("thousandsSeparator") ?? "") || null,
       dateFormat: String(formData.get("dateFormat") ?? "%Y-%m-%d"),
       defaultCurrency: String(formData.get("defaultCurrency") ?? "EUR"),
-      columnMapJson: JSON.parse(String(formData.get("columnMapJson") ?? "{}")),
-      signLogicJson: JSON.parse(String(formData.get("signLogicJson") ?? "{}")),
-      normalizationRulesJson: JSON.parse(String(formData.get("normalizationRulesJson") ?? "{}")),
+      columnMappings,
+      signMode,
+      invertSign,
+      directionColumn,
+      debitColumn,
+      creditColumn,
+      debitValuesText,
+      creditValuesText,
+      dateDayFirst,
       active: true,
     });
     setMessage(`Template saved${result.templateId ? `: ${result.templateId}` : "."}`);
@@ -67,8 +89,8 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
     <div className="form-grid">
       <div className="legend-list" style={{ marginBottom: 20 }}>
         <span className="pill">{templates.length} template(s) configured</span>
-        <span className="pill">Cash + investment mappings supported</span>
-        <span className="pill">Column values can be header names or Excel letters</span>
+        <span className="pill">Map source columns into canonical fields</span>
+        <span className="pill">JSON is still stored, but no longer authored directly</span>
       </div>
       <form
         className="form-grid"
@@ -93,20 +115,21 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
         <label className="input-label">
           Account Type
           <select className="input-select" name="compatibleAccountType" defaultValue="brokerage_account">
-            <option value="checking">checking</option>
-            <option value="savings">savings</option>
-            <option value="company_bank">company_bank</option>
-            <option value="brokerage_cash">brokerage_cash</option>
-            <option value="brokerage_account">brokerage_account</option>
-            <option value="credit_card">credit_card</option>
-            <option value="other">other</option>
+            {accountTypeOptions.map((accountType) => (
+              <option key={accountType} value={accountType}>
+                {accountType}
+              </option>
+            ))}
           </select>
         </label>
         <label className="input-label">
           File Kind
           <select className="input-select" name="fileKind" defaultValue="csv">
-            <option value="csv">csv</option>
-            <option value="xlsx">xlsx</option>
+            {fileKindOptions.map((fileKind) => (
+              <option key={fileKind} value={fileKind}>
+                {fileKind}
+              </option>
+            ))}
           </select>
         </label>
         <label className="input-label">
@@ -149,23 +172,178 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
           Thousands Separator
           <input className="input-field" name="thousandsSeparator" defaultValue="," />
         </label>
-        <label className="input-label" style={{ gridColumn: "1 / -1" }}>
-          Column Map JSON
-          <textarea className="input-textarea" name="columnMapJson" defaultValue={defaultColumnMap} rows={14} />
-        </label>
-        <label className="input-label" style={{ gridColumn: "1 / -1" }}>
-          Sign Logic JSON
-          <textarea className="input-textarea" name="signLogicJson" defaultValue={defaultSignLogic} rows={4} />
-        </label>
-        <label className="input-label" style={{ gridColumn: "1 / -1" }}>
-          Normalization Rules JSON
-          <textarea
-            className="input-textarea"
-            name="normalizationRulesJson"
-            defaultValue={defaultNormalizationRules}
-            rows={4}
-          />
-        </label>
+
+        <div className="builder-panel" style={{ gridColumn: "1 / -1" }}>
+          <div>
+            <span className="label-sm">Column Mappings</span>
+            <h3 className="section-title">Source column to canonical field</h3>
+            <p className="builder-copy">Use statement header names or Excel letters. Transaction date is required.</p>
+          </div>
+          <div className="mapping-list">
+            {columnMappings.map((mapping, index) => (
+              <div className="mapping-row" key={`${mapping.target}-${index}`}>
+                <label className="input-label">
+                  Source Column
+                  <input
+                    className="input-field"
+                    value={mapping.source}
+                    onChange={(event) =>
+                      setColumnMappings((rows) =>
+                        updateMappingRow(rows, index, { source: event.target.value }),
+                      )
+                    }
+                    placeholder="Date or A"
+                  />
+                </label>
+                <label className="input-label">
+                  Purpose
+                  <select
+                    className="input-select"
+                    value={mapping.target}
+                    onChange={(event) =>
+                      setColumnMappings((rows) =>
+                        updateMappingRow(rows, index, {
+                          target: event.target.value as TemplateColumnMapping["target"],
+                        }),
+                      )
+                    }
+                  >
+                    {canonicalFieldOptions.map((field) => (
+                      <option key={field.key} value={field.key}>
+                        {field.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="btn-ghost"
+                  type="button"
+                  disabled={columnMappings.length === 1}
+                  onClick={() =>
+                    setColumnMappings((rows) => rows.filter((_, rowIndex) => rowIndex !== index))
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="inline-actions">
+            <button
+              className="btn-ghost"
+              type="button"
+              onClick={() =>
+                setColumnMappings((rows) => [...rows, { source: "", target: "description_raw" }])
+              }
+            >
+              Add Mapping
+            </button>
+            <span className="muted">Optional fields can be added only when the source file exposes them.</span>
+          </div>
+        </div>
+
+        <div className="builder-panel" style={{ gridColumn: "1 / -1" }}>
+          <div>
+            <span className="label-sm">Amount Parsing</span>
+            <h3 className="section-title">How credits and debits are encoded</h3>
+          </div>
+          <label className="input-label">
+            Sign Mode
+            <select
+              className="input-select"
+              value={signMode}
+              onChange={(event) => setSignMode(event.target.value as TemplateSignMode)}
+            >
+              {signModeOptions.map((option) => (
+                <option key={option} value={option}>
+                  {signModeLabels[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {signMode === "signed_amount" ? (
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={invertSign}
+                onChange={(event) => setInvertSign(event.target.checked)}
+              />
+              Invert sign after parsing
+            </label>
+          ) : null}
+
+          {signMode === "amount_direction_column" ? (
+            <div className="form-grid">
+              <label className="input-label">
+                Direction Column
+                <input
+                  className="input-field"
+                  value={directionColumn}
+                  onChange={(event) => setDirectionColumn(event.target.value)}
+                  placeholder="Debit/Credit"
+                />
+              </label>
+              <label className="input-label">
+                Debit Values
+                <input
+                  className="input-field"
+                  value={debitValuesText}
+                  onChange={(event) => setDebitValuesText(event.target.value)}
+                  placeholder={defaultDirectionValues.debit}
+                />
+              </label>
+              <label className="input-label">
+                Credit Values
+                <input
+                  className="input-field"
+                  value={creditValuesText}
+                  onChange={(event) => setCreditValuesText(event.target.value)}
+                  placeholder={defaultDirectionValues.credit}
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {signMode === "debit_credit_columns" ? (
+            <div className="form-grid">
+              <label className="input-label">
+                Debit Column
+                <input
+                  className="input-field"
+                  value={debitColumn}
+                  onChange={(event) => setDebitColumn(event.target.value)}
+                  placeholder="Debit"
+                />
+              </label>
+              <label className="input-label">
+                Credit Column
+                <input
+                  className="input-field"
+                  value={creditColumn}
+                  onChange={(event) => setCreditColumn(event.target.value)}
+                  placeholder="Credit"
+                />
+              </label>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="builder-panel" style={{ gridColumn: "1 / -1" }}>
+          <div>
+            <span className="label-sm">Normalization</span>
+            <h3 className="section-title">Date parsing defaults</h3>
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={dateDayFirst}
+              onChange={(event) => setDateDayFirst(event.target.checked)}
+            />
+            Parse ambiguous dates as day-first
+          </label>
+        </div>
+
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <button className="btn-pill" type="submit" disabled={isPending}>
             {isPending ? "Saving..." : "Save Template"}

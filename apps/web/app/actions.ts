@@ -10,12 +10,24 @@ import { z } from "zod";
 
 import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
 import { FinanceDomainService } from "@myfinance/domain";
+import {
+  buildColumnMap,
+  buildNormalizationRules,
+  buildSignLogic,
+  canonicalFieldKeys,
+  signModeOptions,
+} from "../lib/template-config";
 
 const domain = new FinanceDomainService(createFinanceRepository());
 
 const importFieldsSchema = z.object({
   accountId: z.string(),
   templateId: z.string(),
+});
+
+const columnMappingSchema = z.object({
+  source: z.string().default(""),
+  target: z.enum(canonicalFieldKeys),
 });
 
 const templateSchema = z.object({
@@ -41,9 +53,15 @@ const templateSchema = z.object({
   thousandsSeparator: z.string().nullable().optional(),
   dateFormat: z.string().min(1).default("%Y-%m-%d"),
   defaultCurrency: z.string().min(1).default("EUR"),
-  columnMapJson: z.record(z.string(), z.any()).default({}),
-  signLogicJson: z.record(z.string(), z.any()).default({}),
-  normalizationRulesJson: z.record(z.string(), z.any()).default({}),
+  columnMappings: z.array(columnMappingSchema).min(1),
+  signMode: z.enum(signModeOptions).default("signed_amount"),
+  invertSign: z.boolean().default(false),
+  directionColumn: z.string().nullable().optional(),
+  debitColumn: z.string().nullable().optional(),
+  creditColumn: z.string().nullable().optional(),
+  debitValuesText: z.string().nullable().optional(),
+  creditValuesText: z.string().nullable().optional(),
+  dateDayFirst: z.boolean().default(true),
   active: z.boolean().default(true),
 });
 
@@ -100,16 +118,43 @@ export async function commitImportAction(formData: FormData) {
 
 export async function createTemplateAction(input: z.input<typeof templateSchema>) {
   const template = templateSchema.parse(input);
+  const {
+    columnMappings: _columnMappings,
+    signMode: _signMode,
+    invertSign: _invertSign,
+    directionColumn: _directionColumn,
+    debitColumn: _debitColumn,
+    creditColumn: _creditColumn,
+    debitValuesText: _debitValuesText,
+    creditValuesText: _creditValuesText,
+    dateDayFirst: _dateDayFirst,
+    ...templateFields
+  } = template;
+  const columnMapJson = buildColumnMap(template.columnMappings);
+  const signLogicJson = buildSignLogic({
+    signMode: template.signMode,
+    invertSign: template.invertSign,
+    directionColumn: template.directionColumn,
+    debitColumn: template.debitColumn,
+    creditColumn: template.creditColumn,
+    debitValuesText: template.debitValuesText,
+    creditValuesText: template.creditValuesText,
+    columnMap: columnMapJson,
+  });
+  const normalizationRulesJson = buildNormalizationRules(template.dateDayFirst);
   const { seededUserId } = getDbRuntimeConfig();
   const result = await domain.createTemplate({
     template: {
       userId: seededUserId,
-      ...template,
-      sheetName: template.sheetName ?? null,
-      delimiter: template.delimiter ?? null,
-      encoding: template.encoding ?? null,
-      decimalSeparator: template.decimalSeparator ?? null,
-      thousandsSeparator: template.thousandsSeparator ?? null,
+      ...templateFields,
+      sheetName: templateFields.sheetName ?? null,
+      delimiter: templateFields.delimiter ?? null,
+      encoding: templateFields.encoding ?? null,
+      decimalSeparator: templateFields.decimalSeparator ?? null,
+      thousandsSeparator: templateFields.thousandsSeparator ?? null,
+      columnMapJson,
+      signLogicJson,
+      normalizationRulesJson,
     },
     actorName: "web-action",
     sourceChannel: "web",
