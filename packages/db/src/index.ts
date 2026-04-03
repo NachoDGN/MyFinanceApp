@@ -78,8 +78,13 @@ async function withSeededUserContext<T>(
   const sql = createSqlClient();
   const { seededUserId } = getDbRuntimeConfig();
   try {
-    await sql`select set_config('app.current_user_id', ${seededUserId}, true)`;
-    return await runner(sql);
+    const beginTransaction = sql.begin as unknown as (
+      callback: (transactionSql: SqlClient) => Promise<T>,
+    ) => Promise<T>;
+    return await beginTransaction(async (transactionSql) => {
+      await transactionSql`select set_config('app.current_user_id', ${seededUserId}, true)`;
+      return runner(transactionSql);
+    });
   } finally {
     await sql.end({ timeout: 1 });
   }
@@ -180,6 +185,15 @@ function createAuditEvent(
     createdAt: new Date().toISOString(),
     notes: null,
   };
+}
+
+function isUniqueViolation(error: unknown): error is { code: string } {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "23505",
+  );
 }
 
 class SqlFinanceRepository implements FinanceRepository {
@@ -1220,87 +1234,93 @@ class SqlFinanceRepository implements FinanceRepository {
       const insertedTransactions: Transaction[] = [];
       if (preparedTransactions) {
         for (const transaction of preparedTransactions.inserted) {
-          const inserted = await sql`
-            insert into public.transactions (
-              id,
-              user_id,
-              account_id,
-              account_entity_id,
-              economic_entity_id,
-              import_batch_id,
-              source_fingerprint,
-              duplicate_key,
-              transaction_date,
-              posted_date,
-              amount_original,
-              currency_original,
-              amount_base_eur,
-              fx_rate_to_eur,
-              description_raw,
-              description_clean,
-              merchant_normalized,
-              counterparty_name,
-              transaction_class,
-              category_code,
-              transfer_match_status,
-              cross_entity_flag,
-              reimbursement_status,
-              classification_status,
-              classification_source,
-              classification_confidence,
-              needs_review,
-              review_reason,
-              exclude_from_analytics,
-              llm_payload,
-              raw_payload,
-              security_id,
-              quantity,
-              unit_price_original,
-              created_at,
-              updated_at
-            ) values (
-              ${transaction.id},
-              ${transaction.userId},
-              ${transaction.accountId},
-              ${transaction.accountEntityId},
-              ${transaction.economicEntityId},
-              ${transaction.importBatchId ?? null},
-              ${transaction.sourceFingerprint},
-              ${transaction.duplicateKey ?? null},
-              ${transaction.transactionDate},
-              ${transaction.postedDate ?? null},
-              ${transaction.amountOriginal},
-              ${transaction.currencyOriginal},
-              ${transaction.amountBaseEur},
-              ${transaction.fxRateToEur ?? null},
-              ${transaction.descriptionRaw},
-              ${transaction.descriptionClean},
-              ${transaction.merchantNormalized ?? null},
-              ${transaction.counterpartyName ?? null},
-              ${transaction.transactionClass},
-              ${transaction.categoryCode ?? null},
-              ${transaction.transferMatchStatus},
-              ${transaction.crossEntityFlag},
-              ${transaction.reimbursementStatus},
-              ${transaction.classificationStatus},
-              ${transaction.classificationSource},
-              ${transaction.classificationConfidence},
-              ${transaction.needsReview},
-              ${transaction.reviewReason ?? null},
-              ${transaction.excludeFromAnalytics},
-              ${serializeJson(sql, transaction.llmPayload)}::jsonb,
-              ${serializeJson(sql, transaction.rawPayload)}::jsonb,
-              ${transaction.securityId ?? null},
-              ${transaction.quantity ?? null},
-              ${transaction.unitPriceOriginal ?? null},
-              ${transaction.createdAt},
-              ${transaction.updatedAt}
-            )
-            on conflict (user_id, source_fingerprint) do nothing
-            returning id
-          `;
-          if (inserted.length > 0) {
-            insertedTransactions.push(transaction);
+          try {
+            const inserted = await sql`
+              insert into public.transactions (
+                id,
+                user_id,
+                account_id,
+                account_entity_id,
+                economic_entity_id,
+                import_batch_id,
+                source_fingerprint,
+                duplicate_key,
+                transaction_date,
+                posted_date,
+                amount_original,
+                currency_original,
+                amount_base_eur,
+                fx_rate_to_eur,
+                description_raw,
+                description_clean,
+                merchant_normalized,
+                counterparty_name,
+                transaction_class,
+                category_code,
+                transfer_match_status,
+                cross_entity_flag,
+                reimbursement_status,
+                classification_status,
+                classification_source,
+                classification_confidence,
+                needs_review,
+                review_reason,
+                exclude_from_analytics,
+                llm_payload,
+                raw_payload,
+                security_id,
+                quantity,
+                unit_price_original,
+                created_at,
+                updated_at
+              ) values (
+                ${transaction.id},
+                ${transaction.userId},
+                ${transaction.accountId},
+                ${transaction.accountEntityId},
+                ${transaction.economicEntityId},
+                ${transaction.importBatchId ?? null},
+                ${transaction.sourceFingerprint},
+                ${transaction.duplicateKey ?? null},
+                ${transaction.transactionDate},
+                ${transaction.postedDate ?? null},
+                ${transaction.amountOriginal},
+                ${transaction.currencyOriginal},
+                ${transaction.amountBaseEur},
+                ${transaction.fxRateToEur ?? null},
+                ${transaction.descriptionRaw},
+                ${transaction.descriptionClean},
+                ${transaction.merchantNormalized ?? null},
+                ${transaction.counterpartyName ?? null},
+                ${transaction.transactionClass},
+                ${transaction.categoryCode ?? null},
+                ${transaction.transferMatchStatus},
+                ${transaction.crossEntityFlag},
+                ${transaction.reimbursementStatus},
+                ${transaction.classificationStatus},
+                ${transaction.classificationSource},
+                ${transaction.classificationConfidence},
+                ${transaction.needsReview},
+                ${transaction.reviewReason ?? null},
+                ${transaction.excludeFromAnalytics},
+                ${serializeJson(sql, transaction.llmPayload)}::jsonb,
+                ${serializeJson(sql, transaction.rawPayload)}::jsonb,
+                ${transaction.securityId ?? null},
+                ${transaction.quantity ?? null},
+                ${transaction.unitPriceOriginal ?? null},
+                ${transaction.createdAt},
+                ${transaction.updatedAt}
+              )
+              returning id
+            `;
+            if (inserted.length > 0) {
+              insertedTransactions.push(transaction);
+            }
+          } catch (error) {
+            if (isUniqueViolation(error)) {
+              continue;
+            }
+            throw error;
           }
         }
       }

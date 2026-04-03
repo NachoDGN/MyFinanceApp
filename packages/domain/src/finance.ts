@@ -152,7 +152,6 @@ export function getDatasetLatestDate(dataset: DomainDataset, fallback = todayIso
   const latest = [
     ...dataset.transactions.map((row) => row.transactionDate),
     ...dataset.importBatches.flatMap((row) => [
-      row.importedAt.slice(0, 10),
       row.detectedDateRange?.end ?? "",
     ]),
     ...dataset.accountBalanceSnapshots.map((row) => row.asOfDate),
