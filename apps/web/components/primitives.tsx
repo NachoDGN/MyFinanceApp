@@ -26,6 +26,27 @@ function formatDate(value: string) {
   }).format(date);
 }
 
+function buildSparkBars(chartValues: number[], targetBars = 5) {
+  const absoluteValues = chartValues
+    .map((value) => {
+      if (!Number.isFinite(value)) return 0;
+      return Math.abs(value);
+    })
+    .filter((value) => value > 0);
+
+  const values = absoluteValues.slice(-targetBars);
+  while (values.length < targetBars) {
+    values.unshift(0);
+  }
+
+  const max = Math.max(...values, 1);
+  return values.map((value, index) => ({
+    key: `${index}-${value}`,
+    height: value > 0 ? Math.max(16, (value / max) * 100) : 12,
+    active: index === values.length - 1 && value > 0,
+  }));
+}
+
 export function MetricCard({
   label,
   value,
@@ -69,6 +90,50 @@ export function MetricCard({
         ))}
       </div>
     </div>
+  );
+}
+
+export function InvestmentMetricCard({
+  label,
+  value,
+  badge,
+  subtitle,
+  chartValues,
+  badgeTone = "accent",
+}: {
+  label: string;
+  value: string;
+  badge: string;
+  subtitle: string;
+  chartValues: number[];
+  badgeTone?: "accent" | "neutral";
+}) {
+  const bars = buildSparkBars(chartValues);
+
+  return (
+    <section className="investment-kpi-card">
+      <div className="investment-kpi-copy">
+        <div className="investment-kpi-header">
+          <h2 className="investment-kpi-label">{label}</h2>
+          <span
+            className={`investment-kpi-badge ${badgeTone === "neutral" ? "neutral" : ""}`}
+          >
+            {badge}
+          </span>
+        </div>
+        <div className="investment-kpi-value">{value}</div>
+        <p className="investment-kpi-subtitle">{subtitle}</p>
+      </div>
+      <div className="investment-spark-bars" aria-hidden="true">
+        {bars.map((bar) => (
+          <div
+            key={bar.key}
+            className={`investment-spark-bar ${bar.active ? "active" : ""}`}
+            style={{ height: `${bar.height}%` }}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -213,6 +278,95 @@ export function PortfolioAllocationCard({
                   >
                     {slice.percent.toFixed(1)}%
                   </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function InvestmentAllocationCard({
+  rows,
+  currency,
+}: {
+  rows: Array<{ label: string; amountEur: string }>;
+  currency: string;
+}) {
+  const { total, slices } = buildAllocationSlices(rows);
+  const radius = 40;
+  const strokeWidth = 18;
+  const circumference = 2 * Math.PI * radius;
+  let runningOffset = 0;
+
+  return (
+    <section className="investment-allocation-panel">
+      <div className="investment-allocation-total">
+        {formatCurrency(total.toFixed(2), currency)}
+      </div>
+      <div className="investment-allocation-layout">
+        <div className="investment-allocation-donut">
+          <svg viewBox="0 0 100 100" role="img" aria-label="Portfolio allocation">
+            <circle
+              cx="50"
+              cy="50"
+              r={radius}
+              fill="none"
+              stroke="rgba(0, 0, 0, 0.08)"
+              strokeWidth={strokeWidth}
+            />
+            {slices.map((slice) => {
+              const dash = (slice.percent / 100) * circumference;
+              const segment = (
+                <circle
+                  key={slice.label}
+                  cx="50"
+                  cy="50"
+                  r={radius}
+                  fill="none"
+                  stroke={slice.color}
+                  strokeWidth={strokeWidth}
+                  strokeDasharray={`${dash} ${circumference - dash}`}
+                  strokeDashoffset={-runningOffset}
+                  transform="rotate(-90 50 50)"
+                />
+              );
+              runningOffset += dash;
+              return segment;
+            })}
+          </svg>
+          <div className="investment-allocation-center">
+            <span className="investment-allocation-label">Market Value</span>
+            <strong>{formatCurrency(total.toFixed(2), currency)}</strong>
+            <span className="investment-allocation-caption">
+              Portfolio mix by security
+            </span>
+          </div>
+        </div>
+        <div className="investment-allocation-legend">
+          {slices.length === 0 ? (
+            <div className="investment-allocation-empty">
+              No priced securities available yet.
+            </div>
+          ) : (
+            slices.map((slice) => (
+              <div className="investment-allocation-row" key={slice.label}>
+                <div className="investment-allocation-key">
+                  <span
+                    className="investment-allocation-dot"
+                    style={{ backgroundColor: slice.color }}
+                  />
+                  <span className="investment-allocation-name">
+                    {slice.label}
+                  </span>
+                </div>
+                <div className="investment-allocation-values">
+                  <div>{formatCurrency(slice.amount.toFixed(2), currency)}</div>
+                  <div className="investment-allocation-share">
+                    {slice.percent.toFixed(1)}%
+                  </div>
                 </div>
               </div>
             ))

@@ -1,8 +1,8 @@
 import { AppShell } from "../../components/app-shell";
 import {
   DistributionList,
-  MetricCard,
-  PortfolioAllocationCard,
+  InvestmentAllocationCard,
+  InvestmentMetricCard,
   ReviewQueueList,
   ReviewStateCell,
   SectionCard,
@@ -44,80 +44,67 @@ export default async function InvestmentsPage({
         </div>
 
         <div className="investments-hero">
-          <div className="investments-hero-left">
-            <div className="metrics-row metrics-row-compact">
-              <MetricCard
-                label="Portfolio Market Value"
-                value={formatCurrency(
-                  model.metrics.portfolioValue.valueDisplay,
-                  model.currency,
-                )}
-                delta={`${model.metrics.portfolioValue.deltaPercent ?? "0.00"}%`}
-                subtitle={`${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs month-end`}
-                direction={
-                  Number(model.metrics.portfolioValue.deltaDisplay ?? "0") >= 0
-                    ? "up"
-                    : "down"
-                }
-                chartValues={model.holdings.holdings.map((holding) =>
-                  Number(holding.currentValueEur ?? 0),
-                )}
-                density="compact"
-              />
-              <MetricCard
-                label="Unrealized Gain"
-                value={formatCurrency(
-                  model.metrics.unrealized.valueDisplay,
-                  model.currency,
-                )}
-                delta={`${model.metrics.unrealized.deltaPercent ?? "0.00"}%`}
-                subtitle="Current open-position P/L"
-                direction={
-                  Number(model.metrics.unrealized.valueDisplay ?? "0") >= 0
-                    ? "up"
-                    : "down"
-                }
-                chartValues={model.holdings.holdings.map((holding) =>
-                  Number(holding.unrealizedPnlEur ?? 0),
-                )}
-                density="compact"
-              />
-              <MetricCard
-                label="Dividends YTD"
-                value={formatCurrency(model.dividendsYtd, model.currency)}
-                delta="Income"
-                subtitle="Investment income year to date"
-                direction="up"
-                chartValues={model.investmentRows
-                  .filter((row) => row.transactionClass === "dividend")
-                  .map((row) => Number(row.amountBaseEur))}
-                density="compact"
-              />
-              <MetricCard
-                label="Brokerage Cash"
-                value={formatCurrency(
-                  model.holdings.brokerageCashEur,
-                  model.currency,
-                )}
-                delta={formatCurrency(
-                  model.netContributionsYtd,
-                  model.currency,
-                )}
-                subtitle="Latest broker cash balance"
-                direction="up"
-                chartValues={[
-                  Number(model.holdings.brokerageCashEur),
-                  Number(model.dividendsYtd),
-                  Number(model.interestYtd),
-                  Number(model.netContributionsYtd),
-                ]}
-                density="compact"
-              />
-            </div>
+          <div className="metrics-row metrics-row-investments">
+            <InvestmentMetricCard
+              label="Portfolio Market Value"
+              value={formatCurrency(
+                model.metrics.portfolioValue.valueDisplay,
+                model.currency,
+              )}
+              badge={`${model.metrics.portfolioValue.deltaPercent ?? "0.00"}%`}
+              badgeTone={
+                Number(model.metrics.portfolioValue.deltaDisplay ?? "0") >= 0
+                  ? "accent"
+                  : "neutral"
+              }
+              subtitle={`${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs month-end`}
+              chartValues={model.holdings.holdings.map((holding) =>
+                Number(holding.currentValueEur ?? 0),
+              )}
+            />
+            <InvestmentMetricCard
+              label="Unrealized Gain"
+              value={formatCurrency(
+                model.metrics.unrealized.valueDisplay,
+                model.currency,
+              )}
+              badge={`${model.metrics.unrealized.deltaPercent ?? "0.00"}%`}
+              badgeTone={
+                Number(model.metrics.unrealized.valueDisplay ?? "0") >= 0
+                  ? "accent"
+                  : "neutral"
+              }
+              subtitle="Current open-position P/L"
+              chartValues={model.holdings.holdings.map((holding) =>
+                Number(holding.unrealizedPnlEur ?? 0),
+              )}
+            />
+            <InvestmentMetricCard
+              label="Dividends YTD"
+              value={formatCurrency(model.dividendsYtd, model.currency)}
+              badge="Income"
+              subtitle="Investment income year to date"
+              chartValues={model.investmentRows
+                .filter((row) => row.transactionClass === "dividend")
+                .map((row) => Number(row.amountBaseEur))}
+            />
+            <InvestmentMetricCard
+              label="Brokerage Cash"
+              value={formatCurrency(
+                model.holdings.brokerageCashEur,
+                model.currency,
+              )}
+              badge={formatCurrency(model.netContributionsYtd, model.currency)}
+              subtitle="Latest broker cash balance"
+              chartValues={[
+                Number(model.holdings.brokerageCashEur),
+                Number(model.dividendsYtd),
+                Number(model.interestYtd),
+                Number(model.netContributionsYtd),
+              ]}
+            />
           </div>
-          <PortfolioAllocationCard
-            title="Portfolio Allocation"
-            subtitle="By market value"
+          <InvestmentAllocationCard
             rows={model.holdings.holdings.map((holding) => ({
               label: holding.symbol,
               amountEur: holding.currentValueEur ?? "0.00",
