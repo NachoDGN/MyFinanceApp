@@ -128,10 +128,10 @@ export function PortfolioAllocationCard({
   currency: string;
 }) {
   const { total, slices } = buildAllocationSlices(rows);
-  const size = 220;
+  const size = 360;
   const center = size / 2;
-  const radius = 74;
-  const strokeWidth = 24;
+  const radius = 118;
+  const strokeWidth = 34;
   const circumference = 2 * Math.PI * radius;
   let runningOffset = 0;
 

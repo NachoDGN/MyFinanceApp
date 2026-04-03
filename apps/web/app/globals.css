@@ -383,26 +383,32 @@ textarea {
   background: linear-gradient(145deg, #ffffff 0%, #fffaf8 100%);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-card-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  aspect-ratio: 1 / 1;
 }
 
 .allocation-card-body {
   margin-top: 24px;
   display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  gap: 24px;
+  grid-template-columns: minmax(320px, 1.15fr) minmax(220px, 0.85fr);
+  gap: 28px;
   align-items: center;
+  flex: 1;
+  min-height: 0;
 }
 
 .allocation-donut {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 260px;
+  min-height: 0;
 }
 
 .allocation-donut svg {
   width: 100%;
-  max-width: 240px;
+  max-width: 420px;
   height: auto;
 }
 
@@ -417,7 +423,7 @@ textarea {
 }
 
 .allocation-donut-center strong {
-  font-size: 22px;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -425,7 +431,10 @@ textarea {
 .allocation-legend {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .allocation-row {
@@ -445,13 +454,15 @@ textarea {
 .investments-hero {
   grid-column: span 12;
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
-  gap: 24px;
-  align-items: start;
+  grid-template-columns: minmax(0, 0.95fr) minmax(460px, 1.05fr);
+  gap: 28px;
+  align-items: stretch;
 }
 
 .investments-hero-left {
   min-width: 0;
+  display: flex;
+  align-items: flex-start;
 }
 
 .metrics-row-compact {
@@ -964,5 +975,9 @@ textarea {
 
   .allocation-donut {
     min-height: 220px;
+  }
+
+  .allocation-card {
+    aspect-ratio: auto;
   }
 }
