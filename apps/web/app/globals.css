@@ -385,15 +385,16 @@ textarea {
   border: 1px solid var(--color-card-border);
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  min-height: clamp(520px, 48vw, 680px);
   aspect-ratio: 1 / 1;
+  width: 100%;
 }
 
 .allocation-card-body {
   margin-top: 24px;
   display: grid;
-  grid-template-columns: minmax(320px, 1.15fr) minmax(220px, 0.85fr);
-  gap: 28px;
+  grid-template-columns: minmax(420px, 1.15fr) minmax(240px, 0.85fr);
+  gap: 24px;
   align-items: center;
   flex: 1;
   min-height: 0;
@@ -408,7 +409,7 @@ textarea {
 
 .allocation-donut svg {
   width: 100%;
-  max-width: 420px;
+  max-width: 560px;
   height: auto;
 }
 
@@ -431,7 +432,7 @@ textarea {
 .allocation-legend {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
@@ -454,7 +455,7 @@ textarea {
 .investments-hero {
   grid-column: span 12;
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(460px, 1.05fr);
+  grid-template-columns: minmax(0, 1fr) minmax(620px, 1fr);
   gap: 28px;
   align-items: stretch;
 }
@@ -462,12 +463,26 @@ textarea {
 .investments-hero-left {
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
+}
+
+.investments-hero-left .metrics-row {
+  height: 100%;
+}
+
+.investments-hero > .allocation-card {
+  grid-column: auto;
+  min-width: 0;
+  min-height: clamp(620px, 50vw, 780px);
+  justify-self: stretch;
+  align-self: stretch;
 }
 
 .metrics-row-compact {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  align-content: stretch;
+  height: 100%;
 }
 
 .details-section {
@@ -891,6 +906,51 @@ textarea {
 }
 
 .muted {
+  color: var(--color-text-muted);
+}
+
+.review-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.review-queue-item {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.review-queue-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.review-queue-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.review-queue-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.review-queue-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-queue-reason {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
   color: var(--color-text-muted);
 }
 

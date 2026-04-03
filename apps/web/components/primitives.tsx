@@ -128,10 +128,10 @@ export function PortfolioAllocationCard({
   currency: string;
 }) {
   const { total, slices } = buildAllocationSlices(rows);
-  const size = 360;
+  const size = 440;
   const center = size / 2;
-  const radius = 118;
-  const strokeWidth = 34;
+  const radius = 144;
+  const strokeWidth = 42;
   const circumference = 2 * Math.PI * radius;
   let runningOffset = 0;
 
@@ -400,12 +400,75 @@ export function QualityBanner({
 export function ReviewStateCell({
   needsReview,
   reviewReason,
+  transactionClass,
+  classificationSource,
+  securitySymbol,
+  quantity,
+  llmPayload,
 }: {
   needsReview: boolean;
   reviewReason?: string | null;
+  transactionClass?: string | null;
+  classificationSource?: string | null;
+  securitySymbol?: string | null;
+  quantity?: string | null;
+  llmPayload?: unknown;
 }) {
+  const normalizedQuantity =
+    quantity && Number(quantity) !== 0
+      ? Number.isInteger(Number(quantity))
+        ? String(Number(quantity))
+        : Number(quantity)
+            .toFixed(4)
+            .replace(/\.?0+$/, "")
+      : null;
+  const sourceLabel =
+    classificationSource === "investment_parser"
+      ? "investment parser"
+      : classificationSource === "user_rule"
+        ? "rule"
+        : classificationSource === "llm"
+          ? "LLM"
+          : classificationSource === "transfer_matcher"
+            ? "transfer matcher"
+            : classificationSource === "manual_override"
+              ? "manual review"
+              : null;
+  const explanation =
+    llmPayload &&
+    typeof llmPayload === "object" &&
+    "explanation" in llmPayload &&
+    typeof (llmPayload as { explanation?: unknown }).explanation === "string"
+      ? (llmPayload as { explanation: string }).explanation
+      : null;
+  const resolvedSummary =
+    sourceLabel || transactionClass || securitySymbol || normalizedQuantity
+      ? [
+          sourceLabel ? `Resolved by ${sourceLabel}` : null,
+          transactionClass ? transactionClass.replace(/_/g, " ") : null,
+          securitySymbol ? `security ${securitySymbol}` : null,
+          normalizedQuantity ? `qty ${normalizedQuantity}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : null;
+
   if (!needsReview) {
-    return <span className="pill">OK</span>;
+    return (
+      <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
+        <span className="pill">Resolved</span>
+        {resolvedSummary ? (
+          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+            {resolvedSummary}
+          </span>
+        ) : null}
+        {explanation && explanation !== resolvedSummary ? (
+          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+            {explanation}
+          </span>
+        ) : null}
+      </div>
+    );
   }
 
   return (
@@ -418,6 +481,63 @@ export function ReviewStateCell({
       >
         {reviewReason ?? "Reason unavailable."}
       </span>
+    </div>
+  );
+}
+
+export function ReviewQueueList({
+  rows,
+  currency,
+}: {
+  rows: Array<{
+    label: string;
+    amountEur: string;
+    reviewReason?: string | null;
+    securitySymbol?: string | null;
+    transactionClass?: string | null;
+  }>;
+  currency: string;
+}) {
+  return (
+    <div className="review-queue">
+      {rows.map((row, index) => (
+        <div className="review-queue-item" key={`${row.label}-${index}`}>
+          <div className="review-queue-header">
+            <div className="review-queue-title">
+              <span
+                className="legend-swatch"
+                style={{
+                  background:
+                    index % 3 === 0
+                      ? "var(--color-accent)"
+                      : index % 3 === 1
+                        ? "rgba(255,75,43,0.45)"
+                        : "rgba(0,0,0,0.12)",
+                }}
+              />
+              <span className="timeline-label">{row.label}</span>
+            </div>
+            <span className="timeline-amount">
+              {formatCurrency(row.amountEur, currency)}
+            </span>
+          </div>
+          {row.securitySymbol || row.transactionClass ? (
+            <div className="review-queue-meta">
+              {row.securitySymbol ? (
+                <span className="pill">{row.securitySymbol}</span>
+              ) : null}
+              {row.transactionClass ? (
+                <span className="pill">
+                  {row.transactionClass.replace(/_/g, " ")}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          <p className="review-queue-reason">
+            {row.reviewReason ?? "Reason unavailable."}
+          </p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -510,7 +630,7 @@ export function DistributionList({
   return (
     <div className="legend-list">
       {rows.map((row, index) => (
-        <div className="legend-row" key={row.label}>
+        <div className="legend-row" key={`${row.label}-${index}`}>
           <div className="legend-key">
             <span
               className="legend-swatch"

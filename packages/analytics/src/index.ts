@@ -734,6 +734,18 @@ export function buildInvestmentsReadModel(
     (holding) => dataset.accounts.find((account) => account.id === holding.accountId)?.displayName ?? holding.accountId,
     (holding) => new Decimal(holding.currentValueEur ?? 0),
   );
+  const unresolved = sortTransactionsNewestFirst(
+    filterTransactionsByScope(dataset, input.scope).filter((transaction) => {
+      const account = dataset.accounts.find(
+        (candidate) => candidate.id === transaction.accountId,
+      );
+      return (
+        account?.assetDomain === "investment" &&
+        transaction.transactionDate <= referenceDate &&
+        transaction.needsReview
+      );
+    }),
+  );
 
   return {
     holdings,
@@ -766,7 +778,7 @@ export function buildInvestmentsReadModel(
       ytdInvestmentRows.filter((transaction) => transaction.transactionClass === "transfer_internal"),
       (transaction) => new Decimal(transaction.amountBaseEur),
     ),
-    unresolved: investmentRows.filter((transaction) => transaction.needsReview),
+    unresolved,
     accountAllocation,
   };
 }

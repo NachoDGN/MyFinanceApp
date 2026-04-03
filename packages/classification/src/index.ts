@@ -231,6 +231,12 @@ export function parseInvestmentEvent(transaction: Transaction): {
   if (comparison.includes("INTEREST")) {
     return { transactionClass: "interest" };
   }
+  if (
+    comparison.startsWith("PERIODO ") &&
+    Number(transaction.amountOriginal) > 0
+  ) {
+    return { transactionClass: "interest" };
+  }
   if (comparison.includes("COMMISSION") || comparison.includes("FEE")) {
     return { transactionClass: "fee" };
   }
@@ -254,7 +260,7 @@ export function parseInvestmentEvent(transaction: Transaction): {
         Number(transaction.amountOriginal) < 0
           ? "investment_trade_buy"
           : "investment_trade_sell",
-      quantity,
+      quantity: quantity === "0" ? undefined : quantity,
       securityHint,
       unitPriceOriginal,
     };

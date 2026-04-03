@@ -3,6 +3,7 @@ import {
   DistributionList,
   MetricCard,
   PortfolioAllocationCard,
+  ReviewQueueList,
   ReviewStateCell,
   SectionCard,
   SimpleTable,
@@ -187,6 +188,15 @@ export default async function InvestmentsPage({
             <ReviewStateCell
               needsReview={row.needsReview}
               reviewReason={row.reviewReason}
+              transactionClass={row.transactionClass}
+              classificationSource={row.classificationSource}
+              securitySymbol={
+                model.dataset.securities.find(
+                  (security) => security.id === row.securityId,
+                )?.displaySymbol ?? null
+              }
+              quantity={row.quantity}
+              llmPayload={row.llmPayload}
             />,
           ])}
         />
@@ -196,10 +206,16 @@ export default async function InvestmentsPage({
           subtitle="Review queue"
           span="span-4"
         >
-          <DistributionList
+          <ReviewQueueList
             rows={model.unresolved.map((row) => ({
               label: row.descriptionRaw,
               amountEur: row.amountBaseEur,
+              reviewReason: row.reviewReason,
+              securitySymbol:
+                model.dataset.securities.find(
+                  (security) => security.id === row.securityId,
+                )?.displaySymbol ?? null,
+              transactionClass: row.transactionClass,
             }))}
             currency={model.currency}
           />

@@ -84,11 +84,32 @@ function buildSearchQueries(hint: string) {
   if (normalized.includes("ADVANCED MICRO DEVICES")) {
     queries.add("ADVANCED MICRO DEVICES");
   }
+  if (normalized.includes("INTEL")) {
+    queries.add("INTEL CORP");
+    queries.add("INTEL CORPORATION");
+  }
   if (normalized.includes("ALPHABET")) {
     queries.add("ALPHABET");
     if (normalized.includes("CL C") || normalized.includes("CLASS C")) {
       queries.add("ALPHABET CLASS C");
     }
+  }
+  if (normalized.includes("LUMENTUM")) {
+    queries.add("LUMENTUM HOLDINGS INC");
+  }
+  if (normalized.includes("SAMSUNG")) {
+    queries.add("SAMSUNG ELECTRONICS");
+    if (normalized.includes("GDR")) {
+      queries.add("SAMSUNG ELECTRONICS GDR");
+    }
+  }
+  if (normalized.includes("EMERGING MARKETS")) {
+    queries.add("EMERGING MARKETS STOCK");
+    queries.add("VANGUARD EMERGING MARKETS");
+  }
+  if (normalized.includes("EUROZONE")) {
+    queries.add("VANGUARD EUROZONE");
+    queries.add("VANGUARD EUROZONE STOCK INDEX");
   }
   if (normalized.includes("VANGUARD")) {
     if (
@@ -104,6 +125,8 @@ function buildSearchQueries(hint: string) {
     }
     if (normalized.includes("SMALL CAP")) {
       queries.add("VANGUARD SMALL CAP");
+      queries.add("VANGUARD GLOBAL SMALL-CAP");
+      queries.add("VANGUARD GLOBAL SMALL-CAP INDEX FUND");
     }
   }
 
@@ -145,6 +168,66 @@ function scoreCandidate(hint: string, candidate: SearchCandidate) {
     candidate.providerSymbol === "AMD"
   ) {
     score += 12;
+  }
+  if (normalizedHint.includes("INTEL") && candidate.providerSymbol === "INTC") {
+    score += 12;
+  }
+  if (
+    normalizedHint.includes("LUMENTUM") &&
+    candidate.providerSymbol === "LITE"
+  ) {
+    score += 12;
+  }
+  if (normalizedHint.includes("SAMSUNG")) {
+    if (candidate.instrumentName.toUpperCase().includes("SAMSUNG")) score += 8;
+    if (
+      normalizedHint.includes("GDR") &&
+      candidate.instrumentName.toUpperCase().includes("GDR")
+    ) {
+      score += 12;
+    }
+  }
+  if (normalizedHint.includes("EMERGING MARKETS")) {
+    if (candidate.instrumentName.toUpperCase().includes("EMERGING MARKETS")) {
+      score += 10;
+    }
+    if (
+      normalizedHint.includes("STOCK") &&
+      candidate.instrumentName.toUpperCase().includes("STOCK INDEX")
+    ) {
+      score += 12;
+    }
+    if (candidate.instrumentName.toUpperCase().includes("BOND")) {
+      score -= 18;
+    }
+  }
+  if (
+    normalizedHint.includes("EUROZONE") &&
+    candidate.instrumentName.toUpperCase().includes("EUROZONE")
+  ) {
+    score += 12;
+  }
+  if (normalizedHint.includes("SMALL CAP")) {
+    if (
+      candidate.instrumentName.toUpperCase().includes("SMALL-CAP") ||
+      candidate.instrumentName.toUpperCase().includes("SMALL CAP")
+    ) {
+      score += 12;
+    }
+    if (
+      (normalizedHint.includes("GLOB") || normalizedHint.includes("GLOBAL")) &&
+      candidate.instrumentName.toUpperCase().includes("GLOBAL")
+    ) {
+      score += 8;
+    }
+  }
+
+  if (hintPrefersEuroShareClass(normalizedHint)) {
+    if (candidate.currency === "EUR") score += 8;
+    if (candidate.instrumentName.toUpperCase().includes("EUR")) score += 6;
+    if (candidate.exchange === "OTC") score -= 6;
+    if (candidate.currency !== "EUR") score -= 6;
+    if (candidate.country?.toUpperCase() === "UNITED STATES") score -= 4;
   }
 
   if (normalizedHint.includes("VANGUARD")) {
@@ -430,26 +513,10 @@ async function resolveSecurity(
       security.providerSymbol === bestCandidate.providerSymbol,
   );
   if (duplicate) {
-    const normalizedHint = normalizeSecurityText(hint);
-    const aliasExists = dataset.securityAliases.some(
-      (alias) =>
-        alias.securityId === duplicate.id &&
-        normalizeSecurityText(alias.aliasTextNormalized) === normalizedHint,
-    );
     return {
       security: duplicate,
       insertedSecurity: null,
-      insertedAlias: aliasExists
-        ? null
-        : ({
-            id: randomUUID(),
-            securityId: duplicate.id,
-            aliasTextNormalized: normalizedHint,
-            aliasSource: "provider",
-            templateId: null,
-            confidence: "0.9000",
-            createdAt: new Date().toISOString(),
-          } satisfies SecurityAlias),
+      insertedAlias: null,
     };
   }
 
@@ -497,25 +564,138 @@ function inferQuantityFromPrice(
   transaction: Transaction,
   tradePrice: SecurityPrice,
 ) {
-  const amountInQuoteCurrency =
-    transaction.currencyOriginal === tradePrice.currency
-      ? new Decimal(transaction.amountOriginal).abs()
-      : new Decimal(transaction.amountBaseEur)
-          .abs()
-          .mul(
-            resolveFxRate(
-              dataset,
-              "EUR",
-              tradePrice.currency,
-              transaction.transactionDate,
-            ),
-          );
+  const amountInQuoteCurrency = amountInSecurityQuoteCurrency(
+    dataset,
+    transaction,
+    tradePrice.currency,
+  );
 
   if (new Decimal(tradePrice.price).eq(0)) {
     return null;
   }
 
   return amountInQuoteCurrency.div(tradePrice.price).toFixed(8);
+}
+
+function amountInSecurityQuoteCurrency(
+  dataset: DomainDataset,
+  transaction: Transaction,
+  quoteCurrency: string,
+) {
+  return transaction.currencyOriginal === quoteCurrency
+    ? new Decimal(transaction.amountOriginal).abs()
+    : new Decimal(transaction.amountBaseEur)
+        .abs()
+        .mul(
+          resolveFxRate(
+            dataset,
+            "EUR",
+            quoteCurrency,
+            transaction.transactionDate,
+          ),
+        );
+}
+
+function normalizeQuantityValue(quantity: string | null | undefined) {
+  if (!quantity) return null;
+  const value = new Decimal(quantity);
+  return value.eq(0) ? null : value.toFixed(8);
+}
+
+function inferImpliedUnitPrice(
+  dataset: DomainDataset,
+  transaction: Transaction,
+  quantity: string,
+  quoteCurrency: string,
+) {
+  const normalizedQuantity = normalizeQuantityValue(quantity);
+  if (!normalizedQuantity) {
+    return null;
+  }
+
+  const amountInQuoteCurrency = amountInSecurityQuoteCurrency(
+    dataset,
+    transaction,
+    quoteCurrency,
+  );
+  const quantityDecimal = new Decimal(normalizedQuantity);
+  if (quantityDecimal.eq(0)) {
+    return null;
+  }
+
+  return amountInQuoteCurrency.div(quantityDecimal).toFixed(8);
+}
+
+function buildQuantityReviewReason(
+  hint: string,
+  resolvedSecurity: Security | null,
+  apiKeyAvailable: boolean,
+) {
+  if (!resolvedSecurity) {
+    return `Quantity could not be derived for "${hint}".`;
+  }
+
+  if (!apiKeyAvailable) {
+    return `Mapped to ${resolvedSecurity.displaySymbol}, but market-data enrichment is unavailable, so quantity could not be derived for "${hint}".`;
+  }
+
+  return `Mapped to ${resolvedSecurity.displaySymbol}, but Twelve Data did not return a usable historical price to derive quantity for "${hint}".`;
+}
+
+function buildMarketPriceReviewReason(
+  dataset: DomainDataset,
+  transaction: Transaction,
+  resolvedSecurity: Security,
+  quantity: string | null,
+  tradePrice: SecurityPrice | null,
+) {
+  if (!tradePrice || !quantity) {
+    return null;
+  }
+
+  if (!["stock", "etf"].includes(resolvedSecurity.assetType)) {
+    return null;
+  }
+
+  const impliedUnitPrice = inferImpliedUnitPrice(
+    dataset,
+    transaction,
+    quantity,
+    tradePrice.currency,
+  );
+  if (!impliedUnitPrice) {
+    return null;
+  }
+
+  const implied = new Decimal(impliedUnitPrice);
+  const market = new Decimal(tradePrice.price);
+  if (implied.lte(0) || market.lte(0)) {
+    return null;
+  }
+
+  const ratio = implied.div(market);
+  if (ratio.greaterThanOrEqualTo(0.1) && ratio.lessThanOrEqualTo(10)) {
+    return null;
+  }
+
+  return `Mapped to ${resolvedSecurity.displaySymbol}, but the implied unit price (${implied.toFixed(2)} ${tradePrice.currency}) diverges from available market data (${market.toFixed(2)} ${tradePrice.currency} on ${tradePrice.priceDate}).`;
+}
+
+function findStoredHistoricalPrice(
+  dataset: DomainDataset,
+  securityId: string,
+  transactionDate: string,
+) {
+  return [...dataset.securityPrices]
+    .filter(
+      (price) =>
+        price.securityId === securityId && price.priceDate <= transactionDate,
+    )
+    .sort((left, right) =>
+      `${right.priceDate}${right.createdAt}`.localeCompare(
+        `${left.priceDate}${left.createdAt}`,
+      ),
+    )[0] ?? null;
 }
 
 function shouldClearReview(
@@ -537,10 +717,39 @@ function shouldClearReview(
 
   return (
     transaction.needsReview &&
-    /security mapping|quantity could not be derived|lacks details|llm enrichment/i.test(
+    /security mapping|quantity could not be derived|twelve data|market-data enrichment|diverges from available market data|lacks details|llm enrichment/i.test(
       transaction.reviewReason ?? "",
     )
   );
+}
+
+function shouldClearDeterministicNonTradeReview(
+  transaction: Transaction,
+  parsedTransactionClass: Transaction["transactionClass"],
+) {
+  return (
+    transaction.needsReview &&
+    parsedTransactionClass === transaction.transactionClass &&
+    ["interest", "dividend", "fee"].includes(transaction.transactionClass)
+  );
+}
+
+function upsertTransactionPatch(
+  transactionPatches: ResolvedTransactionPatch[],
+  patch: ResolvedTransactionPatch,
+) {
+  const existingIndex = transactionPatches.findIndex(
+    (candidate) => candidate.id === patch.id,
+  );
+  if (existingIndex === -1) {
+    transactionPatches.push(patch);
+    return;
+  }
+
+  transactionPatches[existingIndex] = {
+    ...transactionPatches[existingIndex],
+    ...patch,
+  };
 }
 
 function categoryCodeForInvestmentClass(
@@ -579,6 +788,75 @@ export async function prepareInvestmentRebuild(
   const insertedSecurities: Security[] = [];
   const insertedAliases: SecurityAlias[] = [];
   const upsertedPrices: SecurityPrice[] = [];
+  const historicalPriceCache = new Map<string, SecurityPrice | null>();
+  const latestPriceCache = new Map<string, SecurityPrice | null>();
+  const trackedPriceKeys = new Set(
+    workingDataset.securityPrices.map(
+      (price) => `${price.securityId}:${price.priceDate}:${price.sourceName}`,
+    ),
+  );
+
+  const recordPrice = (price: SecurityPrice | null) => {
+    if (!price) return;
+
+    const priceKey = `${price.securityId}:${price.priceDate}:${price.sourceName}`;
+    if (!trackedPriceKeys.has(priceKey)) {
+      upsertedPrices.push(price);
+      trackedPriceKeys.add(priceKey);
+    }
+    workingDataset.securityPrices = [
+      ...workingDataset.securityPrices.filter(
+        (row) =>
+          !(
+            row.securityId === price.securityId &&
+            row.priceDate === price.priceDate &&
+            row.sourceName === price.sourceName
+          ),
+      ),
+      price,
+    ];
+  };
+
+  const loadHistoricalPrice = async (
+    security: Pick<Security, "id" | "providerSymbol" | "quoteCurrency">,
+    transactionDate: string,
+  ) => {
+    const cacheKey = `${security.id}:${transactionDate}`;
+    if (historicalPriceCache.has(cacheKey)) {
+      return historicalPriceCache.get(cacheKey) ?? null;
+    }
+
+    if (apiKey) {
+      const fetchedPrice = await fetchHistoricalPrice(
+        security,
+        transactionDate,
+        apiKey,
+      );
+      if (fetchedPrice) {
+        historicalPriceCache.set(cacheKey, fetchedPrice);
+        return fetchedPrice;
+      }
+    }
+
+    const storedPrice = findStoredHistoricalPrice(
+      workingDataset,
+      security.id,
+      transactionDate,
+    );
+    historicalPriceCache.set(cacheKey, storedPrice);
+    return storedPrice;
+  };
+
+  const loadLatestPrice = async (security: Security) => {
+    const cacheKey = security.id;
+    if (latestPriceCache.has(cacheKey)) {
+      return latestPriceCache.get(cacheKey) ?? null;
+    }
+
+    const price = apiKey ? await fetchLatestPrice(security, apiKey) : null;
+    latestPriceCache.set(cacheKey, price);
+    return price;
+  };
 
   const investmentTransactions = workingDataset.transactions
     .filter((transaction) => {
@@ -604,6 +882,8 @@ export async function prepareInvestmentRebuild(
     const originalClassificationSource = transaction.classificationSource;
     const originalClassificationConfidence =
       transaction.classificationConfidence;
+    const originalQuantity = transaction.quantity ?? null;
+    const originalUnitPriceOriginal = transaction.unitPriceOriginal ?? null;
     if (
       transaction.transactionClass === "unknown" &&
       parsed.transactionClass !== "unknown"
@@ -618,7 +898,9 @@ export async function prepareInvestmentRebuild(
     }
 
     let resolvedSecurityId = transaction.securityId ?? null;
-    let quantity = transaction.quantity ?? parsed.quantity ?? null;
+    let quantity = normalizeQuantityValue(
+      transaction.quantity ?? parsed.quantity ?? null,
+    );
     let unitPriceOriginal =
       transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null;
 
@@ -656,32 +938,37 @@ export async function prepareInvestmentRebuild(
           (security) => security.id === resolvedSecurityId,
         ) ?? null)
       : null;
-
-    if (resolvedSecurity && (!quantity || !unitPriceOriginal) && apiKey) {
-      const historicalPrice = await fetchHistoricalPrice(
-        resolvedSecurity,
-        transaction.transactionDate,
-        apiKey,
+    const isTrade =
+      resolvedSecurity &&
+      ["investment_trade_buy", "investment_trade_sell"].includes(
+        transaction.transactionClass,
       );
-      if (historicalPrice) {
-        upsertedPrices.push(historicalPrice);
-        workingDataset.securityPrices = [
-          ...workingDataset.securityPrices.filter(
-            (price) =>
-              !(
-                price.securityId === historicalPrice.securityId &&
-                price.priceDate === historicalPrice.priceDate &&
-                price.sourceName === historicalPrice.sourceName
-              ),
-          ),
-          historicalPrice,
-        ];
-        quantity =
-          quantity ??
-          inferQuantityFromPrice(workingDataset, transaction, historicalPrice);
-        unitPriceOriginal = unitPriceOriginal ?? historicalPrice.price;
-      }
+    const historicalPrice =
+      isTrade && apiKey
+        ? await loadHistoricalPrice(
+            resolvedSecurity,
+            transaction.transactionDate,
+          )
+        : null;
+    recordPrice(historicalPrice);
+
+    if (resolvedSecurity && historicalPrice) {
+      quantity =
+        quantity ??
+        inferQuantityFromPrice(workingDataset, transaction, historicalPrice);
+      unitPriceOriginal = unitPriceOriginal ?? historicalPrice.price;
     }
+
+    const marketPriceReviewReason =
+      resolvedSecurity && quantity
+        ? buildMarketPriceReviewReason(
+            workingDataset,
+            transaction,
+            resolvedSecurity,
+            quantity,
+            historicalPrice,
+          )
+        : null;
 
     const patch: ResolvedTransactionPatch = { id: transaction.id };
     let changed = false;
@@ -713,21 +1000,48 @@ export async function prepareInvestmentRebuild(
       patch.securityId = resolvedSecurityId;
       changed = true;
     }
-    if (quantity && quantity !== transaction.quantity) {
+    const normalizedOriginalQuantity = normalizeQuantityValue(originalQuantity);
+    if (
+      quantity !== normalizedOriginalQuantity ||
+      (quantity === null &&
+        originalQuantity !== null &&
+        normalizedOriginalQuantity === null)
+    ) {
       transaction.quantity = quantity;
       patch.quantity = quantity;
       changed = true;
     }
-    if (
-      unitPriceOriginal &&
-      unitPriceOriginal !== transaction.unitPriceOriginal
-    ) {
+    if ((unitPriceOriginal ?? null) !== originalUnitPriceOriginal) {
       transaction.unitPriceOriginal = unitPriceOriginal;
       patch.unitPriceOriginal = unitPriceOriginal;
       changed = true;
     }
 
-    if (shouldClearReview(transaction, resolvedSecurityId, quantity)) {
+    const reviewHint = hint ?? parsed.securityHint ?? "trade";
+
+    if (marketPriceReviewReason) {
+      if (
+        transaction.needsReview !== true ||
+        transaction.reviewReason !== marketPriceReviewReason
+      ) {
+        transaction.needsReview = true;
+        transaction.reviewReason = marketPriceReviewReason;
+        patch.needsReview = true;
+        patch.reviewReason = marketPriceReviewReason;
+        changed = true;
+      }
+    } else if (
+      shouldClearDeterministicNonTradeReview(
+        transaction,
+        parsed.transactionClass,
+      )
+    ) {
+      transaction.needsReview = false;
+      transaction.reviewReason = null;
+      patch.needsReview = false;
+      patch.reviewReason = null;
+      changed = true;
+    } else if (shouldClearReview(transaction, resolvedSecurityId, quantity)) {
       transaction.needsReview = false;
       transaction.reviewReason = null;
       patch.needsReview = false;
@@ -740,11 +1054,11 @@ export async function prepareInvestmentRebuild(
       resolvedSecurityId &&
       !quantity
     ) {
-      const reviewHint =
-        parsed.securityHint ??
-        securityHintFromTransaction(transaction) ??
-        "trade";
-      const clearerReason = `Quantity could not be derived for "${reviewHint}".`;
+      const clearerReason = buildQuantityReviewReason(
+        reviewHint,
+        resolvedSecurity,
+        Boolean(apiKey),
+      );
       if (
         transaction.needsReview !== true ||
         transaction.reviewReason !== clearerReason
@@ -760,9 +1074,11 @@ export async function prepareInvestmentRebuild(
         transaction.transactionClass,
       ) &&
       !resolvedSecurityId &&
-      parsed.securityHint
+      reviewHint
     ) {
-      const clearerReason = `Security mapping unresolved for "${parsed.securityHint}".`;
+      const clearerReason = apiKey
+        ? `Security mapping unresolved after Twelve Data symbol search for "${reviewHint}".`
+        : `Security mapping unresolved for "${reviewHint}".`;
       if (transaction.reviewReason !== clearerReason) {
         transaction.reviewReason = clearerReason;
         patch.reviewReason = clearerReason;
@@ -772,7 +1088,74 @@ export async function prepareInvestmentRebuild(
     }
 
     if (changed) {
-      transactionPatches.push(patch);
+      upsertTransactionPatch(transactionPatches, patch);
+    }
+  }
+
+  for (const transaction of workingDataset.transactions) {
+    const account = workingDataset.accounts.find(
+      (candidate) => candidate.id === transaction.accountId,
+    );
+    if (
+      account?.assetDomain !== "investment" ||
+      transaction.transactionDate > referenceDate ||
+      !["investment_trade_buy", "investment_trade_sell"].includes(
+        transaction.transactionClass,
+      ) ||
+      !transaction.securityId
+    ) {
+      continue;
+    }
+
+    const security = workingDataset.securities.find(
+      (candidate) => candidate.id === transaction.securityId,
+    );
+    const normalizedQuantity = normalizeQuantityValue(transaction.quantity);
+    if (!security || !normalizedQuantity) {
+      continue;
+    }
+
+    const historicalPrice = await loadHistoricalPrice(
+      security,
+      transaction.transactionDate,
+    );
+    recordPrice(historicalPrice);
+
+    const marketPriceReviewReason = buildMarketPriceReviewReason(
+      workingDataset,
+      transaction,
+      security,
+      normalizedQuantity,
+      historicalPrice,
+    );
+
+    if (marketPriceReviewReason) {
+      if (
+        transaction.needsReview !== true ||
+        transaction.reviewReason !== marketPriceReviewReason
+      ) {
+        transaction.needsReview = true;
+        transaction.reviewReason = marketPriceReviewReason;
+        upsertTransactionPatch(transactionPatches, {
+          id: transaction.id,
+          needsReview: true,
+          reviewReason: marketPriceReviewReason,
+        });
+      }
+      continue;
+    }
+
+    if (
+      transaction.needsReview &&
+      /diverges from available market data/i.test(transaction.reviewReason ?? "")
+    ) {
+      transaction.needsReview = false;
+      transaction.reviewReason = null;
+      upsertTransactionPatch(transactionPatches, {
+        id: transaction.id,
+        needsReview: false,
+        reviewReason: null,
+      });
     }
   }
 
@@ -793,20 +1176,9 @@ export async function prepareInvestmentRebuild(
         (candidate) => candidate.id === securityId,
       );
       if (!security) continue;
-      const latestQuote = await fetchLatestPrice(security, apiKey);
+      const latestQuote = await loadLatestPrice(security);
       if (!latestQuote) continue;
-      upsertedPrices.push(latestQuote);
-      workingDataset.securityPrices = [
-        ...workingDataset.securityPrices.filter(
-          (price) =>
-            !(
-              price.securityId === latestQuote.securityId &&
-              price.priceDate === latestQuote.priceDate &&
-              price.sourceName === latestQuote.sourceName
-            ),
-        ),
-        latestQuote,
-      ];
+      recordPrice(latestQuote);
     }
   }
 
