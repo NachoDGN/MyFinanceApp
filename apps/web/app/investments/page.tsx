@@ -1,3 +1,7 @@
+import { Decimal } from "decimal.js";
+
+import { resolveFxRate } from "@myfinance/domain";
+
 import { AppShell } from "../../components/app-shell";
 import {
   DistributionList,
@@ -20,6 +24,35 @@ export default async function InvestmentsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const model = await getInvestmentsModel(searchParams);
+  const eurToDisplayRate =
+    model.currency === "EUR"
+      ? new Decimal(1)
+      : resolveFxRate(model.dataset, "EUR", model.currency, model.referenceDate);
+
+  const toDisplayAmount = (amount: string | null | undefined) => {
+    if (amount === null || amount === undefined) return null;
+    return new Decimal(amount).mul(eurToDisplayRate).toFixed(2);
+  };
+
+  const formatDisplayAmount = (amount: string | null | undefined) =>
+    formatCurrency(toDisplayAmount(amount), model.currency);
+
+  const formatDisplayPrice = (
+    price: string | null | undefined,
+    priceCurrency: string | null | undefined,
+  ) => {
+    if (!price || !priceCurrency) return "N/A";
+    const fxRate = resolveFxRate(
+      model.dataset,
+      priceCurrency,
+      model.currency,
+      model.referenceDate,
+    );
+    return formatCurrency(
+      new Decimal(price).mul(fxRate).toFixed(2),
+      model.currency,
+    );
+  };
 
   return (
     <AppShell
@@ -81,7 +114,7 @@ export default async function InvestmentsPage({
             />
             <InvestmentMetricCard
               label="Dividends YTD"
-              value={formatCurrency(model.dividendsYtd, model.currency)}
+              value={formatDisplayAmount(model.dividendsYtd)}
               badge="Income"
               subtitle="Investment income year to date"
               chartValues={model.investmentRows
@@ -90,11 +123,8 @@ export default async function InvestmentsPage({
             />
             <InvestmentMetricCard
               label="Brokerage Cash"
-              value={formatCurrency(
-                model.holdings.brokerageCashEur,
-                model.currency,
-              )}
-              badge={formatCurrency(model.netContributionsYtd, model.currency)}
+              value={formatDisplayAmount(model.holdings.brokerageCashEur)}
+              badge={formatDisplayAmount(model.netContributionsYtd)}
               subtitle="Latest broker cash balance"
               chartValues={[
                 Number(model.holdings.brokerageCashEur),
@@ -107,7 +137,7 @@ export default async function InvestmentsPage({
           <InvestmentAllocationCard
             rows={model.holdings.holdings.map((holding) => ({
               label: holding.symbol,
-              amountEur: holding.currentValueEur ?? "0.00",
+              amountEur: toDisplayAmount(holding.currentValueEur) ?? "0.00",
             }))}
             currency={model.currency}
           />
@@ -119,7 +149,10 @@ export default async function InvestmentsPage({
           span="span-6"
         >
           <DistributionList
-            rows={model.accountAllocation}
+            rows={model.accountAllocation.map((row) => ({
+              ...row,
+              amountEur: toDisplayAmount(row.amountEur) ?? "0.00",
+            }))}
             currency={model.currency}
           />
         </SectionCard>
@@ -128,6 +161,7 @@ export default async function InvestmentsPage({
           span="span-12"
           headers={[
             "Security",
+            "Ticker",
             "Account",
             "Qty",
             "Avg Cost",
@@ -138,16 +172,18 @@ export default async function InvestmentsPage({
           ]}
           rows={model.holdings.holdings.map((holding) => [
             holding.securityName,
+            holding.symbol,
             model.dataset.accounts.find(
               (account) => account.id === holding.accountId,
             )?.displayName ?? holding.accountId,
             holding.quantity,
-            formatCurrency(holding.avgCostEur, "EUR"),
-            holding.currentPrice
-              ? `${holding.currentPrice} ${holding.currentPriceCurrency}`
-              : "N/A",
-            formatCurrency(holding.currentValueEur, model.currency),
-            `${formatCurrency(holding.unrealizedPnlEur, model.currency)} (${formatPercent(holding.unrealizedPnlPercent)})`,
+            formatDisplayAmount(holding.avgCostEur),
+            formatDisplayPrice(
+              holding.currentPrice,
+              holding.currentPriceCurrency,
+            ),
+            formatDisplayAmount(holding.currentValueEur),
+            `${formatDisplayAmount(holding.unrealizedPnlEur)} (${formatPercent(holding.unrealizedPnlPercent)})`,
             holding.quoteFreshness.toUpperCase(),
           ])}
         />
@@ -171,7 +207,7 @@ export default async function InvestmentsPage({
             model.dataset.securities.find(
               (security) => security.id === row.securityId,
             )?.displaySymbol ?? "—",
-            formatCurrency(row.amountBaseEur, model.currency),
+            formatDisplayAmount(row.amountBaseEur),
             <ReviewStateCell
               needsReview={row.needsReview}
               reviewReason={row.reviewReason}
@@ -196,7 +232,7 @@ export default async function InvestmentsPage({
           <ReviewQueueList
             rows={model.unresolved.map((row) => ({
               label: row.descriptionRaw,
-              amountEur: row.amountBaseEur,
+              amountEur: toDisplayAmount(row.amountBaseEur) ?? "0.00",
               reviewReason: row.reviewReason,
               securitySymbol:
                 model.dataset.securities.find(

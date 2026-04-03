@@ -63,6 +63,13 @@ function dayCountInclusive(start: string, end: string) {
   return Math.floor((toDate(end).getTime() - toDate(start).getTime()) / 86400000) + 1;
 }
 
+function dayDistance(start: string, end: string) {
+  return Math.max(
+    0,
+    Math.floor((toDate(end).getTime() - toDate(start).getTime()) / 86400000),
+  );
+}
+
 export function resolvePeriodSelection(input: {
   preset?: string;
   start?: string;
@@ -369,8 +376,9 @@ export function buildHoldingRows(
       const security = dataset.securities.find((row) => row.id === position.securityId);
       const price = latestSecurityPrice(dataset, position.securityId, asOfDate);
       const priceFx = price
-        ? resolveFxRate(dataset, price.currency, "EUR", price.priceDate)
+        ? resolveFxRate(dataset, price.currency, "EUR", asOfDate)
         : new Decimal(1);
+      const quoteAgeDays = price ? dayDistance(price.priceDate.slice(0, 10), asOfDate) : null;
       const currentValueEur = price
         ? new Decimal(position.openQuantity).mul(price.price).mul(priceFx).toFixed(2)
         : null;
@@ -393,7 +401,13 @@ export function buildHoldingRows(
         unrealizedPnlPercent: unrealizedPnlEur
           ? safeDividePercent(new Decimal(unrealizedPnlEur), new Decimal(position.openCostBasisEur))
           : null,
-        quoteFreshness: price ? "delayed" : "missing",
+        quoteFreshness: price
+          ? !price.isDelayed
+            ? "fresh"
+            : quoteAgeDays !== null && quoteAgeDays > 5
+              ? "stale"
+              : "delayed"
+          : "missing",
         quoteTimestamp: price?.quoteTimestamp ?? null,
         unrealizedComplete: position.unrealizedComplete,
       };

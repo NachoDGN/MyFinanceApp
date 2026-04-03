@@ -577,11 +577,13 @@ function buildHoldingsSnapshot(dataset: DomainDataset, scope: Scope, referenceDa
     schemaVersion: "v1" as const,
     scope,
     holdings,
-    quoteFreshness: holdings.every((row) => row.quoteFreshness === "delayed")
-      ? "delayed" as const
-      : holdings.some((row) => row.quoteFreshness === "fresh")
-        ? "fresh" as const
-        : "missing" as const,
+    quoteFreshness: holdings.some((row) => row.quoteFreshness === "fresh")
+      ? "fresh" as const
+      : holdings.some((row) => row.quoteFreshness === "delayed")
+        ? "delayed" as const
+        : holdings.some((row) => row.quoteFreshness === "stale")
+          ? "stale" as const
+          : "missing" as const,
     brokerageCashEur,
     generatedAt: new Date().toISOString(),
   };

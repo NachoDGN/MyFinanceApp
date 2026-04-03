@@ -1014,6 +1014,179 @@ test("holding valuation is computed from positions, quotes, and FX instead of ha
   assert.equal(holding?.unrealizedPnlPercent, "33.33");
 });
 
+test("holding valuation uses as-of FX even when the latest quote is older than the FX series", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-1",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-1",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        exchangeMic: "XNAS",
+        securityType: "stock",
+        quoteCurrency: "USD",
+        countryCode: "US",
+        isin: null,
+        cusip: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-1",
+        priceDate: "2026-04-01",
+        quoteTimestamp: "2026-04-01T15:00:00Z",
+        price: "100.00",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-04-01T15:00:00Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-04",
+        asOfTimestamp: "2026-04-04T15:00:00Z",
+        rate: "0.920000",
+        sourceName: "ecb",
+        rawJson: {},
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: "entity-1",
+        accountId: "brokerage-1",
+        securityId: "security-1",
+        openQuantity: "10.00",
+        openCostBasisEur: "900.00",
+        avgCostEur: "90.00",
+        realizedPnlEur: "0.00",
+        dividendsEur: "0.00",
+        interestEur: "0.00",
+        feesEur: "0.00",
+        lastTradeDate: "2026-04-01",
+        lastRebuiltAt: "2026-04-04T16:00:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-04",
+  );
+
+  assert.equal(holding?.currentValueEur, "920.00");
+  assert.equal(holding?.unrealizedPnlEur, "20.00");
+  assert.equal(holding?.quoteFreshness, "delayed");
+});
+
+test("holding freshness is stale when the latest delayed quote is older than five days", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-1",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-1",
+        providerName: "twelve_data",
+        providerSymbol: "INTC",
+        canonicalSymbol: "INTC",
+        displaySymbol: "INTC",
+        name: "Intel Corporation",
+        exchangeName: "NASDAQ",
+        exchangeMic: "XNAS",
+        securityType: "stock",
+        quoteCurrency: "USD",
+        countryCode: "US",
+        isin: null,
+        cusip: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-1",
+        priceDate: "2026-03-20",
+        quoteTimestamp: "2026-03-20T15:00:00Z",
+        price: "50.00",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-03-20T15:00:00Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-04",
+        asOfTimestamp: "2026-04-04T15:00:00Z",
+        rate: "0.920000",
+        sourceName: "ecb",
+        rawJson: {},
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: "entity-1",
+        accountId: "brokerage-1",
+        securityId: "security-1",
+        openQuantity: "15.00",
+        openCostBasisEur: "450.00",
+        avgCostEur: "30.00",
+        realizedPnlEur: "0.00",
+        dividendsEur: "0.00",
+        interestEur: "0.00",
+        feesEur: "0.00",
+        lastTradeDate: "2026-03-20",
+        lastRebuiltAt: "2026-04-04T16:00:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-04",
+  );
+
+  assert.equal(holding?.currentValueEur, "690.00");
+  assert.equal(holding?.quoteFreshness, "stale");
+});
+
 test("investment rebuild derives open positions and brokerage cash from imported investment rows", () => {
   const investmentAccount = createAccount({
     id: "brokerage-1",
