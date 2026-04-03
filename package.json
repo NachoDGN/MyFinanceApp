@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.28.1",
   "scripts": {
-    "build": "pnpm --filter @myfinance/domain build && pnpm --filter @myfinance/analytics build && pnpm --filter @myfinance/classification build && pnpm --filter @myfinance/market-data build && pnpm --filter @myfinance/db build && pnpm --filter @myfinance/web build && pnpm --filter @myfinance/cli build && pnpm --filter @myfinance/worker build",
+    "build": "pnpm --filter @myfinance/llm build && pnpm --filter @myfinance/domain build && pnpm --filter @myfinance/analytics build && pnpm --filter @myfinance/classification build && pnpm --filter @myfinance/market-data build && pnpm --filter @myfinance/db build && pnpm --filter @myfinance/web build && pnpm --filter @myfinance/cli build && pnpm --filter @myfinance/worker build",
     "dev": "pnpm db:start && pnpm --parallel --filter @myfinance/web --filter @myfinance/worker dev",
     "dev:web": "pnpm --filter @myfinance/web dev",
     "python:setup": "python3 -m venv .venv && .venv/bin/pip install -r python/ingest/requirements.txt",
@@ -12,7 +12,7 @@
     "db:stop": "pnpm db:cli stop",
     "db:reset": "pnpm db:cli db reset --local",
     "format": "prettier --write .",
-    "typecheck": "pnpm --filter @myfinance/domain typecheck && pnpm --filter @myfinance/analytics typecheck && pnpm --filter @myfinance/classification typecheck && pnpm --filter @myfinance/market-data typecheck && pnpm --filter @myfinance/db typecheck && pnpm --filter @myfinance/web typecheck && pnpm --filter @myfinance/cli typecheck && pnpm --filter @myfinance/worker typecheck"
+    "typecheck": "pnpm --filter @myfinance/llm typecheck && pnpm --filter @myfinance/domain typecheck && pnpm --filter @myfinance/analytics typecheck && pnpm --filter @myfinance/classification typecheck && pnpm --filter @myfinance/market-data typecheck && pnpm --filter @myfinance/db typecheck && pnpm --filter @myfinance/web typecheck && pnpm --filter @myfinance/cli typecheck && pnpm --filter @myfinance/worker typecheck"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import postgres from "postgres";
 
-import { enrichImportedTransaction } from "@myfinance/classification";
+import { enrichImportedTransaction, getTransactionClassifierConfig } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
   buildImportedTransactions,
@@ -986,7 +986,7 @@ class SqlFinanceRepository implements FinanceRepository {
                           ...(parseJsonColumn<Record<string, unknown>>(row.llm_payload ?? {}) ?? {}),
                           analysisStatus: "failed",
                           explanation: null,
-                          model: process.env.OPENAI_TRANSACTION_MODEL ?? "gpt-4.1-mini",
+                          model: getTransactionClassifierConfig().model,
                           error:
                             transactionError instanceof Error
                               ? transactionError.message

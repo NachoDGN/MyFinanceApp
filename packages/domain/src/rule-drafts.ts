@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { createLLMClient, isModelConfigured, parseRuleDraftWithLLM } from "@myfinance/llm";
 
 import type { DomainDataset, RuleDraftParseResult } from "./types";
 
@@ -23,125 +23,14 @@ const supportedOutputKeys = [
   "review_suppression",
 ] as const;
 
-const ruleDraftResponseSchema = z.object({
-  title: z.string().min(1).max(120),
-  summary: z.string().min(1).max(240),
-  priority: z.number().int().min(1).max(999),
-  scope_json: z.record(z.string(), z.unknown()),
-  conditions_json: z.record(z.string(), z.unknown()),
-  outputs_json: z.record(z.string(), z.unknown()),
-  confidence: z.number().min(0).max(1),
-  explanation: z.array(z.string()).max(6).default([]),
-});
-
-function toJsonSchema() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: [
-      "title",
-      "summary",
-      "priority",
-      "scope_json",
-      "conditions_json",
-      "outputs_json",
-      "confidence",
-      "explanation",
-    ],
-    properties: {
-      title: { type: "string" },
-      summary: { type: "string" },
-      priority: { type: "integer", minimum: 1, maximum: 999 },
-      scope_json: { type: "object", additionalProperties: true },
-      conditions_json: { type: "object", additionalProperties: true },
-      outputs_json: { type: "object", additionalProperties: true },
-      confidence: { type: "number", minimum: 0, maximum: 1 },
-      explanation: {
-        type: "array",
-        items: { type: "string" },
-        maxItems: 6,
-      },
-    },
-  };
-}
-
-function extractResponseText(payload: Record<string, unknown>) {
-  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text;
-  }
-
-  const output = Array.isArray(payload.output) ? payload.output : [];
-  for (const item of output) {
-    if (!item || typeof item !== "object") continue;
-    const content = Array.isArray((item as { content?: unknown[] }).content)
-      ? (item as { content: unknown[] }).content
-      : [];
-    for (const chunk of content) {
-      if (!chunk || typeof chunk !== "object") continue;
-      const textValue = (chunk as { text?: unknown }).text;
-      if (typeof textValue === "string" && textValue.trim()) {
-        return textValue;
-      }
-    }
-  }
-
-  throw new Error("The model response did not contain a structured JSON payload.");
-}
-
 export function getRuleParserConfig() {
   return {
-    apiKey: process.env.OPENAI_API_KEY ?? "",
-    model: process.env.OPENAI_RULES_MODEL ?? "gpt-4.1-mini",
+    model: process.env.LLM_RULES_MODEL ?? process.env.OPENAI_RULES_MODEL ?? "gpt-4.1-mini",
   };
 }
 
 export function isRuleParserConfigured() {
-  return Boolean(getRuleParserConfig().apiKey);
-}
-
-function buildRulePrompt(requestText: string, dataset: DomainDataset) {
-  return [
-    "Convert the user's natural-language rule request into deterministic transaction rule logic.",
-    "Use only the supported condition keys and output keys provided.",
-    "Do not invent taxonomy codes, entity ids, account ids, or transaction classes.",
-    "If the request is ambiguous, make the narrowest safe rule and lower confidence.",
-    "",
-    `Supported condition keys: ${supportedConditionKeys.join(", ")}`,
-    `Supported output keys: ${supportedOutputKeys.join(", ")}`,
-    `Allowed transaction classes: ${[
-      "income",
-      "expense",
-      "transfer_internal",
-      "transfer_external",
-      "investment_trade_buy",
-      "investment_trade_sell",
-      "dividend",
-      "interest",
-      "fee",
-      "refund",
-      "reimbursement",
-      "owner_contribution",
-      "owner_draw",
-      "loan_inflow",
-      "loan_principal_payment",
-      "loan_interest_payment",
-      "fx_conversion",
-      "balance_adjustment",
-      "unknown",
-    ].join(", ")}`,
-    `Allowed category codes: ${dataset.categories.map((category) => category.code).join(", ")}`,
-    `Entities: ${dataset.entities
-      .map((entity) => `${entity.displayName} [slug=${entity.slug}, id=${entity.id}]`)
-      .join("; ")}`,
-    `Accounts: ${dataset.accounts
-      .map(
-        (account) =>
-          `${account.displayName} [id=${account.id}, type=${account.accountType}, institution=${account.institutionName}]`,
-      )
-      .join("; ")}`,
-    "",
-    `User request: ${requestText}`,
-  ].join("\n");
+  return isModelConfigured(getRuleParserConfig().model);
 }
 
 function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDraftParseResult {
@@ -215,7 +104,7 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
 
   return {
     title: merchantMatch ? `Rule for ${merchantMatch}` : "Drafted rule",
-    summary: "Fallback parser created a narrow draft because no OpenAI key is configured.",
+    summary: "Fallback parser created a narrow draft because no LLM credentials are configured.",
     priority: 60,
     scopeJson,
     conditionsJson,
@@ -235,42 +124,53 @@ export async function parseRuleDraftRequest(
   requestText: string,
   dataset: DomainDataset,
 ): Promise<RuleDraftParseResult> {
-  const { apiKey, model } = getRuleParserConfig();
-  if (!apiKey) {
+  const { model } = getRuleParserConfig();
+  if (!isModelConfigured(model)) {
     return fallbackRuleDraft(requestText, dataset);
   }
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: [{ type: "input_text", text: buildRulePrompt(requestText, dataset) }],
-        },
+  const parsed = await parseRuleDraftWithLLM(
+    createLLMClient(),
+    {
+      requestText,
+      supportedConditionKeys,
+      supportedOutputKeys,
+      allowedTransactionClasses: [
+        "income",
+        "expense",
+        "transfer_internal",
+        "transfer_external",
+        "investment_trade_buy",
+        "investment_trade_sell",
+        "dividend",
+        "interest",
+        "fee",
+        "refund",
+        "reimbursement",
+        "owner_contribution",
+        "owner_draw",
+        "loan_inflow",
+        "loan_principal_payment",
+        "loan_interest_payment",
+        "fx_conversion",
+        "balance_adjustment",
+        "unknown",
       ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "rule_draft_parse",
-          schema: toJsonSchema(),
-          strict: true,
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI rule parser failed with status ${response.status}.`);
-  }
-
-  const payload = (await response.json()) as Record<string, unknown>;
-  const parsed = ruleDraftResponseSchema.parse(JSON.parse(extractResponseText(payload)));
+      allowedCategoryCodes: dataset.categories.map((category) => category.code),
+      entities: dataset.entities.map((entity) => ({
+        displayName: entity.displayName,
+        slug: entity.slug,
+        id: entity.id,
+      })),
+      accounts: dataset.accounts.map((account) => ({
+        displayName: account.displayName,
+        id: account.id,
+        accountType: account.accountType,
+        institutionName: account.institutionName,
+      })),
+    },
+    model,
+  );
 
   return {
     title: parsed.title,
@@ -280,7 +180,7 @@ export async function parseRuleDraftRequest(
     conditionsJson: parsed.conditions_json,
     outputsJson: parsed.outputs_json,
     confidence: parsed.confidence.toFixed(2),
-    explanation: parsed.explanation,
+    explanation: parsed.explanation ?? [],
     parseSource: "llm",
     model,
     generatedAt: new Date().toISOString(),

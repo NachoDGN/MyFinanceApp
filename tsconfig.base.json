@@ -20,6 +20,7 @@
       "@myfinance/classification": ["packages/classification/src/index.ts"],
       "@myfinance/db": ["packages/db/src/index.ts"],
       "@myfinance/domain": ["packages/domain/src/index.ts"],
+      "@myfinance/llm": ["packages/llm/src/index.ts"],
       "@myfinance/market-data": ["packages/market-data/src/index.ts"]
     }
   }

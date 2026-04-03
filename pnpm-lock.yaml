@@ -122,12 +122,18 @@ importers:
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../domain
+      '@myfinance/llm':
+        specifier: workspace:*
+        version: link:../llm
       zod:
         specifier: ^3.24.2
         version: 3.25.76
 
   packages/db:
     dependencies:
+      '@myfinance/classification':
+        specifier: workspace:*
+        version: link:../classification
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../domain
@@ -140,6 +146,9 @@ importers:
 
   packages/domain:
     dependencies:
+      '@myfinance/llm':
+        specifier: workspace:*
+        version: link:../llm
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
@@ -149,6 +158,12 @@ importers:
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+
+  packages/llm:
+    dependencies:
       zod:
         specifier: ^3.24.2
         version: 3.25.76

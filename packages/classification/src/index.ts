@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import type { Account, ClassificationRule, DomainDataset, Scope, Transaction } from "@myfinance/domain";
+import { analyzeBankTransaction, createLLMClient, isModelConfigured } from "@myfinance/llm";
+import type { Account, ClassificationRule, DomainDataset, Transaction } from "@myfinance/domain";
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -198,22 +199,6 @@ export function parseInvestmentEvent(transaction: Transaction): {
   return { transactionClass: "unknown" };
 }
 
-export function buildCashAccountPrompt(scope: Scope): string {
-  return [
-    "You classify cash and company account transactions into existing taxonomy codes only.",
-    `Scope kind: ${scope.kind}.`,
-    "Return JSON only. If uncertain, use unknown or uncategorized codes.",
-  ].join(" ");
-}
-
-export function buildInvestmentAccountPrompt(scope: Scope): string {
-  return [
-    "You classify brokerage and investment account transactions with security-aware structured output.",
-    `Scope kind: ${scope.kind}.`,
-    "Return JSON only. Never invent categories or security symbols.",
-  ].join(" ");
-}
-
 const allowedTransactionClasses = [
   "income",
   "expense",
@@ -236,18 +221,6 @@ const allowedTransactionClasses = [
   "balance_adjustment",
   "unknown",
 ] as const;
-
-const transactionEnrichmentResponseSchema = z.object({
-  transaction_class: z.string().min(1),
-  category_code: z.string().nullable().optional(),
-  merchant_normalized: z.string().nullable().optional(),
-  counterparty_name: z.string().nullable().optional(),
-  economic_entity_override: z.string().nullable().optional(),
-  security_hint: z.string().nullable().optional(),
-  confidence: z.number().min(0).max(1),
-  explanation: z.string().min(1).max(240),
-  reason: z.string().min(1).max(320),
-});
 
 type DeterministicClassification = {
   transactionClass: string;
@@ -291,52 +264,6 @@ export interface TransactionEnrichmentDecision {
   needsReview: boolean;
   reviewReason: string | null;
   llmPayload: Record<string, unknown>;
-}
-
-function extractResponseText(payload: Record<string, unknown>) {
-  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text;
-  }
-
-  const output = Array.isArray(payload.output) ? payload.output : [];
-  for (const item of output) {
-    if (!item || typeof item !== "object") continue;
-    const content = Array.isArray((item as { content?: unknown[] }).content)
-      ? (item as { content: unknown[] }).content
-      : [];
-    for (const chunk of content) {
-      if (!chunk || typeof chunk !== "object") continue;
-      const textValue = (chunk as { text?: unknown }).text;
-      if (typeof textValue === "string" && textValue.trim()) {
-        return textValue;
-      }
-    }
-  }
-
-  throw new Error("The model response did not contain a structured JSON payload.");
-}
-
-function sleep(milliseconds: number) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function toJsonSchema() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["transaction_class", "confidence", "explanation", "reason"],
-    properties: {
-      transaction_class: { type: "string" },
-      category_code: { type: ["string", "null"] },
-      merchant_normalized: { type: ["string", "null"] },
-      counterparty_name: { type: ["string", "null"] },
-      economic_entity_override: { type: ["string", "null"] },
-      security_hint: { type: ["string", "null"] },
-      confidence: { type: "number", minimum: 0, maximum: 1 },
-      explanation: { type: "string" },
-      reason: { type: "string" },
-    },
-  };
 }
 
 function normalizeOptionalText(value: string | null | undefined) {
@@ -455,14 +382,17 @@ function buildDeterministicClassification(
 
 export function getTransactionClassifierConfig() {
   return {
-    apiKey: process.env.OPENAI_API_KEY ?? "",
-    model: process.env.OPENAI_TRANSACTION_MODEL ?? "gpt-4.1-mini",
-    lowConfidenceCutoff: Number(process.env.OPENAI_TRANSACTION_LOW_CONFIDENCE ?? "0.70"),
+    model: process.env.LLM_TRANSACTION_MODEL ?? process.env.OPENAI_TRANSACTION_MODEL ?? "gpt-4.1-mini",
+    lowConfidenceCutoff: Number(
+      process.env.LLM_TRANSACTION_LOW_CONFIDENCE ??
+        process.env.OPENAI_TRANSACTION_LOW_CONFIDENCE ??
+        "0.70",
+    ),
   };
 }
 
 export function isTransactionClassifierConfigured() {
-  return Boolean(getTransactionClassifierConfig().apiKey);
+  return isModelConfigured(getTransactionClassifierConfig().model);
 }
 
 function buildAllowedCategories(dataset: DomainDataset, account: Account) {
@@ -482,8 +412,8 @@ async function requestLlmClassification(
   transaction: Transaction,
   deterministic: DeterministicClassification,
 ): Promise<LlmClassification> {
-  const { apiKey, model } = getTransactionClassifierConfig();
-  if (!apiKey) {
+  const { model } = getTransactionClassifierConfig();
+  if (!isModelConfigured(model)) {
     return {
       analysisStatus: "skipped",
       model: null,
@@ -496,111 +426,81 @@ async function requestLlmClassification(
       confidence: null,
       explanation: null,
       reason: null,
-      error: "OPENAI_API_KEY is not configured.",
+      error: `LLM credentials are not configured for model ${model}.`,
       rawOutput: null,
     };
   }
 
-  const allowedCategories = buildAllowedCategories(dataset, account)
-    .map((category) => `${category.code} (${category.displayName})`)
-    .join(", ");
-  const prompt = [
-    account.assetDomain === "investment"
-      ? buildInvestmentAccountPrompt({ kind: "account", accountId: account.id })
-      : buildCashAccountPrompt({ kind: "account", accountId: account.id }),
-    `Institution: ${account.institutionName}. Account: ${account.displayName}. Account type: ${account.accountType}.`,
-    `Allowed transaction classes: ${allowedTransactionClasses.join(", ")}.`,
-    `Allowed category codes: ${allowedCategories}.`,
-    `Transaction date: ${transaction.transactionDate}. Posted date: ${transaction.postedDate ?? "null"}.`,
-    `Amount: ${transaction.amountOriginal} ${transaction.currencyOriginal}.`,
-    `Description: ${transaction.descriptionRaw}.`,
-    `Existing merchant: ${transaction.merchantNormalized ?? "null"}. Existing counterparty: ${transaction.counterpartyName ?? "null"}.`,
-    `Security id: ${transaction.securityId ?? "null"}. Quantity: ${transaction.quantity ?? "null"}. Unit price: ${transaction.unitPriceOriginal ?? "null"}.`,
-    `Current raw payload: ${JSON.stringify(transaction.rawPayload)}.`,
-    `Deterministic hint: ${JSON.stringify({
-      transactionClass: deterministic.transactionClass,
-      categoryCode: deterministic.categoryCode,
-      explanation: deterministic.explanation,
-      source: deterministic.classificationSource,
-    })}.`,
-    "Return a strict JSON object. Keep the explanation to one short sentence. Use null instead of guessing unsupported values.",
-  ].join("\n");
+  const result = await analyzeBankTransaction(
+    createLLMClient(),
+    {
+      account: {
+        id: account.id,
+        assetDomain: account.assetDomain,
+        institutionName: account.institutionName,
+        displayName: account.displayName,
+        accountType: account.accountType,
+      },
+      allowedTransactionClasses,
+      allowedCategories: buildAllowedCategories(dataset, account).map((category) => ({
+        code: category.code,
+        displayName: category.displayName,
+      })),
+      transaction: {
+        transactionDate: transaction.transactionDate,
+        postedDate: transaction.postedDate ?? null,
+        amountOriginal: transaction.amountOriginal,
+        currencyOriginal: transaction.currencyOriginal,
+        descriptionRaw: transaction.descriptionRaw,
+        merchantNormalized: transaction.merchantNormalized ?? null,
+        counterpartyName: transaction.counterpartyName ?? null,
+        securityId: transaction.securityId ?? null,
+        quantity: transaction.quantity ?? null,
+        unitPriceOriginal: transaction.unitPriceOriginal ?? null,
+        rawPayload: transaction.rawPayload,
+      },
+      deterministicHint: {
+        transactionClass: deterministic.transactionClass,
+        categoryCode: deterministic.categoryCode,
+        explanation: deterministic.explanation,
+        source: deterministic.classificationSource,
+      },
+    },
+    model,
+  );
 
-  let lastError: Error | null = null;
-  for (const delay of [0, 1000, 2000, 4000]) {
-    if (delay > 0) {
-      await sleep(delay);
-    }
-
-    try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          input: [
-            {
-              role: "system",
-              content: [{ type: "input_text", text: prompt }],
-            },
-          ],
-          text: {
-            format: {
-              type: "json_schema",
-              name: "transaction_enrichment",
-              schema: toJsonSchema(),
-              strict: true,
-            },
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`OpenAI transaction classifier failed with status ${response.status}.`);
-      }
-
-      const payload = (await response.json()) as Record<string, unknown>;
-      const parsed = transactionEnrichmentResponseSchema.parse(
-        JSON.parse(extractResponseText(payload)),
-      );
-
-      return {
-        analysisStatus: "done",
-        model,
-        transactionClass: parsed.transaction_class,
-        categoryCode: normalizeOptionalText(parsed.category_code ?? null),
-        merchantNormalized: normalizeOptionalText(parsed.merchant_normalized ?? null),
-        counterpartyName: normalizeOptionalText(parsed.counterparty_name ?? null),
-        economicEntityId: normalizeOptionalText(parsed.economic_entity_override ?? null),
-        securityHint: normalizeOptionalText(parsed.security_hint ?? null),
-        confidence: parsed.confidence.toFixed(2),
-        explanation: parsed.explanation,
-        reason: parsed.reason,
-        error: null,
-        rawOutput: parsed,
-      };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown LLM classification failure.");
-    }
+  if (result.analysisStatus !== "done" || !result.output) {
+    return {
+      analysisStatus: "failed",
+      model,
+      transactionClass: null,
+      categoryCode: null,
+      merchantNormalized: null,
+      counterpartyName: null,
+      economicEntityId: null,
+      securityHint: null,
+      confidence: null,
+      explanation: null,
+      reason: null,
+      error: result.error ?? "Unknown LLM classification failure.",
+      rawOutput: result.rawOutput,
+    };
   }
 
   return {
-    analysisStatus: "failed",
+    analysisStatus: "done",
     model,
-    transactionClass: null,
-    categoryCode: null,
-    merchantNormalized: null,
-    counterpartyName: null,
-    economicEntityId: null,
-    securityHint: null,
-    confidence: null,
-    explanation: null,
-    reason: null,
-    error: lastError?.message ?? "Unknown LLM classification failure.",
-    rawOutput: null,
+    transactionClass: result.output.transaction_class,
+    categoryCode: normalizeOptionalText(result.output.category_code ?? null),
+    merchantNormalized: normalizeOptionalText(result.output.merchant_normalized ?? null),
+    counterpartyName: normalizeOptionalText(result.output.counterparty_name ?? null),
+    economicEntityId: normalizeOptionalText(result.output.economic_entity_override ?? null),
+    securityHint: normalizeOptionalText(result.output.security_hint ?? null),
+    confidence: result.output.confidence.toFixed(2),
+    explanation: result.output.explanation,
+    reason: result.output.reason,
+    error: null,
+    rawOutput: result.rawOutput,
   };
 }
 

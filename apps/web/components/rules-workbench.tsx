@@ -150,7 +150,7 @@ export function RulesWorkbench({ model }: { model: RulesWorkbenchModel }) {
           <span className="muted">
             {model.drafts.parserConfigured
               ? "Background parser configured. Drafts will be interpreted by the worker."
-              : "OpenAI key missing. Drafts will use the fallback parser until OPENAI_API_KEY is configured."}
+              : "LLM credentials missing. Drafts will use the fallback parser until the selected model is configured."}
           </span>
         </div>
         {feedback ? <div className="status-note">{feedback}</div> : null}
