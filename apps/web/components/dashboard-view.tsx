@@ -44,7 +44,7 @@ export function DashboardView({
       value: String(model.summary.quality.pendingReviewCount),
       meta:
         model.summary.quality.pendingReviewCount > 0
-          ? "Rows blocked by ambiguity or low confidence"
+          ? "Rows flagged for manual follow-up, such as unmapped securities or ambiguous classifications"
           : "No unresolved rows in current scope",
     },
     {

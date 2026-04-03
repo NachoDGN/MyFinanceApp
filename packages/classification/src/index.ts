@@ -525,6 +525,9 @@ export async function enrichImportedTransaction(
   let classificationConfidence = deterministic.classificationConfidence;
   let needsReview = deterministic.needsReview;
   let reviewReason = deterministic.reviewReason;
+  const reviewCanBeResolvedByLlm =
+    !deterministic.needsReview ||
+    deterministic.reviewReason === "Needs LLM enrichment.";
 
   if (llm.analysisStatus === "done") {
     const llmTransactionClass =
@@ -554,7 +557,7 @@ export async function enrichImportedTransaction(
     if ((Number(llm.confidence ?? "0") || 0) < lowConfidenceCutoff) {
       needsReview = true;
       reviewReason = `Low-confidence ${transactionClass} classification.`;
-    } else if (transactionClass !== "unknown" && !deterministic.needsReview) {
+    } else if (transactionClass !== "unknown" && reviewCanBeResolvedByLlm) {
       needsReview = false;
       reviewReason = null;
     }

@@ -181,6 +181,74 @@ test("saved classification rules win before fallback logic or LLM classification
   }
 });
 
+test("successful confident LLM classifications clear fallback review state", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = "test-key";
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "transfer_internal",
+          category_code: "uncategorized_investment",
+          merchant_normalized: null,
+          counterparty_name: null,
+          economic_entity_override: null,
+          security_hint: null,
+          confidence: 0.9,
+          explanation: "Looks like a transfer between owned accounts.",
+          reason: "Description indicates an internal transfer.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+  try {
+    const account = createAccount({
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "broker-transfer",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      descriptionRaw: "Transferencia My Investor",
+      descriptionClean: "TRANSFERENCIA MY INVESTOR",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const decision = await enrichImportedTransaction(dataset, account, transaction);
+
+    assert.equal(decision.classificationSource, "llm");
+    assert.equal(decision.transactionClass, "transfer_internal");
+    assert.equal(decision.needsReview, false);
+    assert.equal(decision.reviewReason, null);
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("spending read model respects the selected period when building merchant totals", () => {
   const dataset = createDataset({
     transactions: [

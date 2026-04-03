@@ -4,11 +4,11 @@ import { LLMError, type LLMTaskClient } from "../types";
 
 export const transactionAnalysisResponseSchema = z.object({
   transaction_class: z.string().min(1),
-  category_code: z.string().nullable().optional(),
-  merchant_normalized: z.string().nullable().optional(),
-  counterparty_name: z.string().nullable().optional(),
-  economic_entity_override: z.string().nullable().optional(),
-  security_hint: z.string().nullable().optional(),
+  category_code: z.string().nullable(),
+  merchant_normalized: z.string().nullable(),
+  counterparty_name: z.string().nullable(),
+  economic_entity_override: z.string().nullable(),
+  security_hint: z.string().nullable(),
   confidence: z.number().min(0).max(1),
   explanation: z.string().min(1).max(240),
   reason: z.string().min(1).max(320),
@@ -17,7 +17,17 @@ export const transactionAnalysisResponseSchema = z.object({
 const transactionAnalysisJsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["transaction_class", "confidence", "explanation", "reason"],
+  required: [
+    "transaction_class",
+    "category_code",
+    "merchant_normalized",
+    "counterparty_name",
+    "economic_entity_override",
+    "security_hint",
+    "confidence",
+    "explanation",
+    "reason",
+  ],
   properties: {
     transaction_class: { type: "string" },
     category_code: { type: ["string", "null"] },

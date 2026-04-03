@@ -2,6 +2,7 @@ import { AppShell } from "../../components/app-shell";
 import {
   DistributionList,
   MetricCard,
+  ReviewStateCell,
   SectionCard,
   SimpleTable,
 } from "../../components/primitives";
@@ -115,7 +116,10 @@ export default async function InvestmentsPage({
             row.quantity ?? "—",
             model.dataset.securities.find((security) => security.id === row.securityId)?.displaySymbol ?? "—",
             formatCurrency(row.amountBaseEur, model.currency),
-            row.needsReview ? "Needs review" : "OK",
+            <ReviewStateCell
+              needsReview={row.needsReview}
+              reviewReason={row.reviewReason}
+            />,
           ])}
         />
 

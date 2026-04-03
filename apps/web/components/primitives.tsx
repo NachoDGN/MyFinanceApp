@@ -212,6 +212,31 @@ export function QualityBanner({
   );
 }
 
+export function ReviewStateCell({
+  needsReview,
+  reviewReason,
+}: {
+  needsReview: boolean;
+  reviewReason?: string | null;
+}) {
+  if (!needsReview) {
+    return <span className="pill">OK</span>;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
+      <span className="pill warning">Needs review</span>
+      <span
+        className="muted"
+        style={{ fontSize: 12, lineHeight: 1.4 }}
+        title={reviewReason ?? "Reason unavailable."}
+      >
+        {reviewReason ?? "Reason unavailable."}
+      </span>
+    </div>
+  );
+}
+
 export function SectionCard({
   title,
   subtitle,
