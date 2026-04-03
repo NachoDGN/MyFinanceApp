@@ -13,38 +13,6 @@ export default async function InvestmentsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const model = await getInvestmentsModel(searchParams);
-  const dividendsYtd = model.investmentRows
-    .filter((row) => row.transactionClass === "dividend")
-    .reduce((sum, row) => sum + Number(row.amountBaseEur), 0)
-    .toFixed(2);
-  const interestYtd = model.investmentRows
-    .filter((row) => row.transactionClass === "interest")
-    .reduce((sum, row) => sum + Number(row.amountBaseEur), 0)
-    .toFixed(2);
-  const netContributions = model.investmentRows
-    .filter((row) => row.transactionClass === "transfer_internal")
-    .reduce((sum, row) => sum + Number(row.amountBaseEur), 0)
-    .toFixed(2);
-  const unresolved = model.investmentRows.filter((row) => row.needsReview);
-  const accountAllocation = [...new Map(
-    model.holdings.holdings.map((row) => [
-      row.accountId,
-      {
-        label: model.dataset.accounts.find((account) => account.id === row.accountId)?.displayName ?? row.accountId,
-        amountEur: "0.00",
-      },
-    ]),
-  ).values()].map((row) => ({
-    ...row,
-    amountEur: model.holdings.holdings
-      .filter(
-        (holding) =>
-          (model.dataset.accounts.find((account) => account.id === holding.accountId)?.displayName ?? holding.accountId) ===
-          row.label,
-      )
-      .reduce((sum, holding) => sum + Number(holding.currentValueEur ?? 0), 0)
-      .toFixed(2),
-  }));
 
   return (
     <AppShell
@@ -85,7 +53,7 @@ export default async function InvestmentsPage({
           />
           <MetricCard
             label="Dividends YTD"
-            value={formatCurrency(dividendsYtd, model.currency)}
+            value={formatCurrency(model.dividendsYtd, model.currency)}
             delta="Income"
             subtitle="Investment income year to date"
             direction="up"
@@ -96,10 +64,15 @@ export default async function InvestmentsPage({
           <MetricCard
             label="Brokerage Cash"
             value={formatCurrency(model.holdings.brokerageCashEur, model.currency)}
-            delta={formatCurrency(netContributions, model.currency)}
+            delta={formatCurrency(model.netContributionsYtd, model.currency)}
             subtitle="Latest broker cash balance"
             direction="up"
-            chartValues={[Number(model.holdings.brokerageCashEur), Number(dividendsYtd), Number(interestYtd), Number(netContributions)]}
+            chartValues={[
+              Number(model.holdings.brokerageCashEur),
+              Number(model.dividendsYtd),
+              Number(model.interestYtd),
+              Number(model.netContributionsYtd),
+            ]}
           />
         </div>
 
@@ -114,7 +87,7 @@ export default async function InvestmentsPage({
         </SectionCard>
 
         <SectionCard title="Allocation by Account" subtitle="Broker split" span="span-6">
-          <DistributionList rows={accountAllocation} currency={model.currency} />
+          <DistributionList rows={model.accountAllocation} currency={model.currency} />
         </SectionCard>
 
         <SimpleTable
@@ -148,7 +121,7 @@ export default async function InvestmentsPage({
 
         <SectionCard title="Unresolved Investment Events" subtitle="Review queue" span="span-4">
           <DistributionList
-            rows={unresolved.map((row) => ({
+            rows={model.unresolved.map((row) => ({
               label: row.descriptionRaw,
               amountEur: row.amountBaseEur,
             }))}

@@ -504,3 +504,267 @@ export function buildDashboardSummary(
     generatedAt: new Date().toISOString(),
   };
 }
+
+function sortTransactionsNewestFirst(transactions: Transaction[]) {
+  return [...transactions].sort((left, right) => {
+    const byDate = right.transactionDate.localeCompare(left.transactionDate);
+    if (byDate !== 0) return byDate;
+    return Number(amountMagnitudeEur(right).minus(amountMagnitudeEur(left)));
+  });
+}
+
+function scopedTransactions(
+  dataset: DomainDataset,
+  scope: Scope,
+  period: PeriodSelection,
+  classes: string[],
+) {
+  return sortTransactionsNewestFirst(
+    filterTransactionsByPeriod(filterTransactionsByScope(dataset, scope), period).filter((row) =>
+      classes.includes(row.transactionClass),
+    ),
+  );
+}
+
+function sumTransactionAmounts(
+  transactions: Transaction[],
+  selector: (transaction: Transaction) => Decimal,
+) {
+  return transactions.reduce((sum, transaction) => sum.plus(selector(transaction)), new Decimal(0)).toFixed(2);
+}
+
+function aggregateAmountRows<T>(
+  rows: T[],
+  labelFor: (row: T) => string,
+  amountFor: (row: T) => Decimal,
+) {
+  return [...rows.reduce((totals, row) => {
+    const label = labelFor(row);
+    const amount = amountFor(row);
+    totals.set(label, totals.has(label) ? totals.get(label)!.plus(amount) : amount);
+    return totals;
+  }, new Map<string, Decimal>()).entries()]
+    .map(([label, amount]) => ({
+      label,
+      amountEur: amount.toFixed(2),
+    }))
+    .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
+}
+
+function averageMonthlySeries(
+  monthlySeries: DashboardSummaryResponse["monthlySeries"],
+  key: "incomeEur" | "spendingEur",
+  count: number,
+) {
+  if (monthlySeries.length === 0) return "0.00";
+  const rows = monthlySeries.slice(-count);
+  return rows.reduce((sum, row) => sum.plus(row[key]), new Decimal(0)).div(rows.length).toFixed(2);
+}
+
+function buildHoldingsSnapshot(dataset: DomainDataset, scope: Scope, referenceDate: string) {
+  const holdings = buildHoldingRows(dataset, scope, referenceDate);
+  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
+  const brokerageCashEur = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, referenceDate)
+    .filter((snapshot) => {
+      const account = dataset.accounts.find((candidate) => candidate.id === snapshot.accountId);
+      return account?.assetDomain === "investment" && entityIds.has(account.entityId);
+    })
+    .reduce((sum, snapshot) => sum.plus(snapshot.balanceBaseEur), new Decimal(0))
+    .toFixed(2);
+
+  return {
+    schemaVersion: "v1" as const,
+    scope,
+    holdings,
+    quoteFreshness: holdings.every((row) => row.quoteFreshness === "delayed")
+      ? "delayed" as const
+      : holdings.some((row) => row.quoteFreshness === "fresh")
+        ? "fresh" as const
+        : "missing" as const,
+    brokerageCashEur,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+export function findMetric(
+  summary: DashboardSummaryResponse,
+  metricId: string,
+) {
+  return summary.metrics.find((metric) => metric.metricId === metricId);
+}
+
+export function buildDashboardReadModel(
+  dataset: DomainDataset,
+  input: { scope: Scope; displayCurrency: string; period?: PeriodSelection; referenceDate?: string },
+) {
+  const summary = buildDashboardSummary(dataset, input);
+  const personalEntityId = dataset.entities.find((entity) => entity.entityKind === "personal")?.id;
+  const personalMetric = personalEntityId
+    ? findMetric(
+        buildDashboardSummary(dataset, {
+          ...input,
+          scope: { kind: "entity", entityId: personalEntityId },
+        }),
+        "net_worth_current",
+      )
+    : undefined;
+  const totalMetric = findMetric(summary, "net_worth_current");
+
+  return {
+    summary,
+    summaryBreakdown: {
+      personal: personalMetric,
+      companies: {
+        valueDisplay: new Decimal(totalMetric?.valueDisplay ?? 0)
+          .minus(personalMetric?.valueDisplay ?? 0)
+          .toFixed(2),
+      },
+    },
+  };
+}
+
+export function buildSpendingReadModel(
+  dataset: DomainDataset,
+  input: { scope: Scope; displayCurrency: string; period?: PeriodSelection; referenceDate?: string },
+) {
+  const summary = buildDashboardSummary(dataset, input);
+  const transactions = scopedTransactions(dataset, input.scope, summary.period, ["expense", "fee", "refund"]);
+  const spendMetric = findMetric(summary, "spending_mtd_total");
+  const merchantRows = aggregateAmountRows(
+    transactions,
+    (transaction) => transaction.merchantNormalized ?? transaction.descriptionClean,
+    (transaction) =>
+      transaction.transactionClass === "refund"
+        ? new Decimal(transaction.amountBaseEur).neg()
+        : amountMagnitudeEur(transaction),
+  );
+  const coverage = spendMetric?.valueBaseEur
+    ? new Decimal(1)
+        .minus(
+          new Decimal(summary.quality.unclassifiedAmountMtdEur).div(
+            Decimal.max(new Decimal(spendMetric.valueBaseEur), new Decimal(1)),
+          ),
+        )
+        .mul(100)
+        .toFixed(2)
+    : "100.00";
+
+  return {
+    summary,
+    transactions,
+    spendMetric,
+    trailingThreeMonthAverage: averageMonthlySeries(summary.monthlySeries, "spendingEur", 3),
+    coverage,
+    topCategory: summary.spendingByCategory[0],
+    merchantRows,
+    topMerchant: merchantRows[0] ?? null,
+  };
+}
+
+export function buildIncomeReadModel(
+  dataset: DomainDataset,
+  input: { scope: Scope; displayCurrency: string; period?: PeriodSelection; referenceDate?: string },
+) {
+  const summary = buildDashboardSummary(dataset, input);
+  const transactions = scopedTransactions(dataset, input.scope, summary.period, ["income", "dividend", "interest"]);
+  const incomeMetric = findMetric(summary, "income_mtd_total");
+  const sourceRows = aggregateAmountRows(
+    transactions,
+    (transaction) =>
+      transaction.counterpartyName ?? transaction.merchantNormalized ?? transaction.descriptionClean,
+    (transaction) => new Decimal(transaction.amountBaseEur),
+  );
+  const investmentIncomeRows = transactions.filter((transaction) =>
+    ["dividend", "interest"].includes(transaction.transactionClass),
+  );
+  const topSourceShare = sourceRows[0] && incomeMetric?.valueBaseEur
+    ? new Decimal(sourceRows[0].amountEur)
+        .div(Decimal.max(new Decimal(incomeMetric.valueBaseEur), new Decimal(1)))
+        .mul(100)
+        .toFixed(2)
+    : "0.00";
+
+  return {
+    summary,
+    transactions,
+    incomeMetric,
+    sourceRows,
+    investmentIncomeRows,
+    trailingThreeMonthAverage: averageMonthlySeries(summary.monthlySeries, "incomeEur", 3),
+    topSourceShare,
+    investmentIncome: sumTransactionAmounts(
+      investmentIncomeRows,
+      (transaction) => new Decimal(transaction.amountBaseEur),
+    ),
+  };
+}
+
+export function buildInvestmentsReadModel(
+  dataset: DomainDataset,
+  input: { scope: Scope; displayCurrency: string; period?: PeriodSelection; referenceDate?: string },
+) {
+  const referenceDate = input.referenceDate ?? todayIso();
+  const summary = buildDashboardSummary(dataset, input);
+  const holdings = buildHoldingsSnapshot(dataset, input.scope, referenceDate);
+  const investmentRows = scopedTransactions(
+    dataset,
+    input.scope,
+    summary.period,
+    [
+      "investment_trade_buy",
+      "investment_trade_sell",
+      "dividend",
+      "interest",
+      "fee",
+      "fx_conversion",
+      "unknown",
+    ],
+  );
+  const ytdPeriod = resolvePeriodSelection({ preset: "ytd", referenceDate });
+  const ytdInvestmentRows = scopedTransactions(
+    dataset,
+    input.scope,
+    ytdPeriod,
+    ["dividend", "interest", "transfer_internal"],
+  );
+  const accountAllocation = aggregateAmountRows(
+    holdings.holdings,
+    (holding) => dataset.accounts.find((account) => account.id === holding.accountId)?.displayName ?? holding.accountId,
+    (holding) => new Decimal(holding.currentValueEur ?? 0),
+  );
+
+  return {
+    holdings,
+    investmentRows,
+    metrics: {
+      portfolioValue: buildMetricResult(
+        dataset,
+        input.scope,
+        input.displayCurrency,
+        "portfolio_market_value_current",
+        { referenceDate },
+      ),
+      unrealized: buildMetricResult(
+        dataset,
+        input.scope,
+        input.displayCurrency,
+        "portfolio_unrealized_pnl_current",
+        { referenceDate },
+      ),
+    },
+    dividendsYtd: sumTransactionAmounts(
+      ytdInvestmentRows.filter((transaction) => transaction.transactionClass === "dividend"),
+      (transaction) => new Decimal(transaction.amountBaseEur),
+    ),
+    interestYtd: sumTransactionAmounts(
+      ytdInvestmentRows.filter((transaction) => transaction.transactionClass === "interest"),
+      (transaction) => new Decimal(transaction.amountBaseEur),
+    ),
+    netContributionsYtd: sumTransactionAmounts(
+      ytdInvestmentRows.filter((transaction) => transaction.transactionClass === "transfer_internal"),
+      (transaction) => new Decimal(transaction.amountBaseEur),
+    ),
+    unresolved: investmentRows.filter((transaction) => transaction.needsReview),
+    accountAllocation,
+  };
+}

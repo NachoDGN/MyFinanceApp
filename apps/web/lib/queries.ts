@@ -1,7 +1,9 @@
 import {
+  buildDashboardReadModel,
   buildDashboardSummary,
-  buildInsights,
-  buildMetricResult,
+  buildIncomeReadModel,
+  buildInvestmentsReadModel,
+  buildSpendingReadModel,
 } from "@myfinance/analytics";
 import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
 import { createFinanceRepository } from "@myfinance/db";
@@ -134,43 +136,17 @@ export function formatDate(value: string) {
 
 export async function getDashboardModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const summary = buildDashboardSummary(state.dataset, {
+  const { summary, summaryBreakdown } = buildDashboardReadModel(state.dataset, {
     scope: state.scope,
     displayCurrency: state.currency,
     period: state.period,
     referenceDate: state.referenceDate,
   });
 
-  const personalMetrics = buildDashboardSummary(state.dataset, {
-    scope: { kind: "entity", entityId: state.dataset.entities[0]?.id },
-    displayCurrency: state.currency,
-    period: state.period,
-    referenceDate: state.referenceDate,
-  }).metrics;
-  const companyMetrics = buildDashboardSummary(state.dataset, {
-    scope: { kind: "consolidated" },
-    displayCurrency: state.currency,
-    period: state.period,
-    referenceDate: state.referenceDate,
-  }).metrics;
-
   return {
     ...state,
     summary,
-    summaryBreakdown: {
-      personal: personalMetrics.find((metric) => metric.metricId === "net_worth_current"),
-      companies: {
-        valueDisplay: (() => {
-          const total = Number(
-            companyMetrics.find((metric) => metric.metricId === "net_worth_current")?.valueDisplay ?? "0",
-          );
-          const personal = Number(
-            personalMetrics.find((metric) => metric.metricId === "net_worth_current")?.valueDisplay ?? "0",
-          );
-          return (total - personal).toFixed(2);
-        })(),
-      },
-    },
+    summaryBreakdown,
   };
 }
 
@@ -194,13 +170,7 @@ export async function getTransactionsModel(searchParams: RawSearchParams) {
 export async function getAccountsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
   const accounts = await domainService.listAccounts();
-  const dashboard = buildDashboardSummary(state.dataset, {
-    scope: state.scope,
-    displayCurrency: state.currency,
-    period: state.period,
-    referenceDate: state.referenceDate,
-  });
-  return { ...state, accounts, dashboard };
+  return { ...state, accounts };
 }
 
 export async function getImportsModel(searchParams: RawSearchParams) {
@@ -233,93 +203,55 @@ export async function getTemplatesModel(searchParams: RawSearchParams) {
 
 export async function getInvestmentsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const holdings = await domainService.listHoldings(state.scope);
-  const investmentRows = (await domainService.listTransactions(state.scope)).transactions.filter((row) =>
-    [
-      "investment_trade_buy",
-      "investment_trade_sell",
-      "dividend",
-      "interest",
-      "fee",
-      "fx_conversion",
-      "unknown",
-    ].includes(row.transactionClass),
-  );
-
   return {
     ...state,
-    holdings,
-    investmentRows,
-    metrics: {
-      portfolioValue: buildMetricResult(
-        state.dataset,
-        state.scope,
-        state.currency,
-        "portfolio_market_value_current",
-        { referenceDate: state.referenceDate },
-      ),
-      unrealized: buildMetricResult(
-        state.dataset,
-        state.scope,
-        state.currency,
-        "portfolio_unrealized_pnl_current",
-        { referenceDate: state.referenceDate },
-      ),
-      incomeYtd: buildMetricResult(state.dataset, state.scope, state.currency, "income_mtd_total", {
-        referenceDate: state.referenceDate,
-      }),
-    },
-  };
-}
-
-export async function getSpendingModel(searchParams: RawSearchParams) {
-  const state = await resolveAppState(searchParams);
-  const summary = buildDashboardSummary(state.dataset, {
-    scope: state.scope,
-    displayCurrency: state.currency,
-    period: state.period,
-    referenceDate: state.referenceDate,
-  });
-  const transactions = (await domainService.listTransactions(state.scope)).transactions.filter((row) =>
-    ["expense", "fee", "refund"].includes(row.transactionClass),
-  );
-  const merchantSpend = new Map<string, number>();
-  for (const row of transactions) {
-    const merchant = row.merchantNormalized ?? row.descriptionClean;
-    const signed = row.transactionClass === "refund" ? -Number(row.amountBaseEur) : Math.abs(Number(row.amountBaseEur));
-    merchantSpend.set(merchant, (merchantSpend.get(merchant) ?? 0) + signed);
-  }
-  const topMerchant = [...merchantSpend.entries()].sort((a, b) => b[1] - a[1])[0];
-  return { ...state, summary, transactions, topMerchant };
-}
-
-export async function getIncomeModel(searchParams: RawSearchParams) {
-  const state = await resolveAppState(searchParams);
-  const summary = buildDashboardSummary(state.dataset, {
-    scope: state.scope,
-    displayCurrency: state.currency,
-    period: state.period,
-    referenceDate: state.referenceDate,
-  });
-  const transactions = (await domainService.listTransactions(state.scope)).transactions.filter((row) =>
-    ["income", "dividend", "interest"].includes(row.transactionClass),
-  );
-  return { ...state, summary, transactions };
-}
-
-export async function getInsightsModel(searchParams: RawSearchParams) {
-  const state = await resolveAppState(searchParams);
-  return {
-    ...state,
-    insights: buildInsights(state.dataset, state.scope, {
-      referenceDate: state.referenceDate,
-    }),
-    summary: buildDashboardSummary(state.dataset, {
+    ...buildInvestmentsReadModel(state.dataset, {
       scope: state.scope,
       displayCurrency: state.currency,
       period: state.period,
       referenceDate: state.referenceDate,
     }),
+  };
+}
+
+export async function getSpendingModel(searchParams: RawSearchParams) {
+  const state = await resolveAppState(searchParams);
+  return {
+    ...state,
+    ...buildSpendingReadModel(state.dataset, {
+      scope: state.scope,
+      displayCurrency: state.currency,
+      period: state.period,
+      referenceDate: state.referenceDate,
+    }),
+  };
+}
+
+export async function getIncomeModel(searchParams: RawSearchParams) {
+  const state = await resolveAppState(searchParams);
+  return {
+    ...state,
+    ...buildIncomeReadModel(state.dataset, {
+      scope: state.scope,
+      displayCurrency: state.currency,
+      period: state.period,
+      referenceDate: state.referenceDate,
+    }),
+  };
+}
+
+export async function getInsightsModel(searchParams: RawSearchParams) {
+  const state = await resolveAppState(searchParams);
+  const summary = buildDashboardSummary(state.dataset, {
+    scope: state.scope,
+    displayCurrency: state.currency,
+    period: state.period,
+    referenceDate: state.referenceDate,
+  });
+  return {
+    ...state,
+    insights: summary.insights,
+    summary,
   };
 }
 

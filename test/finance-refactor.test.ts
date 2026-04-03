@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildMetricResult } from "../packages/analytics/src/index.ts";
+import { buildMetricResult, buildSpendingReadModel } from "../packages/analytics/src/index.ts";
 import { enrichImportedTransaction } from "../packages/classification/src/index.ts";
 import {
   buildHoldingRows,
   buildImportedTransactions,
+  createTemplateConfig,
   getPreviousComparablePeriod,
   resolvePeriodSelection,
 } from "../packages/domain/src/index.ts";
@@ -178,6 +179,88 @@ test("saved classification rules win before fallback logic or LLM classification
       process.env.OPENAI_API_KEY = previousKey;
     }
   }
+});
+
+test("spending read model respects the selected period when building merchant totals", () => {
+  const dataset = createDataset({
+    transactions: [
+      createTransaction({
+        id: "apr-merchant",
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-45.00",
+        amountBaseEur: "-45.00",
+        merchantNormalized: "COFFEE BAR",
+        descriptionClean: "COFFEE BAR",
+      }),
+      createTransaction({
+        id: "mar-merchant",
+        transactionDate: "2026-03-20",
+        postedDate: "2026-03-20",
+        amountOriginal: "-90.00",
+        amountBaseEur: "-90.00",
+        merchantNormalized: "COFFEE BAR",
+        descriptionClean: "COFFEE BAR",
+      }),
+    ],
+    monthlyCashFlowRollups: [
+      {
+        entityId: "entity-1",
+        month: "2026-03-01",
+        incomeEur: "0.00",
+        spendingEur: "90.00",
+        operatingNetEur: "-90.00",
+      },
+      {
+        entityId: "entity-1",
+        month: "2026-04-01",
+        incomeEur: "0.00",
+        spendingEur: "45.00",
+        operatingNetEur: "-45.00",
+      },
+    ],
+  });
+
+  const model = buildSpendingReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({ preset: "mtd", referenceDate: "2026-04-03" }),
+    referenceDate: "2026-04-03",
+  });
+
+  assert.equal(model.transactions.length, 1);
+  assert.equal(model.transactions[0]?.id, "apr-merchant");
+  assert.deepEqual(model.merchantRows, [{ label: "COFFEE BAR", amountEur: "45.00" }]);
+});
+
+test("template config builder converts typed inputs into stored JSON rules", () => {
+  const config = createTemplateConfig({
+    columnMappings: [
+      { target: "transaction_date", source: "Fecha" },
+      { target: "description_raw", source: "Concepto" },
+      { target: "amount_original_signed", source: "Importe" },
+    ],
+    signMode: "amount_direction_column",
+    directionColumn: "Tipo",
+    debitValuesText: "cargo",
+    creditValuesText: "abono",
+    dateDayFirst: true,
+  });
+
+  assert.deepEqual(config.columnMapJson, {
+    transaction_date: "Fecha",
+    description_raw: "Concepto",
+    amount_original_signed: "Importe",
+  });
+  assert.deepEqual(config.signLogicJson, {
+    mode: "amount_direction_column",
+    direction_column: "Tipo",
+    debit_values: ["cargo"],
+    credit_values: ["abono"],
+  });
+  assert.deepEqual(config.normalizationRulesJson, {
+    date_day_first: true,
+  });
 });
 
 test("holding valuation is computed from positions, quotes, and FX instead of hardcoded values", () => {

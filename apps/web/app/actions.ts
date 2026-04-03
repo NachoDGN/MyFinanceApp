@@ -9,14 +9,12 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
-import { FinanceDomainService } from "@myfinance/domain";
 import {
-  buildColumnMap,
-  buildNormalizationRules,
-  buildSignLogic,
   canonicalFieldKeys,
+  createTemplateConfig,
+  FinanceDomainService,
   signModeOptions,
-} from "../lib/template-config";
+} from "@myfinance/domain";
 
 const domain = new FinanceDomainService(createFinanceRepository());
 
@@ -130,8 +128,8 @@ export async function createTemplateAction(input: z.input<typeof templateSchema>
     dateDayFirst: _dateDayFirst,
     ...templateFields
   } = template;
-  const columnMapJson = buildColumnMap(template.columnMappings);
-  const signLogicJson = buildSignLogic({
+  const { columnMapJson, signLogicJson, normalizationRulesJson } = createTemplateConfig({
+    columnMappings: template.columnMappings,
     signMode: template.signMode,
     invertSign: template.invertSign,
     directionColumn: template.directionColumn,
@@ -139,9 +137,8 @@ export async function createTemplateAction(input: z.input<typeof templateSchema>
     creditColumn: template.creditColumn,
     debitValuesText: template.debitValuesText,
     creditValuesText: template.creditValuesText,
-    columnMap: columnMapJson,
+    dateDayFirst: template.dateDayFirst,
   });
-  const normalizationRulesJson = buildNormalizationRules(template.dateDayFirst);
   const { seededUserId } = getDbRuntimeConfig();
   const result = await domain.createTemplate({
     template: {

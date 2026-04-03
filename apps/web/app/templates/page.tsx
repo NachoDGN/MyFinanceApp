@@ -1,7 +1,7 @@
 import { AppShell } from "../../components/app-shell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { TemplateWorkbench } from "../../components/template-workbench";
-import { canonicalFieldOptions } from "../../lib/template-config";
+import { canonicalFieldOptions } from "@myfinance/domain";
 import { getTemplatesModel } from "../../lib/queries";
 
 export default async function TemplatesPage({

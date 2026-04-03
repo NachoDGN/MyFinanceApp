@@ -14,43 +14,6 @@ export default async function SpendingPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const model = await getSpendingModel(searchParams);
-  const spendMetric = model.summary.metrics.find((metric) => metric.metricId === "spending_mtd_total");
-  const trailingThreeMonthAverage = (
-    model.summary.monthlySeries
-      .slice(-3)
-      .reduce((sum, row) => sum + Number(row.spendingEur), 0) / 3
-  ).toFixed(2);
-  const coverage = spendMetric?.valueBaseEur
-    ? (
-        (1 -
-          Number(model.summary.quality.unclassifiedAmountMtdEur) /
-            Math.max(Number(spendMetric.valueBaseEur), 1)) *
-        100
-      ).toFixed(2)
-    : "100.00";
-  const topCategory = model.summary.spendingByCategory[0];
-  const merchantRows = [...new Map(
-    model.transactions.map((row) => [
-      row.merchantNormalized ?? row.descriptionClean,
-      {
-        label: row.merchantNormalized ?? row.descriptionClean,
-        amountEur: "0.00",
-      },
-    ]),
-  ).values()]
-    .map((row) => ({
-      ...row,
-      amountEur: model.transactions
-        .filter((transaction) => (transaction.merchantNormalized ?? transaction.descriptionClean) === row.label)
-        .reduce((sum, transaction) => {
-          const signed = transaction.transactionClass === "refund"
-            ? -Number(transaction.amountBaseEur)
-            : Math.abs(Number(transaction.amountBaseEur));
-          return sum + signed;
-        }, 0)
-        .toFixed(2),
-    }))
-    .sort((a, b) => Number(b.amountEur) - Number(a.amountEur));
 
   return (
     <AppShell
@@ -75,15 +38,15 @@ export default async function SpendingPage({
         <div className="metrics-row">
           <MetricCard
             label="Current-Period Spending"
-            value={formatCurrency(spendMetric?.valueDisplay, model.currency)}
-            delta={`${spendMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(spendMetric?.deltaDisplay, model.currency)} from prior pace`}
-            direction={Number(spendMetric?.deltaDisplay ?? "0") <= 0 ? "down" : "up"}
+            value={formatCurrency(model.spendMetric?.valueDisplay, model.currency)}
+            delta={`${model.spendMetric?.deltaPercent ?? "0.00"}%`}
+            subtitle={`${formatCurrency(model.spendMetric?.deltaDisplay, model.currency)} from prior pace`}
+            direction={Number(model.spendMetric?.deltaDisplay ?? "0") <= 0 ? "down" : "up"}
             chartValues={model.summary.monthlySeries.slice(-5).map((row) => Number(row.spendingEur))}
           />
           <MetricCard
             label="Trailing 3-Month Avg"
-            value={formatCurrency(trailingThreeMonthAverage, model.currency)}
+            value={formatCurrency(model.trailingThreeMonthAverage, model.currency)}
             delta="Trend"
             subtitle="Average monthly spend"
             direction="down"
@@ -91,18 +54,18 @@ export default async function SpendingPage({
           />
           <MetricCard
             label="Top Category"
-            value={topCategory?.label ?? "N/A"}
-            delta={topCategory ? formatCurrency(topCategory.amountEur, model.currency) : "N/A"}
+            value={model.topCategory?.label ?? "N/A"}
+            delta={model.topCategory ? formatCurrency(model.topCategory.amountEur, model.currency) : "N/A"}
             subtitle="Largest current-period category"
             direction="down"
             chartValues={model.summary.spendingByCategory.slice(0, 5).map((row) => Number(row.amountEur))}
           />
           <MetricCard
             label="Coverage"
-            value={`${coverage}%`}
+            value={`${model.coverage}%`}
             delta={`${formatCurrency(model.summary.quality.unclassifiedAmountMtdEur, model.currency)}`}
             subtitle="Categorized spend share"
-            direction={Number(coverage) >= 90 ? "up" : "down"}
+            direction={Number(model.coverage) >= 90 ? "up" : "down"}
             chartValues={model.summary.monthlySeries.slice(-5).map((row) => Number(row.operatingNetEur))}
           />
         </div>
@@ -122,7 +85,7 @@ export default async function SpendingPage({
         </SectionCard>
 
         <SectionCard title="Merchant Table" subtitle="Largest current-period merchants" span="span-6">
-          <DistributionList rows={merchantRows.slice(0, 8)} currency={model.currency} />
+          <DistributionList rows={model.merchantRows.slice(0, 8)} currency={model.currency} />
         </SectionCard>
 
         <SimpleTable

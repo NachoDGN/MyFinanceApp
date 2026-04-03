@@ -83,7 +83,6 @@ export type JobType =
   | "price_refresh"
   | "position_rebuild"
   | "metric_refresh"
-  | "insight_refresh"
   | "rule_parse";
 export type ScopeKind = "consolidated" | "entity" | "account";
 export type MetricUnitType = "currency" | "percent" | "count" | "date";

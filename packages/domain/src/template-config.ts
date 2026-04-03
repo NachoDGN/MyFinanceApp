@@ -1,4 +1,4 @@
-import type { AccountType, FileKind } from "@myfinance/domain";
+import type { AccountType, FileKind } from "./types";
 
 export const accountTypeOptions = [
   "checking",
@@ -85,7 +85,11 @@ export function createDefaultColumnMappings(): TemplateColumnMapping[] {
   ];
 }
 
-export function buildColumnMap(mappings: TemplateColumnMapping[]) {
+export function isCanonicalFieldKey(value: string): value is CanonicalFieldKey {
+  return (canonicalFieldKeys as readonly string[]).includes(value);
+}
+
+function buildColumnMap(mappings: TemplateColumnMapping[]) {
   const columnMap: Partial<Record<CanonicalFieldKey, string>> = {};
 
   for (const mapping of mappings) {
@@ -111,7 +115,7 @@ function splitValues(value: string | null | undefined) {
     .filter(Boolean);
 }
 
-export function buildSignLogic(input: {
+function buildSignLogic(input: {
   signMode: TemplateSignMode;
   invertSign: boolean;
   directionColumn?: string | null;
@@ -160,8 +164,33 @@ export function buildSignLogic(input: {
   };
 }
 
-export function buildNormalizationRules(dateDayFirst: boolean) {
+export function createTemplateConfig(input: {
+  columnMappings: TemplateColumnMapping[];
+  signMode: TemplateSignMode;
+  invertSign?: boolean;
+  directionColumn?: string | null;
+  debitColumn?: string | null;
+  creditColumn?: string | null;
+  debitValuesText?: string | null;
+  creditValuesText?: string | null;
+  dateDayFirst?: boolean;
+}) {
+  const columnMapJson = buildColumnMap(input.columnMappings);
+
   return {
-    date_day_first: dateDayFirst,
+    columnMapJson,
+    signLogicJson: buildSignLogic({
+      signMode: input.signMode,
+      invertSign: Boolean(input.invertSign),
+      directionColumn: input.directionColumn,
+      debitColumn: input.debitColumn,
+      creditColumn: input.creditColumn,
+      debitValuesText: input.debitValuesText,
+      creditValuesText: input.creditValuesText,
+      columnMap: columnMapJson,
+    }),
+    normalizationRulesJson: {
+      date_day_first: input.dateDayFirst ?? true,
+    },
   };
 }

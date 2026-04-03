@@ -7,8 +7,17 @@ import {
   buildInsights,
   buildMetricResult,
 } from "@myfinance/analytics";
-import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService, resolvePeriodSelection, todayIso } from "@myfinance/domain";
+import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
+import {
+  createDefaultColumnMappings,
+  createTemplateConfig,
+  FinanceDomainService,
+  isCanonicalFieldKey,
+  resolvePeriodSelection,
+  signModeOptions,
+  todayIso,
+  type TemplateColumnMapping,
+} from "@myfinance/domain";
 import { createMarketDataProvider } from "@myfinance/market-data";
 
 const repository = createFinanceRepository();
@@ -62,6 +71,33 @@ function getPeriod(options: CommonOptions) {
     start: options.start,
     end: options.end,
     referenceDate: options.asOf ?? todayIso(),
+  });
+}
+
+function parseTemplateMappings(mapOptions?: string[]) {
+  if (!mapOptions || mapOptions.length === 0) {
+    return createDefaultColumnMappings();
+  }
+
+  return mapOptions.map((entry) => {
+    const separatorIndex = entry.indexOf("=");
+    if (separatorIndex <= 0 || separatorIndex === entry.length - 1) {
+      throw new Error(`Invalid mapping "${entry}". Use --map target=source.`);
+    }
+
+    const target = entry.slice(0, separatorIndex).trim();
+    const source = entry.slice(separatorIndex + 1).trim();
+    if (!isCanonicalFieldKey(target)) {
+      throw new Error(`Unknown canonical field: ${target}`);
+    }
+    if (!source) {
+      throw new Error(`Mapping for ${target} requires a source column.`);
+    }
+
+    return {
+      target,
+      source,
+    } satisfies TemplateColumnMapping;
   });
 }
 
@@ -230,6 +266,16 @@ templatesCommand
   .requiredOption("--account-type <accountType>")
   .requiredOption("--file-kind <fileKind>")
   .requiredOption("--default-currency <currency>")
+  .option("--map <target=source>", "Add a canonical field mapping", (value, rows: string[] = []) => [...rows, value], [])
+  .option("--sign-mode <mode>", `signed_amount, amount_direction_column, or debit_credit_columns`, "signed_amount")
+  .option("--invert-sign", "Invert the parsed amount sign")
+  .option("--direction-column <column>")
+  .option("--debit-column <column>")
+  .option("--credit-column <column>")
+  .option("--debit-values <values>", "Comma-separated values treated as debits")
+  .option("--credit-values <values>", "Comma-separated values treated as credits")
+  .option("--date-day-first", "Parse ambiguous dates as day-first")
+  .option("--date-month-first", "Parse ambiguous dates as month-first")
   .option("--apply", "Persist the template")
   .option("--json", "Output JSON")
   .action(
@@ -239,12 +285,38 @@ templatesCommand
       accountType: string;
       fileKind: "csv" | "xlsx";
       defaultCurrency: string;
+      map?: string[];
+      signMode?: string;
+      invertSign?: boolean;
+      directionColumn?: string;
+      debitColumn?: string;
+      creditColumn?: string;
+      debitValues?: string;
+      creditValues?: string;
+      dateDayFirst?: boolean;
+      dateMonthFirst?: boolean;
       apply?: boolean;
       json?: boolean;
     }) => {
+      if (!signModeOptions.includes((options.signMode ?? "signed_amount") as never)) {
+        throw new Error(`Unsupported sign mode: ${options.signMode}`);
+      }
+
+      const { columnMapJson, signLogicJson, normalizationRulesJson } = createTemplateConfig({
+        columnMappings: parseTemplateMappings(options.map),
+        signMode: (options.signMode ?? "signed_amount") as (typeof signModeOptions)[number],
+        invertSign: Boolean(options.invertSign),
+        directionColumn: options.directionColumn,
+        debitColumn: options.debitColumn,
+        creditColumn: options.creditColumn,
+        debitValuesText: options.debitValues,
+        creditValuesText: options.creditValues,
+        dateDayFirst: options.dateMonthFirst ? false : true,
+      });
+      const { seededUserId } = getDbRuntimeConfig();
       const result = await domain.createTemplate({
         template: {
-          userId: "00000000-0000-0000-0000-000000000001",
+          userId: seededUserId,
           name: options.name,
           institutionName: options.institution,
           compatibleAccountType: options.accountType as never,
@@ -259,13 +331,9 @@ templatesCommand
           thousandsSeparator: ",",
           dateFormat: "%Y-%m-%d",
           defaultCurrency: options.defaultCurrency,
-          columnMapJson: {
-            transaction_date: "date",
-            description_raw: "description",
-            amount_original_signed: "amount",
-          },
-          signLogicJson: { mode: "signed_amount" },
-          normalizationRulesJson: { trim_whitespace: true },
+          columnMapJson,
+          signLogicJson,
+          normalizationRulesJson,
           active: true,
         },
         actorName: "cli",

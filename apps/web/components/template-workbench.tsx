@@ -4,7 +4,6 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import type { ImportTemplate } from "@myfinance/domain";
-import { createTemplateAction } from "../app/actions";
 import {
   accountTypeOptions,
   canonicalFieldOptions,
@@ -13,7 +12,8 @@ import {
   signModeOptions,
   type TemplateColumnMapping,
   type TemplateSignMode,
-} from "../lib/template-config";
+} from "@myfinance/domain/template-config";
+import { createTemplateAction } from "../app/actions";
 
 const signModeLabels: Record<TemplateSignMode, string> = {
   signed_amount: "Signed amount column",

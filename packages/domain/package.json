@@ -2,6 +2,18 @@
   "name": "@myfinance/domain",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/domain/src/index.d.ts",
+      "import": "./dist/domain/src/index.js",
+      "default": "./dist/domain/src/index.js"
+    },
+    "./template-config": {
+      "types": "./dist/domain/src/template-config.d.ts",
+      "import": "./dist/domain/src/template-config.js",
+      "default": "./dist/domain/src/template-config.js"
+    }
+  },
   "main": "./dist/domain/src/index.js",
   "types": "./dist/domain/src/index.d.ts",
   "scripts": {
