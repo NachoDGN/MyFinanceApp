@@ -282,6 +282,11 @@ textarea {
   transition: var(--transition);
 }
 
+.kpi-card-compact {
+  grid-column: span 1;
+  padding: 18px;
+}
+
 .kpi-card:hover {
   transform: translateY(-4px);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.04);
@@ -297,6 +302,10 @@ textarea {
 
 .kpi-header {
   margin-bottom: 24px;
+}
+
+.kpi-card-compact .kpi-header {
+  margin-bottom: 14px;
 }
 
 .trend-indicator {
@@ -322,10 +331,18 @@ textarea {
   margin-bottom: 4px;
 }
 
+.kpi-card-compact .metric-value {
+  font-size: 24px;
+}
+
 .metric-nominal {
   font-size: 14px;
   color: var(--color-text-muted);
   font-weight: 500;
+}
+
+.kpi-card-compact .metric-nominal {
+  font-size: 12px;
 }
 
 .chart-container {
@@ -334,6 +351,12 @@ textarea {
   display: flex;
   align-items: flex-end;
   gap: 4px;
+}
+
+.kpi-card-compact .chart-container {
+  margin-top: 14px;
+  height: 42px;
+  gap: 3px;
 }
 
 .chart-bar {
@@ -352,6 +375,88 @@ textarea {
 .table-card,
 .banner-card {
   padding: 32px;
+}
+
+.allocation-card {
+  grid-column: span 12;
+  padding: 32px;
+  background: linear-gradient(145deg, #ffffff 0%, #fffaf8 100%);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-card-border);
+}
+
+.allocation-card-body {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.allocation-donut {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+}
+
+.allocation-donut svg {
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+}
+
+.allocation-donut-center {
+  position: absolute;
+  inset: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  text-align: center;
+  gap: 4px;
+}
+
+.allocation-donut-center strong {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.allocation-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.allocation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.allocation-key {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.investments-hero {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.investments-hero-left {
+  min-width: 0;
+}
+
+.metrics-row-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .details-section {
@@ -780,8 +885,11 @@ textarea {
 
 @media (max-width: 1024px) {
   .kpi-card,
+  .kpi-card-compact,
   .details-section,
   .sidebar-panel,
+  .allocation-card,
+  .investments-hero,
   .section-card.span-8,
   .section-card.span-6,
   .section-card.span-4,
@@ -793,6 +901,11 @@ textarea {
 
   .metrics-row {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .allocation-card-body,
+  .investments-hero {
+    grid-template-columns: 1fr;
   }
 
   .banner-grid,
@@ -823,6 +936,18 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .metrics-row-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .allocation-card,
+  .section-card,
+  .table-card,
+  .banner-card,
+  .details-section {
+    padding: 24px;
+  }
+
   .timeline-item {
     grid-template-columns: 1fr;
     gap: 8px;
@@ -835,5 +960,9 @@ textarea {
 
   .stack-month {
     min-width: 56px;
+  }
+
+  .allocation-donut {
+    min-height: 220px;
   }
 }

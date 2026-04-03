@@ -16,6 +16,7 @@ import {
   filterTransactionsByScope,
   getDatasetLatestDate,
   getLatestBalanceSnapshots,
+  getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
   resolveFxRate,
   resolvePeriodSelection,
@@ -564,7 +565,7 @@ function averageMonthlySeries(
 function buildHoldingsSnapshot(dataset: DomainDataset, scope: Scope, referenceDate: string) {
   const holdings = buildHoldingRows(dataset, scope, referenceDate);
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const brokerageCashEur = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, referenceDate)
+  const brokerageCashEur = getLatestInvestmentCashBalances(dataset, referenceDate)
     .filter((snapshot) => {
       const account = dataset.accounts.find((candidate) => candidate.id === snapshot.accountId);
       return account?.assetDomain === "investment" && entityIds.has(account.entityId);
@@ -713,6 +714,7 @@ export function buildInvestmentsReadModel(
     [
       "investment_trade_buy",
       "investment_trade_sell",
+      "transfer_internal",
       "dividend",
       "interest",
       "fee",

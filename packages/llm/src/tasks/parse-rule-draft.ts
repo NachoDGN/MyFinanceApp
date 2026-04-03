@@ -2,13 +2,46 @@ import { z } from "zod";
 
 import type { LLMTaskClient } from "../types";
 
+const ruleDraftScopeSchema = z
+  .object({
+    global: z.boolean().optional(),
+    entity_id: z.string().nullable().optional(),
+    account_id: z.string().nullable().optional(),
+  })
+  .strict();
+
+const ruleDraftConditionsSchema = z
+  .object({
+    normalized_description_regex: z.string().nullable().optional(),
+    merchant_equals: z.string().nullable().optional(),
+    counterparty_equals: z.string().nullable().optional(),
+    amount_sign: z.string().nullable().optional(),
+    amount_min: z.number().nullable().optional(),
+    amount_max: z.number().nullable().optional(),
+    account_id: z.string().nullable().optional(),
+    account_type: z.string().nullable().optional(),
+    current_category_code: z.string().nullable().optional(),
+  })
+  .strict();
+
+const ruleDraftOutputsSchema = z
+  .object({
+    transaction_class: z.string().nullable().optional(),
+    category_code: z.string().nullable().optional(),
+    merchant_normalized: z.string().nullable().optional(),
+    counterparty_name: z.string().nullable().optional(),
+    economic_entity_id_override: z.string().nullable().optional(),
+    review_suppression: z.boolean().nullable().optional(),
+  })
+  .strict();
+
 export const ruleDraftResponseSchema = z.object({
   title: z.string().min(1).max(120),
   summary: z.string().min(1).max(240),
   priority: z.number().int().min(1).max(999),
-  scope_json: z.record(z.string(), z.unknown()),
-  conditions_json: z.record(z.string(), z.unknown()),
-  outputs_json: z.record(z.string(), z.unknown()),
+  scope_json: ruleDraftScopeSchema,
+  conditions_json: ruleDraftConditionsSchema,
+  outputs_json: ruleDraftOutputsSchema,
   confidence: z.number().min(0).max(1),
   explanation: z.array(z.string()).max(6).default([]),
 });
@@ -30,9 +63,42 @@ const ruleDraftJsonSchema = {
     title: { type: "string" },
     summary: { type: "string" },
     priority: { type: "integer", minimum: 1, maximum: 999 },
-    scope_json: { type: "object", additionalProperties: true },
-    conditions_json: { type: "object", additionalProperties: true },
-    outputs_json: { type: "object", additionalProperties: true },
+    scope_json: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        global: { type: "boolean" },
+        entity_id: { type: ["string", "null"] },
+        account_id: { type: ["string", "null"] },
+      },
+    },
+    conditions_json: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        normalized_description_regex: { type: ["string", "null"] },
+        merchant_equals: { type: ["string", "null"] },
+        counterparty_equals: { type: ["string", "null"] },
+        amount_sign: { type: ["string", "null"] },
+        amount_min: { type: ["number", "null"] },
+        amount_max: { type: ["number", "null"] },
+        account_id: { type: ["string", "null"] },
+        account_type: { type: ["string", "null"] },
+        current_category_code: { type: ["string", "null"] },
+      },
+    },
+    outputs_json: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        transaction_class: { type: ["string", "null"] },
+        category_code: { type: ["string", "null"] },
+        merchant_normalized: { type: ["string", "null"] },
+        counterparty_name: { type: ["string", "null"] },
+        economic_entity_id_override: { type: ["string", "null"] },
+        review_suppression: { type: ["boolean", "null"] },
+      },
+    },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     explanation: {
       type: "array",

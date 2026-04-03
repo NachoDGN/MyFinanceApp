@@ -25,6 +25,7 @@ import {
   filterTransactionsByPeriod,
   filterTransactionsByScope,
   getLatestBalanceSnapshots,
+  getLatestInvestmentCashBalances,
   getDatasetLatestDate,
   resolvePeriodSelection,
   resolveScopeEntityIds,
@@ -195,9 +196,7 @@ export class FinanceDomainService {
     const dataset = await this.repository.getDataset();
     const holdings = buildHoldingRows(dataset, scope);
     const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-    const brokerageCashEur = getLatestBalanceSnapshots(
-      dataset.accountBalanceSnapshots,
-    )
+    const brokerageCashEur = getLatestInvestmentCashBalances(dataset)
       .filter((row) => {
         const account = dataset.accounts.find(
           (candidate) => candidate.id === row.accountId,

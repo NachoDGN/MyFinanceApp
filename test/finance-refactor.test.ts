@@ -1,13 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildMetricResult, buildSpendingReadModel } from "../packages/analytics/src/index.ts";
-import { enrichImportedTransaction } from "../packages/classification/src/index.ts";
+import {
+  buildInvestmentsReadModel,
+  buildMetricResult,
+  buildSpendingReadModel,
+} from "../packages/analytics/src/index.ts";
+import {
+  applyRuleMatch,
+  enrichImportedTransaction,
+  getInvestmentTransactionClassifierConfig,
+  parseInvestmentEvent,
+} from "../packages/classification/src/index.ts";
+import { prepareInvestmentRebuild } from "../packages/db/src/investment-rebuild.ts";
 import {
   buildHoldingRows,
   buildImportedTransactions,
   createTemplateConfig,
+  getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
+  rebuildInvestmentState,
   resolvePeriodSelection,
 } from "../packages/domain/src/index.ts";
 
@@ -32,24 +44,21 @@ test("import building deduplicates by fingerprint and keeps the dataset user id"
     amount_original_signed: "-25.00",
     currency_original: "EUR",
   } as const;
-  const seed = buildImportedTransactions(createDataset(), input, "seed-batch", [duplicateRow]);
+  const seed = buildImportedTransactions(createDataset(), input, "seed-batch", [
+    duplicateRow,
+  ]);
   const dataset = createDataset({ transactions: seed.inserted });
 
-  const result = buildImportedTransactions(
-    dataset,
-    input,
-    "batch-1",
-    [
-      duplicateRow,
-      {
-        transaction_date: "2026-04-02",
-        posted_date: "2026-04-02",
-        description_raw: "Coffee",
-        amount_original_signed: "-3.50",
-        currency_original: "EUR",
-      },
-    ],
-  );
+  const result = buildImportedTransactions(dataset, input, "batch-1", [
+    duplicateRow,
+    {
+      transaction_date: "2026-04-02",
+      posted_date: "2026-04-02",
+      description_raw: "Coffee",
+      amount_original_signed: "-3.50",
+      currency_original: "EUR",
+    },
+  ]);
 
   assert.equal(result.duplicateCount, 1);
   assert.equal(result.inserted.length, 1);
@@ -165,7 +174,11 @@ test("saved classification rules win before fallback logic or LLM classification
       rules: [createRule()],
     });
 
-    const decision = await enrichImportedTransaction(dataset, account, transaction);
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+    );
 
     assert.equal(decision.classificationSource, "user_rule");
     assert.equal(decision.transactionClass, "expense");
@@ -177,6 +190,320 @@ test("saved classification rules win before fallback logic or LLM classification
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = previousKey;
+    }
+  }
+});
+
+test("investment review uses the dedicated model override when configured", () => {
+  const previous = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+
+  try {
+    assert.equal(
+      getInvestmentTransactionClassifierConfig().model,
+      "gpt-5.4-mini",
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previous;
+    }
+  }
+});
+
+test("investment parser recognizes named fund purchases even without explicit quantity", () => {
+  const parsed = parseInvestmentEvent(
+    createTransaction({
+      accountId: "broker-1",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+    }),
+  );
+
+  assert.equal(parsed.transactionClass, "investment_trade_buy");
+  assert.equal(parsed.securityHint, "VANGUARD US 500 STOCK INDEX EU");
+});
+
+test("rule matching respects account scope", () => {
+  const transaction = createTransaction({
+    accountId: "account-1",
+    descriptionRaw: "Notion subscription",
+    descriptionClean: "NOTION SUBSCRIPTION",
+  });
+  const outOfScopeRule = createRule({
+    scopeJson: { account_id: "account-2" },
+  });
+
+  assert.equal(applyRuleMatch(transaction, [outOfScopeRule]), null);
+});
+
+test("investment rebuild upgrades stale unknown investment rows into parsed trade buys", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  process.env.TWELVE_DATA_API_KEY = "";
+
+  try {
+    const account = createAccount({
+      id: "broker-1",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "vanguard-row",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-24",
+      postedDate: "2026-03-24",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason:
+        "The description suggests an investment but lacks details for precise classification.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+    const patch = rebuilt.transactionPatches[0];
+
+    assert.equal(patch?.transactionClass, "investment_trade_buy");
+    assert.equal(patch?.categoryCode, "stock_buy");
+    assert.match(patch?.reviewReason ?? "", /Security mapping unresolved/i);
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test("investment rebuild explains when a mapped trade still lacks quantity", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  process.env.TWELVE_DATA_API_KEY = "";
+
+  try {
+    const account = createAccount({
+      id: "broker-2",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "mapped-without-quantity",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-24",
+      postedDate: "2026-03-24",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "investment_parser",
+      classificationSource: "investment_parser",
+      classificationConfidence: "0.96",
+      securityId: "security-vusa",
+      needsReview: true,
+      reviewReason:
+        "The description suggests an investment but lacks details for precise classification.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-vusa",
+          providerName: "manual",
+          providerSymbol: "VUSA",
+          canonicalSymbol: "VUSA",
+          displaySymbol: "VUSA",
+          name: "Vanguard S&P 500 UCITS ETF",
+          exchangeName: "LSE",
+          micCode: "XLON",
+          assetType: "etf",
+          quoteCurrency: "EUR",
+          country: "IE",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {},
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+    const patch = rebuilt.transactionPatches[0];
+
+    assert.equal(patch?.needsReview, true);
+    assert.match(
+      patch?.reviewReason ?? "",
+      /Quantity could not be derived for "VANGUARD US 500 STOCK INDEX EU"/i,
+    );
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test("investment rebuild remaps stale EU fund aliases away from USD OTC securities", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+
+    if (url.pathname.endsWith("/symbol_search")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              symbol: "0P00000MNK",
+              instrument_name: "Vanguard U.S. 500 Stock Index F",
+              exchange: "OTC",
+              mic_code: "OTCM",
+              instrument_type: "Mutual Fund",
+              country: "United States",
+              currency: "USD",
+            },
+            {
+              symbol: "0P00000G12",
+              instrument_name:
+                "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+              exchange: "XHAM",
+              mic_code: "XHAM",
+              instrument_type: "Mutual Fund",
+              country: "Germany",
+              currency: "EUR",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-3",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "stale-eu-alias",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-24",
+      postedDate: "2026-03-24",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "investment_parser",
+      classificationSource: "investment_parser",
+      classificationConfidence: "0.96",
+      securityId: "security-wrong-vanguard",
+      needsReview: true,
+      reviewReason:
+        'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-wrong-vanguard",
+          providerName: "twelve_data",
+          providerSymbol: "0P00000MNK",
+          canonicalSymbol: "0P00000MNK",
+          displaySymbol: "0P00000MNK",
+          name: "Vanguard U.S. 500 Stock Index F",
+          exchangeName: "OTC",
+          micCode: "OTCM",
+          assetType: "etf",
+          quoteCurrency: "USD",
+          country: "United States",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {},
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      securityAliases: [
+        {
+          id: "alias-wrong-vanguard",
+          securityId: "security-wrong-vanguard",
+          aliasTextNormalized: "VANGUARD US 500 STOCK INDEX EU",
+          aliasSource: "provider",
+          templateId: null,
+          confidence: "0.9000",
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+
+    assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "0P00000G12");
+    assert.equal(
+      rebuilt.transactionPatches[0]?.securityId,
+      rebuilt.insertedSecurities[0]?.id,
+    );
+    assert.equal(
+      rebuilt.insertedAliases[0]?.aliasTextNormalized,
+      "VANGUARD US 500 STOCK INDEX EU",
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
     }
   }
 });
@@ -233,7 +560,11 @@ test("successful confident LLM classifications clear fallback review state", asy
       transactions: [transaction],
     });
 
-    const decision = await enrichImportedTransaction(dataset, account, transaction);
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+    );
 
     assert.equal(decision.classificationSource, "llm");
     assert.equal(decision.transactionClass, "transfer_internal");
@@ -292,13 +623,18 @@ test("spending read model respects the selected period when building merchant to
   const model = buildSpendingReadModel(dataset, {
     scope: { kind: "consolidated" },
     displayCurrency: "EUR",
-    period: resolvePeriodSelection({ preset: "mtd", referenceDate: "2026-04-03" }),
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-03",
+    }),
     referenceDate: "2026-04-03",
   });
 
   assert.equal(model.transactions.length, 1);
   assert.equal(model.transactions[0]?.id, "apr-merchant");
-  assert.deepEqual(model.merchantRows, [{ label: "COFFEE BAR", amountEur: "45.00" }]);
+  assert.deepEqual(model.merchantRows, [
+    { label: "COFFEE BAR", amountEur: "45.00" },
+  ]);
 });
 
 test("template config builder converts typed inputs into stored JSON rules", () => {
@@ -407,9 +743,169 @@ test("holding valuation is computed from positions, quotes, and FX instead of ha
     ],
   });
 
-  const [holding] = buildHoldingRows(dataset, { kind: "consolidated" }, "2026-04-03");
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-03",
+  );
 
   assert.equal(holding?.currentValueEur, "20.00");
   assert.equal(holding?.unrealizedPnlEur, "5.00");
   assert.equal(holding?.unrealizedPnlPercent, "33.33");
+});
+
+test("investment rebuild derives open positions and brokerage cash from imported investment rows", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-1",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        id: "buy-1",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-01",
+        amountOriginal: "-200.00",
+        amountBaseEur: "-200.00",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 2",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 2",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-1",
+        quantity: "2.00000000",
+        unitPriceOriginal: "100.00",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "450.00",
+            balanceCurrency: "EUR",
+          },
+        },
+      }),
+      createTransaction({
+        id: "sell-1",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-02",
+        amountOriginal: "120.00",
+        amountBaseEur: "120.00",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 1",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 1",
+        transactionClass: "investment_trade_sell",
+        categoryCode: "uncategorized_investment",
+        securityId: "security-1",
+        quantity: "1.00000000",
+        unitPriceOriginal: "120.00",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "570.00",
+            balanceCurrency: "EUR",
+          },
+        },
+      }),
+    ],
+    securities: [
+      {
+        id: "security-1",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-03T08:00:00Z",
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-1",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T08:00:00Z",
+        price: "150.00",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-04-03T08:00:00Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T08:00:00Z",
+        rate: "0.90000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+  });
+
+  const rebuilt = rebuildInvestmentState(dataset, "2026-04-03");
+  const balances = getLatestInvestmentCashBalances(dataset, "2026-04-03");
+
+  assert.equal(rebuilt.positions.length, 1);
+  assert.equal(rebuilt.positions[0]?.openQuantity, "1.00000000");
+  assert.equal(rebuilt.positions[0]?.openCostBasisEur, "100.00000000");
+  assert.equal(rebuilt.positions[0]?.realizedPnlEur, "20.00000000");
+  assert.equal(balances[0]?.balanceBaseEur, "570.00000000");
+  assert.equal(rebuilt.snapshots[0]?.totalPortfolioValueEur, "705.00000000");
+});
+
+test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-2",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        id: "broker-transfer",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "500.00",
+        amountBaseEur: "500.00",
+        descriptionRaw: "Transferencia entre cuentas",
+        descriptionClean: "TRANSFERENCIA ENTRE CUENTAS",
+        transactionClass: "transfer_internal",
+        categoryCode: "uncategorized_investment",
+        needsReview: false,
+      }),
+    ],
+  });
+
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-03",
+    }),
+    referenceDate: "2026-04-03",
+  });
+
+  assert.equal(model.investmentRows.length, 1);
+  assert.equal(model.investmentRows[0]?.transactionClass, "transfer_internal");
 });

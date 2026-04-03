@@ -7,11 +7,13 @@ import postgres from "postgres";
 
 import {
   enrichImportedTransaction,
+  getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
 } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
   buildImportedTransactions,
+  getDatasetLatestDate,
   normalizeImportExecutionInput,
   runDeterministicImport,
   sanitizeImportResult,
@@ -35,6 +37,7 @@ import {
   type Transaction,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
+import { prepareInvestmentRebuild } from "./investment-rebuild";
 
 const DEFAULT_APP_USER_ID = "00000000-0000-0000-0000-000000000001";
 const DEFAULT_LOCAL_DATABASE_URL =
@@ -192,6 +195,30 @@ function serializeJson(sql: SqlClient, value: unknown) {
   return sql.json((value ?? {}) as Parameters<SqlClient["json"]>[0]);
 }
 
+async function queueJob(
+  sql: SqlClient,
+  jobType: string,
+  payloadJson: Record<string, unknown> = {},
+) {
+  await sql`
+    insert into public.jobs (
+      id,
+      job_type,
+      payload_json,
+      status,
+      attempts,
+      available_at
+    ) values (
+      ${randomUUID()},
+      ${jobType},
+      ${serializeJson(sql, payloadJson)}::jsonb,
+      ${"queued"},
+      0,
+      ${new Date().toISOString()}
+    )
+  `;
+}
+
 function parseJsonColumn<T>(value: unknown): T {
   if (typeof value === "string") {
     try {
@@ -231,124 +258,125 @@ function createAuditEvent(
 function isUniqueViolation(error: unknown): error is { code: string } {
   return Boolean(
     error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error as { code?: unknown }).code === "23505",
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "23505",
   );
+}
+
+async function loadDatasetForUser(
+  sql: SqlClient,
+  userId: string,
+): Promise<DomainDataset> {
+  const [
+    profiles,
+    entities,
+    accounts,
+    templates,
+    importBatches,
+    transactions,
+    categories,
+    rules,
+    auditEvents,
+    jobs,
+    accountBalanceSnapshots,
+    securities,
+    securityAliases,
+    securityPrices,
+    fxRates,
+    holdingAdjustments,
+    investmentPositions,
+    dailyPortfolioSnapshots,
+    monthlyCashFlowRollups,
+  ] = await Promise.all([
+    sql`select * from public.profiles where id = ${userId} limit 1`,
+    sql`select * from public.entities where user_id = ${userId} order by created_at`,
+    sql`select * from public.accounts where user_id = ${userId} order by created_at`,
+    sql`select * from public.import_templates where user_id = ${userId} order by created_at`,
+    sql`select * from public.import_batches where user_id = ${userId} order by imported_at desc`,
+    sql`select * from public.transactions where user_id = ${userId} order by transaction_date desc, created_at desc`,
+    sql`select * from public.categories order by sort_order, code`,
+    sql`select * from public.classification_rules where user_id = ${userId} order by priority`,
+    sql`select * from public.audit_events order by created_at desc limit 200`,
+    sql`select * from public.jobs order by created_at desc`,
+    sql`select * from public.account_balance_snapshots where account_id in (select id from public.accounts where user_id = ${userId}) order by as_of_date desc`,
+    sql`select * from public.securities order by display_symbol`,
+    sql`select * from public.security_aliases order by created_at desc`,
+    sql`select * from public.security_prices order by price_date desc, quote_timestamp desc`,
+    sql`select * from public.fx_rates order by as_of_date desc`,
+    sql`select * from public.holding_adjustments where user_id = ${userId} order by effective_date desc`,
+    sql`select * from public.investment_positions where user_id = ${userId}`,
+    sql`select * from public.daily_portfolio_snapshots where user_id = ${userId} order by snapshot_date desc`,
+    sql`
+      with income as (
+        select entity_id, month, income_total_eur
+        from public.mv_monthly_income_totals
+        where user_id = ${userId}
+      ),
+      spending as (
+        select entity_id, month, sum(spending_total_eur) as spending_total_eur
+        from public.mv_monthly_spending_totals
+        where user_id = ${userId}
+        group by entity_id, month
+      )
+      select
+        coalesce(income.entity_id, spending.entity_id) as entity_id,
+        coalesce(income.month, spending.month) as month,
+        coalesce(income.income_total_eur, 0) as income_eur,
+        coalesce(spending.spending_total_eur, 0) as spending_eur,
+        coalesce(income.income_total_eur, 0) - coalesce(spending.spending_total_eur, 0) as operating_net_eur
+      from income
+      full outer join spending
+        on spending.entity_id = income.entity_id
+       and spending.month = income.month
+      order by month asc
+    `,
+  ]);
+
+  if (!profiles[0]) {
+    throw new Error(
+      `Seeded user ${userId} was not found in the database. Run the seed or set APP_SEEDED_USER_ID correctly.`,
+    );
+  }
+
+  return {
+    schemaVersion: "v1" as const,
+    profile: mapFromSql<DomainDataset["profile"]>(profiles[0]),
+    entities: mapFromSql<DomainDataset["entities"]>(entities),
+    accounts: mapFromSql<DomainDataset["accounts"]>(accounts),
+    templates: mapFromSql<DomainDataset["templates"]>(templates),
+    importBatches: mapFromSql<DomainDataset["importBatches"]>(importBatches),
+    transactions: mapFromSql<DomainDataset["transactions"]>(transactions),
+    categories: mapFromSql<DomainDataset["categories"]>(categories),
+    rules: mapFromSql<DomainDataset["rules"]>(rules),
+    auditEvents: mapFromSql<DomainDataset["auditEvents"]>(auditEvents),
+    jobs: mapFromSql<DomainDataset["jobs"]>(jobs),
+    accountBalanceSnapshots: mapFromSql<
+      DomainDataset["accountBalanceSnapshots"]
+    >(accountBalanceSnapshots),
+    securities: mapFromSql<DomainDataset["securities"]>(securities),
+    securityAliases:
+      mapFromSql<DomainDataset["securityAliases"]>(securityAliases),
+    securityPrices: mapFromSql<DomainDataset["securityPrices"]>(securityPrices),
+    fxRates: mapFromSql<DomainDataset["fxRates"]>(fxRates),
+    holdingAdjustments:
+      mapFromSql<DomainDataset["holdingAdjustments"]>(holdingAdjustments),
+    investmentPositions:
+      mapFromSql<DomainDataset["investmentPositions"]>(investmentPositions),
+    dailyPortfolioSnapshots: mapFromSql<
+      DomainDataset["dailyPortfolioSnapshots"]
+    >(dailyPortfolioSnapshots),
+    monthlyCashFlowRollups: mapFromSql<DomainDataset["monthlyCashFlowRollups"]>(
+      monthlyCashFlowRollups,
+    ),
+  };
 }
 
 class SqlFinanceRepository implements FinanceRepository {
   private userId = getDbRuntimeConfig().seededUserId;
 
   async getDataset(): Promise<DomainDataset> {
-    const dataset = await withSeededUserContext(async (sql) => {
-      const [
-        profiles,
-        entities,
-        accounts,
-        templates,
-        importBatches,
-        transactions,
-        categories,
-        rules,
-        auditEvents,
-        jobs,
-        accountBalanceSnapshots,
-        securities,
-        securityAliases,
-        securityPrices,
-        fxRates,
-        holdingAdjustments,
-        investmentPositions,
-        dailyPortfolioSnapshots,
-        monthlyCashFlowRollups,
-      ] = await Promise.all([
-        sql`select * from public.profiles where id = ${this.userId} limit 1`,
-        sql`select * from public.entities where user_id = ${this.userId} order by created_at`,
-        sql`select * from public.accounts where user_id = ${this.userId} order by created_at`,
-        sql`select * from public.import_templates where user_id = ${this.userId} order by created_at`,
-        sql`select * from public.import_batches where user_id = ${this.userId} order by imported_at desc`,
-        sql`select * from public.transactions where user_id = ${this.userId} order by transaction_date desc, created_at desc`,
-        sql`select * from public.categories order by sort_order, code`,
-        sql`select * from public.classification_rules where user_id = ${this.userId} order by priority`,
-        sql`select * from public.audit_events order by created_at desc limit 200`,
-        sql`select * from public.jobs order by created_at desc`,
-        sql`select * from public.account_balance_snapshots where account_id in (select id from public.accounts where user_id = ${this.userId}) order by as_of_date desc`,
-        sql`select * from public.securities order by display_symbol`,
-        sql`select * from public.security_aliases order by created_at desc`,
-        sql`select * from public.security_prices order by price_date desc, quote_timestamp desc`,
-        sql`select * from public.fx_rates order by as_of_date desc`,
-        sql`select * from public.holding_adjustments where user_id = ${this.userId} order by effective_date desc`,
-        sql`select * from public.investment_positions where user_id = ${this.userId}`,
-        sql`select * from public.daily_portfolio_snapshots where user_id = ${this.userId} order by snapshot_date desc`,
-        sql`
-          with income as (
-            select entity_id, month, income_total_eur
-            from public.mv_monthly_income_totals
-            where user_id = ${this.userId}
-          ),
-          spending as (
-            select entity_id, month, sum(spending_total_eur) as spending_total_eur
-            from public.mv_monthly_spending_totals
-            where user_id = ${this.userId}
-            group by entity_id, month
-          )
-          select
-            coalesce(income.entity_id, spending.entity_id) as entity_id,
-            coalesce(income.month, spending.month) as month,
-            coalesce(income.income_total_eur, 0) as income_eur,
-            coalesce(spending.spending_total_eur, 0) as spending_eur,
-            coalesce(income.income_total_eur, 0) - coalesce(spending.spending_total_eur, 0) as operating_net_eur
-          from income
-          full outer join spending
-            on spending.entity_id = income.entity_id
-           and spending.month = income.month
-          order by month asc
-        `,
-      ]);
-
-      if (!profiles[0]) {
-        throw new Error(
-          `Seeded user ${this.userId} was not found in the database. Run the seed or set APP_SEEDED_USER_ID correctly.`,
-        );
-      }
-
-      return {
-        schemaVersion: "v1" as const,
-        profile: mapFromSql<DomainDataset["profile"]>(profiles[0]),
-        entities: mapFromSql<DomainDataset["entities"]>(entities),
-        accounts: mapFromSql<DomainDataset["accounts"]>(accounts),
-        templates: mapFromSql<DomainDataset["templates"]>(templates),
-        importBatches:
-          mapFromSql<DomainDataset["importBatches"]>(importBatches),
-        transactions: mapFromSql<DomainDataset["transactions"]>(transactions),
-        categories: mapFromSql<DomainDataset["categories"]>(categories),
-        rules: mapFromSql<DomainDataset["rules"]>(rules),
-        auditEvents: mapFromSql<DomainDataset["auditEvents"]>(auditEvents),
-        jobs: mapFromSql<DomainDataset["jobs"]>(jobs),
-        accountBalanceSnapshots: mapFromSql<
-          DomainDataset["accountBalanceSnapshots"]
-        >(accountBalanceSnapshots),
-        securities: mapFromSql<DomainDataset["securities"]>(securities),
-        securityAliases:
-          mapFromSql<DomainDataset["securityAliases"]>(securityAliases),
-        securityPrices:
-          mapFromSql<DomainDataset["securityPrices"]>(securityPrices),
-        fxRates: mapFromSql<DomainDataset["fxRates"]>(fxRates),
-        holdingAdjustments:
-          mapFromSql<DomainDataset["holdingAdjustments"]>(holdingAdjustments),
-        investmentPositions:
-          mapFromSql<DomainDataset["investmentPositions"]>(investmentPositions),
-        dailyPortfolioSnapshots: mapFromSql<
-          DomainDataset["dailyPortfolioSnapshots"]
-        >(dailyPortfolioSnapshots),
-        monthlyCashFlowRollups: mapFromSql<
-          DomainDataset["monthlyCashFlowRollups"]
-        >(monthlyCashFlowRollups),
-      };
-    });
-
-    return dataset;
+    return withSeededUserContext((sql) => loadDatasetForUser(sql, this.userId));
   }
 
   async createAccount(input: CreateAccountInput) {
@@ -765,6 +793,29 @@ class SqlFinanceRepository implements FinanceRepository {
           } as Record<string, unknown>)}
         `;
 
+        const beforeTransaction = mapFromSql<Transaction>(beforeRow);
+        const afterTransaction = mapFromSql<Transaction>(after[0]);
+        if (
+          beforeTransaction.accountId === afterTransaction.accountId &&
+          (beforeTransaction.securityId !== afterTransaction.securityId ||
+            beforeTransaction.transactionClass !==
+              afterTransaction.transactionClass ||
+            beforeTransaction.needsReview !== afterTransaction.needsReview)
+        ) {
+          const accountRows = await sql`
+            select asset_domain from public.accounts
+            where id = ${afterTransaction.accountId}
+            limit 1
+          `;
+          if (accountRows[0]?.asset_domain === "investment") {
+            await queueJob(sql, "position_rebuild", {
+              accountId: afterTransaction.accountId,
+              transactionId: afterTransaction.id,
+              trigger: "transaction_update",
+            });
+          }
+        }
+
         if (input.createRuleFromTransaction) {
           const persistedTransaction = mapFromSql<Transaction>(after[0]);
           generatedRuleId = randomUUID();
@@ -797,6 +848,37 @@ class SqlFinanceRepository implements FinanceRepository {
               })}::jsonb,
               ${persistedTransaction.id},
               true
+            )
+          `;
+        }
+      }
+
+      if (input.apply) {
+        const accountRows = await sql`
+          select asset_domain from public.accounts
+          where id = ${beforeRow.account_id}
+            and user_id = ${this.userId}
+          limit 1
+        `;
+        if (accountRows[0]?.asset_domain === "investment") {
+          await sql`
+            insert into public.jobs (
+              id,
+              job_type,
+              payload_json,
+              status,
+              attempts,
+              available_at
+            ) values (
+              ${randomUUID()},
+              ${"position_rebuild"},
+              ${serializeJson(sql, {
+                transactionId: input.transactionId,
+                trigger: "manual_transaction_update",
+              })}::jsonb,
+              ${"queued"},
+              0,
+              ${new Date().toISOString()}
             )
           `;
         }
@@ -1031,6 +1113,10 @@ class SqlFinanceRepository implements FinanceRepository {
             note: "Created from app/CLI.",
           })}
         `;
+        await queueJob(sql, "position_rebuild", {
+          accountId: input.accountId,
+          trigger: "opening_position",
+        });
       }
       return { applied: input.apply, adjustmentId };
     });
@@ -1411,11 +1497,11 @@ class SqlFinanceRepository implements FinanceRepository {
       const queued = await sql`
         select * from public.jobs
         where status = 'queued'
-        order by available_at asc
+        order by available_at asc, created_at asc
       `;
       const processedJobs: JobRunResult["processedJobs"] = [];
       if (apply && queued.length > 0) {
-        const dataset = await this.getDataset();
+        const dataset = await loadDatasetForUser(sql, this.userId);
         for (const job of queued) {
           const startedAt = new Date().toISOString();
           try {
@@ -1468,7 +1554,7 @@ class SqlFinanceRepository implements FinanceRepository {
                 throw new Error("Classification job is missing importBatchId.");
               }
 
-              const latestDataset = await this.getDataset();
+              const latestDataset = await loadDatasetForUser(sql, this.userId);
               const rows = await sql`
                 select * from public.transactions
                 where user_id = ${this.userId}
@@ -1505,6 +1591,8 @@ class SqlFinanceRepository implements FinanceRepository {
                         classification_status = ${decision.classificationStatus},
                         classification_source = ${decision.classificationSource},
                         classification_confidence = ${decision.classificationConfidence},
+                        quantity = ${decision.quantity ?? null},
+                        unit_price_original = ${decision.unitPriceOriginal ?? null},
                         needs_review = ${decision.needsReview},
                         review_reason = ${decision.reviewReason ?? null},
                         llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
@@ -1528,7 +1616,10 @@ class SqlFinanceRepository implements FinanceRepository {
                           ) ?? {}),
                           analysisStatus: "failed",
                           explanation: null,
-                          model: getTransactionClassifierConfig().model,
+                          model:
+                            account.assetDomain === "investment"
+                              ? getInvestmentTransactionClassifierConfig().model
+                              : getTransactionClassifierConfig().model,
                           error:
                             transactionError instanceof Error
                               ? transactionError.message
@@ -1565,6 +1656,204 @@ class SqlFinanceRepository implements FinanceRepository {
               processedJobs.push({
                 id: job.id,
                 jobType: "classification",
+                status: "completed",
+              });
+              continue;
+            }
+
+            if (job.job_type === "position_rebuild") {
+              const payloadJson = parseJsonColumn<Record<string, unknown>>(
+                job.payload_json ?? {},
+              );
+              const latestDataset = await loadDatasetForUser(sql, this.userId);
+              const referenceDate = getDatasetLatestDate(latestDataset);
+              const rebuilt = await prepareInvestmentRebuild(
+                latestDataset,
+                referenceDate,
+              );
+
+              for (const security of rebuilt.insertedSecurities) {
+                await sql`
+                  insert into public.securities ${sql({
+                    id: security.id,
+                    provider_name: security.providerName,
+                    provider_symbol: security.providerSymbol,
+                    canonical_symbol: security.canonicalSymbol,
+                    display_symbol: security.displaySymbol,
+                    name: security.name,
+                    exchange_name: security.exchangeName,
+                    mic_code: security.micCode,
+                    asset_type: security.assetType,
+                    quote_currency: security.quoteCurrency,
+                    country: security.country,
+                    isin: security.isin,
+                    figi: security.figi,
+                    active: security.active,
+                    metadata_json: serializeJson(sql, security.metadataJson),
+                    last_price_refresh_at: security.lastPriceRefreshAt,
+                    created_at: security.createdAt,
+                  } as Record<string, unknown>)}
+                  on conflict (provider_name, provider_symbol) do nothing
+                `;
+              }
+
+              for (const alias of rebuilt.insertedAliases) {
+                await sql`
+                  insert into public.security_aliases ${sql({
+                    id: alias.id,
+                    security_id: alias.securityId,
+                    alias_text_normalized: alias.aliasTextNormalized,
+                    alias_source: alias.aliasSource,
+                    template_id: alias.templateId,
+                    confidence: alias.confidence,
+                    created_at: alias.createdAt,
+                  } as Record<string, unknown>)}
+                  on conflict (security_id, alias_text_normalized) do nothing
+                `;
+              }
+
+              for (const price of rebuilt.upsertedPrices) {
+                await sql`
+                  insert into public.security_prices ${sql({
+                    security_id: price.securityId,
+                    price_date: price.priceDate,
+                    quote_timestamp: price.quoteTimestamp,
+                    price: price.price,
+                    currency: price.currency,
+                    source_name: price.sourceName,
+                    is_realtime: price.isRealtime,
+                    is_delayed: price.isDelayed,
+                    market_state: price.marketState,
+                    raw_json: serializeJson(sql, price.rawJson),
+                    created_at: price.createdAt,
+                  } as Record<string, unknown>)}
+                  on conflict (security_id, price_date, source_name)
+                  do update set
+                    quote_timestamp = excluded.quote_timestamp,
+                    price = excluded.price,
+                    currency = excluded.currency,
+                    is_realtime = excluded.is_realtime,
+                    is_delayed = excluded.is_delayed,
+                    market_state = excluded.market_state,
+                    raw_json = excluded.raw_json,
+                    created_at = excluded.created_at
+                `;
+              }
+
+              for (const patch of rebuilt.transactionPatches) {
+                const updatePayload: Record<string, unknown> = {
+                  updated_at: new Date().toISOString(),
+                };
+                if (patch.transactionClass !== undefined) {
+                  updatePayload.transaction_class = patch.transactionClass;
+                }
+                if (patch.categoryCode !== undefined) {
+                  updatePayload.category_code = patch.categoryCode;
+                }
+                if (patch.classificationStatus !== undefined) {
+                  updatePayload.classification_status =
+                    patch.classificationStatus;
+                }
+                if (patch.classificationSource !== undefined) {
+                  updatePayload.classification_source =
+                    patch.classificationSource;
+                }
+                if (patch.classificationConfidence !== undefined) {
+                  updatePayload.classification_confidence =
+                    patch.classificationConfidence;
+                }
+                if (patch.securityId !== undefined)
+                  updatePayload.security_id = patch.securityId;
+                if (patch.quantity !== undefined)
+                  updatePayload.quantity = patch.quantity;
+                if (patch.unitPriceOriginal !== undefined) {
+                  updatePayload.unit_price_original = patch.unitPriceOriginal;
+                }
+                if (patch.needsReview !== undefined)
+                  updatePayload.needs_review = patch.needsReview;
+                if (patch.reviewReason !== undefined)
+                  updatePayload.review_reason = patch.reviewReason;
+                await sql`
+                  update public.transactions
+                  set ${sql(updatePayload)}
+                  where id = ${patch.id}
+                    and user_id = ${this.userId}
+                `;
+              }
+
+              await sql`
+                delete from public.daily_portfolio_snapshots
+                where user_id = ${this.userId}
+              `;
+              await sql`
+                delete from public.investment_positions
+                where user_id = ${this.userId}
+              `;
+
+              for (const position of rebuilt.positions) {
+                await sql`
+                  insert into public.investment_positions ${sql({
+                    user_id: position.userId,
+                    entity_id: position.entityId,
+                    account_id: position.accountId,
+                    security_id: position.securityId,
+                    open_quantity: position.openQuantity,
+                    open_cost_basis_eur: position.openCostBasisEur,
+                    avg_cost_eur: position.avgCostEur,
+                    realized_pnl_eur: position.realizedPnlEur,
+                    dividends_eur: position.dividendsEur,
+                    interest_eur: position.interestEur,
+                    fees_eur: position.feesEur,
+                    last_trade_date: position.lastTradeDate,
+                    last_rebuilt_at: position.lastRebuiltAt,
+                    provenance_json: serializeJson(
+                      sql,
+                      position.provenanceJson,
+                    ),
+                    unrealized_complete: position.unrealizedComplete,
+                  } as Record<string, unknown>)}
+                `;
+              }
+
+              for (const snapshot of rebuilt.snapshots) {
+                await sql`
+                  insert into public.daily_portfolio_snapshots ${sql({
+                    snapshot_date: snapshot.snapshotDate,
+                    user_id: snapshot.userId,
+                    entity_id: snapshot.entityId,
+                    account_id: snapshot.accountId,
+                    security_id: snapshot.securityId,
+                    market_value_eur: snapshot.marketValueEur,
+                    cost_basis_eur: snapshot.costBasisEur,
+                    unrealized_pnl_eur: snapshot.unrealizedPnlEur,
+                    cash_balance_eur: snapshot.cashBalanceEur,
+                    total_portfolio_value_eur: snapshot.totalPortfolioValueEur,
+                    generated_at: snapshot.generatedAt,
+                  } as Record<string, unknown>)}
+                `;
+              }
+
+              await sql`
+                update public.jobs
+                set status = 'completed',
+                    attempts = attempts + 1,
+                    started_at = ${startedAt},
+                    finished_at = ${new Date().toISOString()},
+                    last_error = null,
+                    payload_json = ${serializeJson(sql, {
+                      ...payloadJson,
+                      referenceDate,
+                      rebuiltPositions: rebuilt.positions.length,
+                      rebuiltSnapshots: rebuilt.snapshots.length,
+                      updatedTransactions: rebuilt.transactionPatches.length,
+                      insertedSecurities: rebuilt.insertedSecurities.length,
+                      upsertedPrices: rebuilt.upsertedPrices.length,
+                    })}::jsonb
+                where id = ${job.id}
+              `;
+              processedJobs.push({
+                id: job.id,
+                jobType: "position_rebuild",
                 status: "completed",
               });
               continue;

@@ -15,7 +15,8 @@ function formatPercent(value: string | null | undefined) {
 }
 
 function formatDate(value: string) {
-  const normalized = value.length <= 10 ? `${value.slice(0, 10)}T00:00:00Z` : value;
+  const normalized =
+    value.length <= 10 ? `${value.slice(0, 10)}T00:00:00Z` : value;
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
@@ -32,6 +33,7 @@ export function MetricCard({
   subtitle,
   direction,
   chartValues,
+  density = "default",
 }: {
   label: string;
   value: string;
@@ -39,14 +41,19 @@ export function MetricCard({
   subtitle: string;
   direction: "up" | "down";
   chartValues: number[];
+  density?: "default" | "compact";
 }) {
   const max = Math.max(...chartValues, 1);
 
   return (
-    <div className="kpi-card">
+    <div
+      className={`kpi-card ${density === "compact" ? "kpi-card-compact" : ""}`}
+    >
       <div className="kpi-header">
         <span className="label-sm">{label}</span>
-        <span className={`trend-indicator ${direction === "up" ? "trend-up" : "trend-down"}`}>
+        <span
+          className={`trend-indicator ${direction === "up" ? "trend-up" : "trend-down"}`}
+        >
           {delta}
         </span>
       </div>
@@ -62,6 +69,157 @@ export function MetricCard({
         ))}
       </div>
     </div>
+  );
+}
+
+const allocationPalette = [
+  "#ff4b2b",
+  "#1a1a1a",
+  "#d97d54",
+  "#264653",
+  "#2a9d8f",
+  "#8ecae6",
+  "#e9c46a",
+  "#7d5fff",
+  "#c1121f",
+  "#6c757d",
+];
+
+function buildAllocationSlices(
+  rows: Array<{ label: string; amountEur: string }>,
+) {
+  const positiveRows = rows
+    .map((row) => ({
+      label: row.label,
+      amount: Number(row.amountEur ?? 0),
+    }))
+    .filter((row) => row.amount > 0)
+    .sort((left, right) => right.amount - left.amount);
+
+  const topRows = positiveRows.slice(0, 8);
+  const remainder = positiveRows
+    .slice(8)
+    .reduce((sum, row) => sum + row.amount, 0);
+  if (remainder > 0) {
+    topRows.push({ label: "Other", amount: remainder });
+  }
+
+  const total = topRows.reduce((sum, row) => sum + row.amount, 0);
+
+  return {
+    total,
+    slices: topRows.map((row, index) => ({
+      ...row,
+      percent: total > 0 ? (row.amount / total) * 100 : 0,
+      color: allocationPalette[index % allocationPalette.length],
+    })),
+  };
+}
+
+export function PortfolioAllocationCard({
+  title,
+  subtitle,
+  rows,
+  currency,
+}: {
+  title: string;
+  subtitle: string;
+  rows: Array<{ label: string; amountEur: string }>;
+  currency: string;
+}) {
+  const { total, slices } = buildAllocationSlices(rows);
+  const size = 220;
+  const center = size / 2;
+  const radius = 74;
+  const strokeWidth = 24;
+  const circumference = 2 * Math.PI * radius;
+  let runningOffset = 0;
+
+  return (
+    <section className="allocation-card">
+      <div className="section-header">
+        <div>
+          <span className="label-sm">{subtitle}</span>
+          <h2 className="section-title">{title}</h2>
+        </div>
+        <span className="pill">
+          {formatCurrency(total.toFixed(2), currency)}
+        </span>
+      </div>
+      <div className="allocation-card-body">
+        <div className="allocation-donut">
+          <svg
+            viewBox={`0 0 ${size} ${size}`}
+            role="img"
+            aria-label={`${title} chart`}
+          >
+            <circle
+              cx={center}
+              cy={center}
+              r={radius}
+              fill="none"
+              stroke="rgba(0,0,0,0.06)"
+              strokeWidth={strokeWidth}
+            />
+            {slices.length === 0
+              ? null
+              : slices.map((slice) => {
+                  const dash = (slice.percent / 100) * circumference;
+                  const offset = circumference - runningOffset;
+                  runningOffset += dash;
+                  return (
+                    <circle
+                      key={slice.label}
+                      cx={center}
+                      cy={center}
+                      r={radius}
+                      fill="none"
+                      stroke={slice.color}
+                      strokeWidth={strokeWidth}
+                      strokeDasharray={`${dash} ${circumference - dash}`}
+                      strokeDashoffset={offset}
+                      strokeLinecap="butt"
+                      transform={`rotate(-90 ${center} ${center})`}
+                    />
+                  );
+                })}
+          </svg>
+          <div className="allocation-donut-center">
+            <span className="label-sm">Market value</span>
+            <strong>{formatCurrency(total.toFixed(2), currency)}</strong>
+            <span className="muted">Portfolio mix by security</span>
+          </div>
+        </div>
+        <div className="allocation-legend">
+          {slices.length === 0 ? (
+            <div className="muted" style={{ fontSize: 14 }}>
+              No priced securities available yet.
+            </div>
+          ) : (
+            slices.map((slice) => (
+              <div className="allocation-row" key={slice.label}>
+                <div className="allocation-key">
+                  <span
+                    className="legend-swatch"
+                    style={{ background: slice.color }}
+                  />
+                  <span className="timeline-label">{slice.label}</span>
+                </div>
+                <div className="timeline-amount">
+                  {formatCurrency(slice.amount.toFixed(2), currency)}
+                  <span
+                    className="muted"
+                    style={{ display: "block", fontSize: 12 }}
+                  >
+                    {slice.percent.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -91,7 +249,9 @@ export function TimelinePanel({
       <div className="timeline-list">
         {transactions.map((transaction, index) => (
           <div className="timeline-item" key={transaction.id}>
-            <span className="timeline-date">{formatDate(transaction.transactionDate)}</span>
+            <span className="timeline-date">
+              {formatDate(transaction.transactionDate)}
+            </span>
             <div className="timeline-content">
               <div
                 className="timeline-dot"
@@ -104,11 +264,17 @@ export function TimelinePanel({
                     : undefined
                 }
               />
-              <span className="timeline-label">{transaction.descriptionRaw}</span>
+              <span className="timeline-label">
+                {transaction.descriptionRaw}
+              </span>
             </div>
             <span
               className="timeline-amount"
-              style={transaction.positive ? { color: "var(--color-accent)" } : undefined}
+              style={
+                transaction.positive
+                  ? { color: "var(--color-accent)" }
+                  : undefined
+              }
             >
               {transaction.amountDisplay}
             </span>
@@ -116,8 +282,13 @@ export function TimelinePanel({
         ))}
       </div>
       <div className="view-all">
-        <span className="timeline-date">Showing last {transactions.length} transactions</span>
-        <a href={`/transactions?currency=${currency}`} className="view-all-link">
+        <span className="timeline-date">
+          Showing last {transactions.length} transactions
+        </span>
+        <a
+          href={`/transactions?currency=${currency}`}
+          className="view-all-link"
+        >
           View Ledger →
         </a>
       </div>
@@ -151,7 +322,11 @@ export function CategoryListCard({
         ))}
       </div>
       {ctaLabel && ctaHref ? (
-        <a className="btn-ghost" style={{ width: "100%", marginTop: 16 }} href={ctaHref}>
+        <a
+          className="btn-ghost"
+          style={{ width: "100%", marginTop: 16 }}
+          href={ctaHref}
+        >
           {ctaLabel}
         </a>
       ) : null}
@@ -171,13 +346,21 @@ export function HighlightCard({
   footer: string;
 }) {
   return (
-    <div className="category-card" style={{ background: "var(--color-accent)", color: "white" }}>
+    <div
+      className="category-card"
+      style={{ background: "var(--color-accent)", color: "white" }}
+    >
       <span className="label-sm" style={{ color: "rgba(255,255,255,0.8)" }}>
         {title}
       </span>
       <p style={{ marginTop: 12, fontWeight: 500, fontSize: 14 }}>{body}</p>
-      <div style={{ marginTop: 20, fontWeight: 700, fontSize: 24 }}>{metric}</div>
-      <span className="label-sm" style={{ color: "rgba(255,255,255,0.8)", marginTop: 4 }}>
+      <div style={{ marginTop: 20, fontWeight: 700, fontSize: 24 }}>
+        {metric}
+      </div>
+      <span
+        className="label-sm"
+        style={{ color: "rgba(255,255,255,0.8)", marginTop: 4 }}
+      >
         {footer}
       </span>
     </div>
@@ -194,7 +377,9 @@ export function QualityBanner({
       <div className="section-header">
         <div>
           <span className="label-sm">Data Quality</span>
-          <h2 className="section-title">Numbers are accompanied by completeness metadata</h2>
+          <h2 className="section-title">
+            Numbers are accompanied by completeness metadata
+          </h2>
         </div>
       </div>
       <div className="banner-grid" style={{ marginTop: 24 }}>
@@ -267,7 +452,12 @@ export function SectionCard({
 export function MultiSeriesChart({
   rows,
 }: {
-  rows: Array<{ month: string; incomeEur: string; spendingEur: string; operatingNetEur: string }>;
+  rows: Array<{
+    month: string;
+    incomeEur: string;
+    spendingEur: string;
+    operatingNetEur: string;
+  }>;
 }) {
   const max = Math.max(
     ...rows.flatMap((row) => [
@@ -283,15 +473,21 @@ export function MultiSeriesChart({
         <div className="stack-month" key={row.month}>
           <div
             className="stack-piece income"
-            style={{ height: `${Math.max(8, (Number(row.incomeEur) / max) * 180)}px` }}
+            style={{
+              height: `${Math.max(8, (Number(row.incomeEur) / max) * 180)}px`,
+            }}
           />
           <div
             className="stack-piece spending"
-            style={{ height: `${Math.max(8, (Number(row.spendingEur) / max) * 180)}px` }}
+            style={{
+              height: `${Math.max(8, (Number(row.spendingEur) / max) * 180)}px`,
+            }}
           />
           <div
             className="stack-piece net"
-            style={{ height: `${Math.max(8, (Math.abs(Number(row.operatingNetEur)) / max) * 180)}px` }}
+            style={{
+              height: `${Math.max(8, (Math.abs(Number(row.operatingNetEur)) / max) * 180)}px`,
+            }}
           />
           <div className="stack-label">
             {new Intl.DateTimeFormat("en-US", { month: "short" }).format(
@@ -332,7 +528,10 @@ export function DistributionList({
           <div className="timeline-amount">
             {formatCurrency(row.amountEur, currency)}
             {row.allocationPercent ? (
-              <span className="muted" style={{ display: "block", fontSize: 12 }}>
+              <span
+                className="muted"
+                style={{ display: "block", fontSize: 12 }}
+              >
                 {formatPercent(row.allocationPercent)}
               </span>
             ) : null}
@@ -378,7 +577,17 @@ export function SimpleTable({
   );
 }
 
-export function InsightCards({ insights }: { insights: Array<{ id: string; title: string; body: string; evidence: string[]; severity: string }> }) {
+export function InsightCards({
+  insights,
+}: {
+  insights: Array<{
+    id: string;
+    title: string;
+    body: string;
+    evidence: string[];
+    severity: string;
+  }>;
+}) {
   return (
     <div className="legend-list">
       {insights.map((insight) => (
@@ -387,10 +596,15 @@ export function InsightCards({ insights }: { insights: Array<{ id: string; title
           className="category-card"
           style={{
             padding: 20,
-            border: insight.severity === "warning" ? "1px solid rgba(255,75,43,0.18)" : undefined,
+            border:
+              insight.severity === "warning"
+                ? "1px solid rgba(255,75,43,0.18)"
+                : undefined,
           }}
         >
-          <span className={`pill ${insight.severity === "warning" ? "warning" : ""}`}>
+          <span
+            className={`pill ${insight.severity === "warning" ? "warning" : ""}`}
+          >
             {insight.severity}
           </span>
           <h3 style={{ marginTop: 12, fontSize: 18 }}>{insight.title}</h3>
