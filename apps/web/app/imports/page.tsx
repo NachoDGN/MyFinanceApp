@@ -1,4 +1,5 @@
 import { AppShell } from "../../components/app-shell";
+import { ImportWorkbench } from "../../components/import-workbench";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { getImportsModel } from "../../lib/queries";
 
@@ -24,49 +25,26 @@ export default async function ImportsPage({
           <div>
             <h1 className="page-title">Imports</h1>
             <p className="page-subtitle">
-              Upload is deterministic and template-driven: account selection first, template selection second, preview before commit every time.
+              Upload spreadsheets in the browser, pick the correct template, preview the canonical rows, then commit them into Postgres with queued enrichment.
             </p>
           </div>
         </div>
 
-        <SectionCard title="New Upload" subtitle="Preview before commit" span="span-6">
-          <form className="form-grid">
-            <label className="input-label">
-              Account
-              <select className="input-select">
-                {model.dataset.accounts.map((account) => (
-                  <option key={account.id}>{account.displayName}</option>
-                ))}
-              </select>
-            </label>
-            <label className="input-label">
-              Template
-              <select className="input-select">
-                {model.templates.templates.map((template) => (
-                  <option key={template.id}>{template.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="input-label">
-              Filename
-              <input className="input-field" defaultValue="statement.csv" />
-            </label>
-            <label className="input-label">
-              Action
-              <button className="btn-pill" type="button">
-                Preview Import
-              </button>
-            </label>
-          </form>
+        <SectionCard title="New Upload" subtitle="Preview and commit from the browser" span="span-8">
+          <ImportWorkbench
+            accounts={model.dataset.accounts}
+            templates={model.templates.templates}
+            importBatches={model.importBatches}
+          />
         </SectionCard>
 
-        <SectionCard title="Preview Contract" subtitle="What preview returns" span="span-6">
+        <SectionCard title="Pipeline" subtitle="What happens after commit" span="span-4">
           <div className="legend-list">
             {[
-              "Parse success and detected date range",
-              "Duplicate count and sample normalized rows",
-              "Failed rows if parsing breaks",
-              "Commit summary with inserted row count and queued jobs",
+              "Template maps spreadsheet columns into canonical fields",
+              "Rows are fingerprinted before insert and duplicate-safe in Postgres",
+              "New rows enter with pending LLM enrichment metadata",
+              "Worker jobs classify transactions and store explanation + structured outputs",
             ].map((item) => (
               <span key={item} className="pill">
                 {item}
@@ -83,7 +61,7 @@ export default async function ImportsPage({
             model.dataset.accounts.find((account) => account.id === batch.accountId)?.displayName ?? batch.accountId,
             model.templates.templates.find((template) => template.id === batch.templateId)?.name ?? batch.templateId,
             batch.importedAt,
-            batch.detectedDateRange ? `${batch.detectedDateRange.start} → ${batch.detectedDateRange.end}` : "—",
+            batch.detectedDateRange ? `${batch.detectedDateRange.start} -> ${batch.detectedDateRange.end}` : "-",
             String(batch.rowCountInserted),
             String(batch.rowCountDuplicates),
             String(batch.rowCountFailed),

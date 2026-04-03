@@ -159,9 +159,9 @@ export interface ImportTemplate {
   thousandsSeparator?: string | null;
   dateFormat: string;
   defaultCurrency: CurrencyCode;
-  columnMapJson: Record<string, string>;
-  signLogicJson: Record<string, string | string[] | boolean>;
-  normalizationRulesJson: Record<string, string | string[] | boolean>;
+  columnMapJson: Record<string, unknown>;
+  signLogicJson: Record<string, unknown>;
+  normalizationRulesJson: Record<string, unknown>;
   active: boolean;
   version: number;
   createdAt: string;

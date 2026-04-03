@@ -1,5 +1,6 @@
 import { AppShell } from "../../components/app-shell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
+import { TemplateWorkbench } from "../../components/template-workbench";
 import { getTemplatesModel } from "../../lib/queries";
 
 export default async function TemplatesPage({
@@ -24,51 +25,22 @@ export default async function TemplatesPage({
           <div>
             <h1 className="page-title">Templates</h1>
             <p className="page-subtitle">
-              Templates define the canonical dataframe contract. Columns are mapped manually; AI is explicitly not used for spreadsheet inference.
+              Templates define how uploaded cash, brokerage, and exchange statements map into the canonical import dataframe before the enrichment pipeline runs.
             </p>
           </div>
         </div>
 
-        <SectionCard title="Template Configurator" subtitle="Deterministic column mapping" span="span-6">
-          <form className="form-grid">
-            <label className="input-label">
-              Worksheet
-              <input className="input-field" defaultValue="Transactions" />
-            </label>
-            <label className="input-label">
-              Header Row
-              <input className="input-field" defaultValue="3" />
-            </label>
-            <label className="input-label">
-              Default Currency
-              <select className="input-select" defaultValue="EUR">
-                <option>EUR</option>
-                <option>USD</option>
-              </select>
-            </label>
-            <label className="input-label">
-              Sign Logic
-              <select className="input-select" defaultValue="signed_amount">
-                <option>signed_amount</option>
-                <option>debit_credit_columns</option>
-              </select>
-            </label>
-            <label className="input-label" style={{ gridColumn: "1 / -1" }}>
-              Canonical Map Preview
-              <textarea
-                className="input-textarea"
-                defaultValue={`transaction_date -> date\ndescription_raw -> description\namount_original_signed -> net_amount\ncurrency_original -> currency`}
-              />
-            </label>
-          </form>
+        <SectionCard title="Template Configurator" subtitle="Persisted template mappings" span="span-8">
+          <TemplateWorkbench templates={model.templates.templates} />
         </SectionCard>
 
-        <SectionCard title="Versioning Rules" subtitle="Safe evolution" span="span-6">
+        <SectionCard title="Canonical Fields" subtitle="What templates can map" span="span-4">
           <div className="legend-list">
             {[
-              "Clone templates instead of destructive edits",
-              "Keep old versions active for historical reproducibility",
-              "Map to canonical fields before pandas ingest runs",
+              "transaction_date / posted_date",
+              "description_raw / amount_original_signed / currency_original",
+              "external_reference / balance_original / transaction_type_raw",
+              "security_symbol / security_name / quantity / unit_price_original",
             ].map((item) => (
               <span key={item} className="pill">
                 {item}

@@ -30,11 +30,19 @@ const execFileAsync = promisify(execFile);
 
 type CanonicalImportRow = {
   transaction_date: string;
+  posted_date?: string | null;
   description_raw: string;
   amount_original_signed: string;
   currency_original?: string | null;
   balance_original?: string | null;
   external_reference?: string | null;
+  transaction_type_raw?: string | null;
+  security_symbol?: string | null;
+  security_name?: string | null;
+  quantity?: string | null;
+  unit_price_original?: string | null;
+  fees_original?: string | null;
+  fx_rate?: string | null;
   raw_row_json?: string | null;
 };
 
@@ -215,6 +223,117 @@ function normalizeDescriptionForImport(value: string) {
   return value.trim().replace(/\s+/g, " ").toUpperCase();
 }
 
+function normalizeFingerprintText(value: string | null | undefined) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+function resolveSecurityId(
+  dataset: DomainDataset,
+  row: Pick<CanonicalImportRow, "security_symbol" | "security_name">,
+) {
+  const symbol = normalizeFingerprintText(row.security_symbol);
+  const securityName = normalizeFingerprintText(row.security_name);
+
+  if (!symbol && !securityName) {
+    return null;
+  }
+
+  const directMatch = dataset.securities.find((security) => {
+    const candidates = [
+      security.providerSymbol,
+      security.canonicalSymbol,
+      security.displaySymbol,
+      security.name,
+    ].map((value) => normalizeFingerprintText(value));
+    return (symbol && candidates.includes(symbol)) || (securityName && candidates.includes(securityName));
+  });
+
+  if (directMatch) {
+    return directMatch.id;
+  }
+
+  const aliasMatch = dataset.securityAliases.find((alias) => {
+    const aliasText = normalizeFingerprintText(alias.aliasTextNormalized);
+    return (symbol && aliasText === symbol) || (securityName && aliasText === securityName);
+  });
+
+  return aliasMatch?.securityId ?? null;
+}
+
+function safeParseRawRowJson(row: CanonicalImportRow) {
+  if (row.raw_row_json) {
+    try {
+      const parsed = JSON.parse(row.raw_row_json) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Fall through to canonical payload if the Python runner returned malformed row JSON.
+    }
+  }
+
+  return {
+    transaction_date: row.transaction_date,
+    posted_date: row.posted_date ?? null,
+    description_raw: row.description_raw,
+    amount_original_signed: row.amount_original_signed,
+    currency_original: row.currency_original ?? null,
+    balance_original: row.balance_original ?? null,
+    external_reference: row.external_reference ?? null,
+    transaction_type_raw: row.transaction_type_raw ?? null,
+    security_symbol: row.security_symbol ?? null,
+    security_name: row.security_name ?? null,
+    quantity: row.quantity ?? null,
+    unit_price_original: row.unit_price_original ?? null,
+    fees_original: row.fees_original ?? null,
+    fx_rate: row.fx_rate ?? null,
+  } satisfies Record<string, unknown>;
+}
+
+function buildImportFingerprint(
+  accountId: string,
+  row: {
+    transactionDate: string;
+    postedDate: string | null;
+    amountOriginal: string;
+    currencyOriginal: string;
+    descriptionRaw: string;
+    externalReference: string;
+    quantity: string | null;
+    unitPriceOriginal: string | null;
+    securitySymbol: string | null;
+    securityName: string | null;
+    transactionTypeRaw: string | null;
+  },
+) {
+  const components = [
+    accountId,
+    row.transactionDate,
+    row.postedDate ?? "",
+    row.amountOriginal,
+    row.currencyOriginal,
+    normalizeFingerprintText(row.descriptionRaw),
+  ];
+
+  const externalReference = normalizeFingerprintText(row.externalReference);
+  if (externalReference) {
+    components.push(externalReference);
+  } else {
+    components.push(
+      normalizeFingerprintText(row.quantity),
+      normalizeFingerprintText(row.unitPriceOriginal),
+      normalizeFingerprintText(row.securitySymbol),
+      normalizeFingerprintText(row.securityName),
+      normalizeFingerprintText(row.transactionTypeRaw),
+    );
+  }
+
+  return createHash("sha256").update(components.join("|")).digest("hex");
+}
+
 function resolveFxRateToEur(
   dataset: DomainDataset,
   currencyOriginal: string,
@@ -256,6 +375,8 @@ export function buildImportedTransactions(
 
   for (const row of rows) {
     const transactionDate = String(row.transaction_date ?? "").slice(0, 10);
+    const postedDateCandidate = String(row.posted_date ?? "").slice(0, 10);
+    const postedDate = postedDateCandidate || transactionDate;
     const descriptionRaw = String(row.description_raw ?? "").trim();
     if (!transactionDate || !descriptionRaw) {
       continue;
@@ -266,45 +387,62 @@ export function buildImportedTransactions(
       row.currency_original ?? account.defaultCurrency ?? "EUR",
     ).toUpperCase();
     const externalReference = String(row.external_reference ?? "");
-    const sourceFingerprint = createHash("sha256")
-      .update(
-        [
-          input.accountId,
-          transactionDate,
-          amountOriginal,
-          currencyOriginal,
-          descriptionRaw,
-          externalReference,
-        ].join("|"),
-      )
-      .digest("hex");
+    const quantity = row.quantity ? new Decimal(String(row.quantity)).toFixed(8) : null;
+    const unitPriceOriginal = row.unit_price_original
+      ? new Decimal(String(row.unit_price_original)).toFixed(8)
+      : null;
+    const securitySymbol = String(row.security_symbol ?? "").trim() || null;
+    const securityName = String(row.security_name ?? "").trim() || null;
+    const transactionTypeRaw = String(row.transaction_type_raw ?? "").trim() || null;
+    const sourceFingerprint = buildImportFingerprint(input.accountId, {
+      transactionDate,
+      postedDate,
+      amountOriginal,
+      currencyOriginal,
+      descriptionRaw,
+      externalReference,
+      quantity,
+      unitPriceOriginal,
+      securitySymbol,
+      securityName,
+      transactionTypeRaw,
+    });
 
     if (existingFingerprints.has(sourceFingerprint)) {
       duplicateCount += 1;
       continue;
     }
 
-    const fxRateToEur = resolveFxRateToEur(dataset, currencyOriginal, transactionDate);
+    const importedFxRate = row.fx_rate ? new Decimal(String(row.fx_rate)).toFixed(8) : null;
+    const fxRateToEur = importedFxRate ?? resolveFxRateToEur(dataset, currencyOriginal, transactionDate);
     const amountBaseEur = new Decimal(amountOriginal)
       .times(new Decimal(fxRateToEur ?? "1"))
       .toFixed(8);
-    const rawPayload = row.raw_row_json
-      ? (JSON.parse(row.raw_row_json) as Record<string, unknown>)
-      : ({
-          transaction_date: row.transaction_date,
-          description_raw: row.description_raw,
-          amount_original_signed: row.amount_original_signed,
-          currency_original: row.currency_original,
-          balance_original: row.balance_original,
-          external_reference: row.external_reference,
-        } as Record<string, unknown>);
+    const rawPayload = {
+      ...safeParseRawRowJson(row),
+      _import: {
+        posted_date: postedDate,
+        balance_original: row.balance_original ?? null,
+        external_reference: externalReference || null,
+        transaction_type_raw: transactionTypeRaw,
+        security_symbol: securitySymbol,
+        security_name: securityName,
+        quantity,
+        unit_price_original: unitPriceOriginal,
+        fees_original: row.fees_original ?? null,
+        fx_rate: importedFxRate,
+      },
+    } satisfies Record<string, unknown>;
 
-    const categoryCode =
-      account.assetDomain === "investment"
-        ? "uncategorized_investment"
-        : new Decimal(amountOriginal).gte(0)
-          ? "uncategorized_income"
-          : "uncategorized_expense";
+    const categoryCode = account.assetDomain === "investment" ? "uncategorized_investment" : null;
+    const securityId = resolveSecurityId(dataset, row);
+    const initialReviewReasons = [
+      "Pending enrichment pipeline.",
+      currencyOriginal !== "EUR" && !fxRateToEur ? "Missing FX rate for base-currency conversion." : null,
+      account.assetDomain === "investment" && !securityId && (securitySymbol || securityName)
+        ? "Security mapping unresolved."
+        : null,
+    ].filter(Boolean);
 
     inserted.push({
       id: randomUUID(),
@@ -316,7 +454,7 @@ export function buildImportedTransactions(
       sourceFingerprint,
       duplicateKey: sourceFingerprint,
       transactionDate,
-      postedDate: transactionDate,
+      postedDate,
       amountOriginal,
       currencyOriginal,
       amountBaseEur,
@@ -338,16 +476,22 @@ export function buildImportedTransactions(
       classificationSource: "system_fallback",
       classificationConfidence: "0.00",
       needsReview: true,
-      reviewReason: "Pending enrichment pipeline.",
+      reviewReason: initialReviewReasons.join(" "),
       excludeFromAnalytics: false,
       correctionOfTransactionId: null,
       voidedAt: null,
       manualNotes: null,
-      llmPayload: null,
+      llmPayload: {
+        analysisStatus: "pending",
+        explanation: null,
+        model: null,
+        error: null,
+        queuedAt: createdAt,
+      },
       rawPayload,
-      securityId: null,
-      quantity: null,
-      unitPriceOriginal: null,
+      securityId,
+      quantity,
+      unitPriceOriginal,
       createdAt,
       updatedAt: createdAt,
     });

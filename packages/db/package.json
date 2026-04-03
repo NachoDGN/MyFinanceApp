@@ -9,6 +9,7 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@myfinance/classification": "workspace:*",
     "@myfinance/domain": "workspace:*",
     "postgres": "^3.4.5",
     "zod": "^3.24.2"

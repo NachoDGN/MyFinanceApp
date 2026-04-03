@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import postgres from "postgres";
 
+import { enrichImportedTransaction } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
   buildImportedTransactions,
@@ -726,7 +727,11 @@ class SqlFinanceRepository implements FinanceRepository {
           ${preparedTransactions?.inserted.length ?? preview.rowCountParsed},
           ${preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates},
           ${preview.rowCountFailed},
-          ${serializeJson(sql, { sampleRows: preview.sampleRows })}::jsonb,
+          ${serializeJson(sql, {
+            sampleRows: preview.sampleRows,
+            parseErrors: preview.parseErrors,
+            dateRange: preview.dateRange,
+          })}::jsonb,
           ${serializeJson(sql, { jobsQueued })}::jsonb,
           ${"web-cli"},
           ${new Date().toISOString()}
@@ -751,9 +756,10 @@ class SqlFinanceRepository implements FinanceRepository {
           )
         `;
       }
+      const insertedTransactions: Transaction[] = [];
       if (preparedTransactions) {
         for (const transaction of preparedTransactions.inserted) {
-          await sql`
+          const inserted = await sql`
             insert into public.transactions (
               id,
               user_id,
@@ -771,6 +777,8 @@ class SqlFinanceRepository implements FinanceRepository {
               fx_rate_to_eur,
               description_raw,
               description_clean,
+              merchant_normalized,
+              counterparty_name,
               transaction_class,
               category_code,
               transfer_match_status,
@@ -782,7 +790,11 @@ class SqlFinanceRepository implements FinanceRepository {
               needs_review,
               review_reason,
               exclude_from_analytics,
+              llm_payload,
               raw_payload,
+              security_id,
+              quantity,
+              unit_price_original,
               created_at,
               updated_at
             ) values (
@@ -802,6 +814,8 @@ class SqlFinanceRepository implements FinanceRepository {
               ${transaction.fxRateToEur ?? null},
               ${transaction.descriptionRaw},
               ${transaction.descriptionClean},
+              ${transaction.merchantNormalized ?? null},
+              ${transaction.counterpartyName ?? null},
               ${transaction.transactionClass},
               ${transaction.categoryCode ?? null},
               ${transaction.transferMatchStatus},
@@ -813,19 +827,48 @@ class SqlFinanceRepository implements FinanceRepository {
               ${transaction.needsReview},
               ${transaction.reviewReason ?? null},
               ${transaction.excludeFromAnalytics},
+              ${serializeJson(sql, transaction.llmPayload)}::jsonb,
               ${serializeJson(sql, transaction.rawPayload)}::jsonb,
+              ${transaction.securityId ?? null},
+              ${transaction.quantity ?? null},
+              ${transaction.unitPriceOriginal ?? null},
               ${transaction.createdAt},
               ${transaction.updatedAt}
             )
+            on conflict (user_id, source_fingerprint) do nothing
+            returning id
           `;
+          if (inserted.length > 0) {
+            insertedTransactions.push(transaction);
+          }
         }
       }
+      await sql`
+        update public.accounts
+        set last_imported_at = ${new Date().toISOString()}
+        where id = ${normalizedInput.accountId}
+          and user_id = ${this.userId}
+      `;
+      const commitDuplicates =
+        (preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates) +
+        ((preparedTransactions?.inserted.length ?? 0) - insertedTransactions.length);
+      await sql`
+        update public.import_batches
+        set row_count_inserted = ${insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed)},
+            row_count_duplicates = ${preparedTransactions ? commitDuplicates : preview.rowCountDuplicates},
+            commit_summary_json = ${serializeJson(sql, {
+              jobsQueued,
+              transactionIds: insertedTransactions.map((transaction) => transaction.id),
+            })}::jsonb
+        where id = ${importBatchId}
+          and user_id = ${this.userId}
+      `;
       return {
         ...preview,
         importBatchId,
-        rowCountInserted: preparedTransactions?.inserted.length ?? preview.rowCountParsed,
-        rowCountDuplicates: preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates,
-        transactionIds: preparedTransactions?.inserted.map((transaction) => transaction.id) ?? [],
+        rowCountInserted: insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed),
+        rowCountDuplicates: preparedTransactions ? commitDuplicates : preview.rowCountDuplicates,
+        transactionIds: insertedTransactions.map((transaction) => transaction.id),
         jobsQueued: [...jobsQueued],
       };
     });
@@ -872,6 +915,114 @@ class SqlFinanceRepository implements FinanceRepository {
               processedJobs.push({
                 id: job.id,
                 jobType: "rule_parse",
+                status: "completed",
+              });
+              continue;
+            }
+
+            if (job.job_type === "classification") {
+              const payloadJson = parseJsonColumn<Record<string, unknown>>(job.payload_json ?? {});
+              const importBatchId =
+                payloadJson && typeof payloadJson.importBatchId === "string"
+                  ? payloadJson.importBatchId
+                  : "";
+              if (!importBatchId) {
+                throw new Error("Classification job is missing importBatchId.");
+              }
+
+              const latestDataset = await this.getDataset();
+              const rows = await sql`
+                select * from public.transactions
+                where user_id = ${this.userId}
+                  and import_batch_id = ${importBatchId}
+                  and coalesce(llm_payload->>'analysisStatus', 'pending') = 'pending'
+                order by transaction_date asc, created_at asc
+              `;
+
+              let failedTransactions = 0;
+              for (const row of rows) {
+                const transaction = mapFromSql<Transaction>(row);
+                const account = latestDataset.accounts.find(
+                  (candidate) => candidate.id === transaction.accountId,
+                );
+                if (!account) {
+                  throw new Error(`Account ${transaction.accountId} not found for classification.`);
+                }
+
+                try {
+                  const decision = await enrichImportedTransaction(
+                    latestDataset,
+                    account,
+                    transaction,
+                  );
+                  await sql`
+                    update public.transactions
+                    set transaction_class = ${decision.transactionClass},
+                        category_code = ${decision.categoryCode ?? null},
+                        merchant_normalized = ${decision.merchantNormalized ?? null},
+                        counterparty_name = ${decision.counterpartyName ?? null},
+                        economic_entity_id = ${decision.economicEntityId},
+                        classification_status = ${decision.classificationStatus},
+                        classification_source = ${decision.classificationSource},
+                        classification_confidence = ${decision.classificationConfidence},
+                        needs_review = ${decision.needsReview},
+                        review_reason = ${decision.reviewReason ?? null},
+                        llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
+                        updated_at = ${new Date().toISOString()}
+                    where id = ${transaction.id}
+                      and user_id = ${this.userId}
+                  `;
+                } catch (transactionError) {
+                  failedTransactions += 1;
+                  await sql`
+                    update public.transactions
+                    set needs_review = true,
+                        review_reason = ${
+                          transactionError instanceof Error
+                            ? transactionError.message
+                            : "Transaction enrichment failed."
+                        },
+                        llm_payload = ${serializeJson(sql, {
+                          ...(parseJsonColumn<Record<string, unknown>>(row.llm_payload ?? {}) ?? {}),
+                          analysisStatus: "failed",
+                          explanation: null,
+                          model: process.env.OPENAI_TRANSACTION_MODEL ?? "gpt-4.1-mini",
+                          error:
+                            transactionError instanceof Error
+                              ? transactionError.message
+                              : "Transaction enrichment failed.",
+                          analyzedAt: new Date().toISOString(),
+                        })}::jsonb,
+                        updated_at = ${new Date().toISOString()}
+                    where id = ${transaction.id}
+                      and user_id = ${this.userId}
+                  `;
+                }
+              }
+
+              await sql`
+                update public.import_batches
+                set classification_triggered_at = ${new Date().toISOString()}
+                where id = ${importBatchId}
+                  and user_id = ${this.userId}
+              `;
+              await sql`
+                update public.jobs
+                set status = 'completed',
+                    attempts = attempts + 1,
+                    started_at = ${startedAt},
+                    finished_at = ${new Date().toISOString()},
+                    last_error = null,
+                    payload_json = ${serializeJson(sql, {
+                      ...payloadJson,
+                      processedTransactions: rows.length,
+                      failedTransactions,
+                    })}::jsonb
+                where id = ${job.id}
+              `;
+              processedJobs.push({
+                id: job.id,
+                jobType: "classification",
                 status: "completed",
               });
               continue;
