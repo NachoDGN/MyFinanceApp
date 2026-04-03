@@ -1,0 +1,258 @@
+import { basename } from "node:path";
+
+import {
+  createLLMClient,
+  inferSpreadsheetLayout,
+  inferSpreadsheetTableStart,
+  isModelConfigured,
+  type LLMTaskClient,
+} from "@myfinance/llm";
+
+import { logTemporaryImportDebug } from "./import-debug";
+import {
+  columnLetterToIndex,
+  inspectSpreadsheetWorkbook,
+  previewSpreadsheetTable,
+} from "./repository";
+import { canonicalFieldKeys } from "./template-config";
+import type { Account, ImportTemplate } from "./types";
+
+export interface InferImportTemplateDraftInput {
+  userId: string;
+  account: Pick<
+    Account,
+    "id" | "institutionName" | "accountType" | "defaultCurrency"
+  >;
+  filePath: string;
+  originalFilename?: string;
+}
+
+export interface ImportTemplateInferenceDeps {
+  llmClient?: LLMTaskClient;
+  inspectWorkbook?: typeof inspectSpreadsheetWorkbook;
+  previewTable?: typeof previewSpreadsheetTable;
+  modelName?: string;
+}
+
+export function getImportTemplateInferenceConfig() {
+  return {
+    model:
+      process.env.LLM_IMPORT_TEMPLATE_MODEL ??
+      process.env.OPENAI_IMPORT_TEMPLATE_MODEL ??
+      process.env.LLM_TRANSACTION_MODEL ??
+      process.env.OPENAI_TRANSACTION_MODEL ??
+      process.env.LLM_RULES_MODEL ??
+      process.env.OPENAI_RULES_MODEL ??
+      "gpt-5.4",
+  };
+}
+
+export function isImportTemplateInferenceConfigured() {
+  return isModelConfigured(getImportTemplateInferenceConfig().model);
+}
+
+function buildTemplateName(input: InferImportTemplateDraftInput) {
+  const fileLabel = basename(input.originalFilename ?? input.filePath).replace(
+    /\.[^.]+$/,
+    "",
+  );
+
+  return `${input.account.institutionName} ${input.account.accountType} ${fileLabel} auto`;
+}
+
+function compactRecord<T extends Record<string, unknown>>(value: T) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => {
+      if (entry === null || entry === undefined || entry === "") return false;
+      return !Array.isArray(entry) || entry.length > 0;
+    }),
+  );
+}
+
+function buildSignLogicJson(
+  signLogic: Awaited<ReturnType<typeof inferSpreadsheetLayout>>["sign_logic"],
+) {
+  return compactRecord({
+    mode: signLogic.mode,
+    invert_sign: signLogic.invert_sign,
+    direction_column: signLogic.direction_column,
+    debit_column: signLogic.debit_column,
+    credit_column: signLogic.credit_column,
+    debit_values: signLogic.debit_values,
+    credit_values: signLogic.credit_values,
+  });
+}
+
+function assertInferredLayout(
+  layout: Awaited<ReturnType<typeof inferSpreadsheetLayout>>,
+) {
+  if (!layout.column_map.transaction_date) {
+    throw new Error(
+      "The inferred template is missing a transaction date column.",
+    );
+  }
+
+  const signMode = layout.sign_logic.mode;
+  if (
+    signMode !== "debit_credit_columns" &&
+    !layout.column_map.amount_original_signed
+  ) {
+    throw new Error("The inferred template is missing an amount column.");
+  }
+  if (
+    signMode === "amount_direction_column" &&
+    !layout.sign_logic.direction_column
+  ) {
+    throw new Error("The inferred template is missing a direction column.");
+  }
+  if (
+    signMode === "debit_credit_columns" &&
+    !layout.sign_logic.debit_column &&
+    !layout.sign_logic.credit_column
+  ) {
+    throw new Error(
+      "The inferred template is missing debit and credit columns.",
+    );
+  }
+}
+
+export async function inferImportTemplateDraft(
+  input: InferImportTemplateDraftInput,
+  deps: ImportTemplateInferenceDeps = {},
+): Promise<Omit<ImportTemplate, "id" | "createdAt" | "updatedAt" | "version">> {
+  const modelName = deps.modelName ?? getImportTemplateInferenceConfig().model;
+  logTemporaryImportDebug("template-inference:start", {
+    accountId: input.account.id,
+    institutionName: input.account.institutionName,
+    accountType: input.account.accountType,
+    originalFilename: input.originalFilename ?? null,
+    resolvedModel: modelName,
+    hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
+  });
+  if (!deps.llmClient && !isModelConfigured(modelName)) {
+    logTemporaryImportDebug("template-inference:missing-credentials", {
+      resolvedModel: modelName,
+      hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
+    });
+    throw new Error(
+      `Spreadsheet template inference requires LLM credentials. Resolved model: ${modelName}.`,
+    );
+  }
+
+  const llmClient = deps.llmClient ?? createLLMClient();
+  const inspectWorkbook = deps.inspectWorkbook ?? inspectSpreadsheetWorkbook;
+  const previewTable = deps.previewTable ?? previewSpreadsheetTable;
+
+  const workbookPreview = await inspectWorkbook(input.filePath);
+  if (workbookPreview.sheetPreviews.length === 0) {
+    throw new Error(
+      "No spreadsheet preview could be generated from the uploaded file.",
+    );
+  }
+  logTemporaryImportDebug("template-inference:workbook-preview", {
+    fileKind: workbookPreview.fileKind,
+    sheetNames: workbookPreview.sheetPreviews.map((sheet) => sheet.sheetName),
+    delimiter: workbookPreview.delimiter ?? null,
+    encoding: workbookPreview.encoding ?? null,
+  });
+
+  const tableStart = await inferSpreadsheetTableStart(
+    llmClient,
+    {
+      fileKind: workbookPreview.fileKind,
+      sheetPreviews: workbookPreview.sheetPreviews,
+    },
+    modelName,
+  );
+  logTemporaryImportDebug("template-inference:table-start", {
+    sheetName: tableStart.sheet_name ?? null,
+    headerRowIndex: tableStart.header_row_index,
+    rowsToSkipBeforeHeader: tableStart.rows_to_skip_before_header,
+    startColumnLetter: tableStart.start_column_letter,
+  });
+
+  const startColumnIndex = columnLetterToIndex(tableStart.start_column_letter);
+  const rowsToSkipBeforeHeader =
+    tableStart.rows_to_skip_before_header ??
+    Math.max(tableStart.header_row_index - 1, 0);
+  const resolvedSheetName =
+    workbookPreview.fileKind === "xlsx"
+      ? (tableStart.sheet_name ??
+        workbookPreview.sheetPreviews[0]?.sheetName ??
+        null)
+      : null;
+
+  const tablePreview = await previewTable({
+    filePath: input.filePath,
+    fileKind: workbookPreview.fileKind,
+    sheetName: resolvedSheetName,
+    headerRowIndex: tableStart.header_row_index,
+    rowsToSkipBeforeHeader,
+    startColumnIndex,
+    delimiter: workbookPreview.delimiter ?? null,
+    encoding: workbookPreview.encoding ?? null,
+  });
+  logTemporaryImportDebug("template-inference:table-preview", {
+    sheetName: tablePreview.sheetName ?? null,
+    headers: tablePreview.headers,
+  });
+
+  const layout = await inferSpreadsheetLayout(
+    llmClient,
+    {
+      tablePreviewCsv: tablePreview.previewCsv,
+      fileKind: workbookPreview.fileKind,
+      sheetName: tablePreview.sheetName,
+      canonicalFields: canonicalFieldKeys,
+      accountType: input.account.accountType,
+      defaultCurrency: input.account.defaultCurrency,
+      detectedHeaders: tablePreview.headers,
+    },
+    modelName,
+  );
+  assertInferredLayout(layout);
+  logTemporaryImportDebug("template-inference:layout", {
+    columnMap: layout.column_map,
+    signLogic: layout.sign_logic,
+    dateDayFirst: layout.date_day_first,
+  });
+
+  const template = {
+    userId: input.userId,
+    name: buildTemplateName(input),
+    institutionName: input.account.institutionName,
+    compatibleAccountType: input.account.accountType,
+    fileKind: workbookPreview.fileKind,
+    sheetName: tablePreview.sheetName,
+    headerRowIndex: tableStart.header_row_index,
+    rowsToSkipBeforeHeader,
+    rowsToSkipAfterHeader: 0,
+    delimiter:
+      workbookPreview.fileKind === "csv"
+        ? (workbookPreview.delimiter ?? ",")
+        : null,
+    encoding:
+      workbookPreview.fileKind === "csv"
+        ? (workbookPreview.encoding ?? "utf-8")
+        : null,
+    decimalSeparator: null,
+    thousandsSeparator: null,
+    dateFormat: "%Y-%m-%d",
+    defaultCurrency: input.account.defaultCurrency,
+    columnMapJson: compactRecord(layout.column_map),
+    signLogicJson: buildSignLogicJson(layout.sign_logic),
+    normalizationRulesJson: compactRecord({
+      date_day_first: layout.date_day_first,
+      start_column_index: startColumnIndex,
+      start_column_letter: tableStart.start_column_letter,
+    }),
+    active: true,
+  };
+  logTemporaryImportDebug("template-inference:complete", {
+    templateName: template.name,
+    compatibleAccountType: template.compatibleAccountType,
+    fileKind: template.fileKind,
+    sheetName: template.sheetName ?? null,
+  });
+  return template;
+}

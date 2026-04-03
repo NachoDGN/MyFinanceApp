@@ -24,6 +24,7 @@ import type {
   ResetWorkspaceResult,
   Transaction,
   UpdateTransactionInput,
+  FileKind,
 } from "./types";
 
 const execFileAsync = promisify(execFile);
@@ -49,6 +50,24 @@ type CanonicalImportRow = {
 type DeterministicImportResult = (ImportPreviewResult | ImportCommitResult) & {
   normalizedRows?: CanonicalImportRow[];
 };
+
+export interface SpreadsheetSheetPreview {
+  sheetName: string | null;
+  previewCsv: string;
+}
+
+export interface SpreadsheetWorkbookPreview {
+  fileKind: FileKind;
+  delimiter?: string | null;
+  encoding?: string | null;
+  sheetPreviews: SpreadsheetSheetPreview[];
+}
+
+export interface SpreadsheetTablePreview {
+  sheetName: string | null;
+  previewCsv: string;
+  headers: string[];
+}
 
 export interface FinanceRepository {
   getDataset(): Promise<DomainDataset>;
@@ -167,6 +186,67 @@ function resolvePythonBin() {
   return "python3";
 }
 
+function buildRunnerArgs(
+  mode: "preview" | "commit" | "inspect-workbook" | "preview-table",
+  input: Record<string, string | number | null | undefined>,
+) {
+  const args = [resolveIngestRunnerPath(), mode];
+  for (const [key, value] of Object.entries(input)) {
+    if (value === null || value === undefined || value === "") continue;
+    args.push(`--${key}`);
+    args.push(String(value));
+  }
+  return args;
+}
+
+export function columnLetterToIndex(columnLetter: string) {
+  let result = 0;
+  for (const character of columnLetter.trim().toUpperCase()) {
+    result = result * 26 + (character.charCodeAt(0) - 64);
+  }
+  return result - 1;
+}
+
+export async function inspectSpreadsheetWorkbook(
+  filePath: string,
+): Promise<SpreadsheetWorkbookPreview> {
+  const { stdout } = await execFileAsync(
+    resolvePythonBin(),
+    buildRunnerArgs("inspect-workbook", {
+      "file-path": filePath,
+    }),
+  );
+
+  return JSON.parse(stdout) as SpreadsheetWorkbookPreview;
+}
+
+export async function previewSpreadsheetTable(input: {
+  filePath: string;
+  fileKind: FileKind;
+  sheetName?: string | null;
+  headerRowIndex: number;
+  rowsToSkipBeforeHeader?: number;
+  startColumnIndex?: number;
+  delimiter?: string | null;
+  encoding?: string | null;
+}): Promise<SpreadsheetTablePreview> {
+  const { stdout } = await execFileAsync(
+    resolvePythonBin(),
+    buildRunnerArgs("preview-table", {
+      "file-path": input.filePath,
+      "file-kind": input.fileKind,
+      "sheet-name": input.sheetName ?? null,
+      "header-row-index": input.headerRowIndex,
+      "rows-to-skip-before-header": input.rowsToSkipBeforeHeader ?? 0,
+      "start-column-index": input.startColumnIndex ?? 0,
+      delimiter: input.delimiter ?? null,
+      encoding: input.encoding ?? null,
+    }),
+  );
+
+  return JSON.parse(stdout) as SpreadsheetTablePreview;
+}
+
 export async function runDeterministicImport(
   mode: "preview" | "commit",
   input: ImportExecutionInput,
@@ -179,18 +259,17 @@ export async function runDeterministicImport(
     );
   }
 
-  const { stdout } = await execFileAsync(resolvePythonBin(), [
-    resolveIngestRunnerPath(),
-    mode,
-    "--file-path",
-    normalizedInput.filePath,
-    "--account-id",
-    normalizedInput.accountId,
-    "--template-id",
-    normalizedInput.templateId,
-    "--template-json",
-    JSON.stringify(createRunnerTemplate(dataset, normalizedInput.templateId)),
-  ]);
+  const { stdout } = await execFileAsync(
+    resolvePythonBin(),
+    buildRunnerArgs(mode, {
+      "file-path": normalizedInput.filePath,
+      "account-id": normalizedInput.accountId,
+      "template-id": normalizedInput.templateId,
+      "template-json": JSON.stringify(
+        createRunnerTemplate(dataset, normalizedInput.templateId),
+      ),
+    }),
+  );
 
   return JSON.parse(stdout) as DeterministicImportResult;
 }
