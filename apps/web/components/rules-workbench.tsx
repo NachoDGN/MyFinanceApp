@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
 
+import { applyRuleDraftAction, queueRuleDraftAction } from "../app/actions";
 import { SectionCard, SimpleTable } from "./primitives";
 
 function formatTimestamp(value: string | null | undefined) {
@@ -81,42 +82,27 @@ export function RulesWorkbench({ model }: { model: RulesWorkbenchModel }) {
 
     startTransition(async () => {
       setFeedback(null);
-      const response = await fetch("/api/rules/drafts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestText,
-          apply: true,
-        }),
-      });
-
-      if (!response.ok) {
+      try {
+        await queueRuleDraftAction(requestText);
+        setRequestText("");
+        setFeedback("Draft queued. The worker will parse it in the background.");
+        router.refresh();
+      } catch {
         setFeedback("Failed to queue the draft. Check the worker and parser configuration.");
-        return;
       }
-
-      setRequestText("");
-      setFeedback("Draft queued. The worker will parse it in the background.");
-      router.refresh();
     });
   }
 
   function applyDraft(jobId: string) {
     startTransition(async () => {
       setFeedback(null);
-      const response = await fetch(`/api/rules/drafts/${jobId}/apply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apply: true }),
-      });
-
-      if (!response.ok) {
+      try {
+        await applyRuleDraftAction(jobId);
+        setFeedback("Parsed draft promoted into the deterministic rule table.");
+        router.refresh();
+      } catch {
         setFeedback("Failed to apply the parsed draft.");
-        return;
       }
-
-      setFeedback("Parsed draft promoted into the deterministic rule table.");
-      router.refresh();
     });
   }
 

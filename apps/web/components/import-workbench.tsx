@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import type { Account, ImportBatch, ImportCommitResult, ImportPreviewResult, ImportTemplate } from "@myfinance/domain";
+import { commitImportAction, previewImportAction } from "../app/actions";
 
 type ImportResult = ImportPreviewResult | ImportCommitResult;
 
@@ -38,17 +39,9 @@ export function ImportWorkbench({
     formData.append("templateId", selectedTemplateId);
     formData.append("file", selectedFile);
 
-    const response = await fetch(`/api/imports/${mode}`, {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || `${mode} import failed.`);
-    }
-
-    const payload = (await response.json()) as ImportResult;
+    const payload = await (
+      mode === "commit" ? commitImportAction(formData) : previewImportAction(formData)
+    ) as ImportResult;
     setResult(payload);
     setMessage(
       mode === "commit"

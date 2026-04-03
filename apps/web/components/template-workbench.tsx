@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import type { ImportTemplate } from "@myfinance/domain";
+import { createTemplateAction } from "../app/actions";
 
 const defaultColumnMap = `{
   "transaction_date": "Date",
@@ -36,44 +37,28 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
   async function handleSubmit(formData: FormData) {
     setMessage(null);
 
-    const payload = {
-      template: {
-        name: String(formData.get("name") ?? ""),
-        institutionName: String(formData.get("institutionName") ?? ""),
-        compatibleAccountType: String(formData.get("compatibleAccountType") ?? ""),
-        fileKind: String(formData.get("fileKind") ?? "csv"),
-        sheetName: String(formData.get("sheetName") ?? "") || null,
-        headerRowIndex: Number(formData.get("headerRowIndex") ?? 1),
-        rowsToSkipBeforeHeader: Number(formData.get("rowsToSkipBeforeHeader") ?? 0),
-        rowsToSkipAfterHeader: Number(formData.get("rowsToSkipAfterHeader") ?? 0),
-        delimiter: String(formData.get("delimiter") ?? "") || null,
-        encoding: String(formData.get("encoding") ?? "") || null,
-        decimalSeparator: String(formData.get("decimalSeparator") ?? "") || null,
-        thousandsSeparator: String(formData.get("thousandsSeparator") ?? "") || null,
-        dateFormat: String(formData.get("dateFormat") ?? "%Y-%m-%d"),
-        defaultCurrency: String(formData.get("defaultCurrency") ?? "EUR"),
-        columnMapJson: JSON.parse(String(formData.get("columnMapJson") ?? "{}")),
-        signLogicJson: JSON.parse(String(formData.get("signLogicJson") ?? "{}")),
-        normalizationRulesJson: JSON.parse(String(formData.get("normalizationRulesJson") ?? "{}")),
-        active: true,
-      },
-      apply: true,
-    };
-
-    const response = await fetch("/api/templates", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
+    const result = await createTemplateAction({
+      name: String(formData.get("name") ?? ""),
+      institutionName: String(formData.get("institutionName") ?? ""),
+      compatibleAccountType: String(
+        formData.get("compatibleAccountType") ?? "",
+      ) as ImportTemplate["compatibleAccountType"],
+      fileKind: String(formData.get("fileKind") ?? "csv") as ImportTemplate["fileKind"],
+      sheetName: String(formData.get("sheetName") ?? "") || null,
+      headerRowIndex: Number(formData.get("headerRowIndex") ?? 1),
+      rowsToSkipBeforeHeader: Number(formData.get("rowsToSkipBeforeHeader") ?? 0),
+      rowsToSkipAfterHeader: Number(formData.get("rowsToSkipAfterHeader") ?? 0),
+      delimiter: String(formData.get("delimiter") ?? "") || null,
+      encoding: String(formData.get("encoding") ?? "") || null,
+      decimalSeparator: String(formData.get("decimalSeparator") ?? "") || null,
+      thousandsSeparator: String(formData.get("thousandsSeparator") ?? "") || null,
+      dateFormat: String(formData.get("dateFormat") ?? "%Y-%m-%d"),
+      defaultCurrency: String(formData.get("defaultCurrency") ?? "EUR"),
+      columnMapJson: JSON.parse(String(formData.get("columnMapJson") ?? "{}")),
+      signLogicJson: JSON.parse(String(formData.get("signLogicJson") ?? "{}")),
+      normalizationRulesJson: JSON.parse(String(formData.get("normalizationRulesJson") ?? "{}")),
+      active: true,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || "Template creation failed.");
-    }
-
-    const result = (await response.json()) as { templateId?: string };
     setMessage(`Template saved${result.templateId ? `: ${result.templateId}` : "."}`);
     router.refresh();
   }
