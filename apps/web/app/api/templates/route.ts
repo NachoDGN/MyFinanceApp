@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService, SEEDED_USER_ID } from "@myfinance/domain";
+import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
+import { FinanceDomainService } from "@myfinance/domain";
 
 const domain = new FinanceDomainService(createFinanceRepository());
 
@@ -45,9 +45,10 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const body = templateBodySchema.parse(await request.json());
+  const { seededUserId } = getDbRuntimeConfig();
   const result = await domain.createTemplate({
     template: {
-      userId: process.env.APP_SEEDED_USER_ID ?? SEEDED_USER_ID,
+      userId: seededUserId,
       ...body.template,
       sheetName: body.template.sheetName ?? null,
       delimiter: body.template.delimiter ?? null,

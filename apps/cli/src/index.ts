@@ -8,7 +8,7 @@ import {
   buildMetricResult,
 } from "@myfinance/analytics";
 import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService } from "@myfinance/domain";
+import { FinanceDomainService, resolvePeriodSelection, todayIso } from "@myfinance/domain";
 import { createMarketDataProvider } from "@myfinance/market-data";
 
 const repository = createFinanceRepository();
@@ -19,6 +19,9 @@ type CommonOptions = {
   currency?: string;
   json?: boolean;
   period?: string;
+  asOf?: string;
+  start?: string;
+  end?: string;
 };
 
 async function resolveScope(scopeValue = "consolidated") {
@@ -54,9 +57,12 @@ function getDisplayCurrency(options: CommonOptions) {
 }
 
 function getPeriod(options: CommonOptions) {
-  return options.period === "ytd"
-    ? { start: "2026-01-01", end: "2026-04-03", preset: "ytd" as const }
-    : { start: "2026-04-01", end: "2026-04-03", preset: "mtd" as const };
+  return resolvePeriodSelection({
+    preset: options.period,
+    start: options.start,
+    end: options.end,
+    referenceDate: options.asOf ?? todayIso(),
+  });
 }
 
 const program = new Command();
@@ -70,7 +76,10 @@ program
   .command("dashboard summary")
   .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
   .option("--currency <currency>", "EUR or USD", "EUR")
-  .option("--period <period>", "mtd or ytd", "mtd")
+  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
+  .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
+  .option("--start <date>", "Custom period start in YYYY-MM-DD format")
+  .option("--end <date>", "Custom period end in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
@@ -78,6 +87,7 @@ program
       scope,
       displayCurrency: getDisplayCurrency(options),
       period: getPeriod(options),
+      referenceDate: options.asOf,
     });
     render(summary, options.json);
   });
@@ -87,22 +97,26 @@ program
   .argument("<metricId>")
   .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
   .option("--currency <currency>", "EUR or USD", "EUR")
+  .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (metricId: string, options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
-    const metric = buildMetricResult(dataset, scope, getDisplayCurrency(options), metricId);
+    const metric = buildMetricResult(dataset, scope, getDisplayCurrency(options), metricId, {
+      referenceDate: options.asOf,
+    });
     render(metric, options.json);
   });
 
 program
   .command("insights list")
   .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
+  .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
     const insights = {
       schemaVersion: "v1",
-      insights: buildInsights(dataset, scope),
+      insights: buildInsights(dataset, scope, { referenceDate: options.asOf }),
       generatedAt: new Date().toISOString(),
     };
     render(insights, options.json);

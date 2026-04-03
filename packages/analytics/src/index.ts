@@ -3,7 +3,6 @@ import { Decimal } from "decimal.js";
 import type {
   DashboardSummaryResponse,
   DomainDataset,
-  HoldingRow,
   InsightCard,
   MetricResult,
   PeriodSelection,
@@ -11,96 +10,49 @@ import type {
   Scope,
   Transaction,
 } from "@myfinance/domain";
-import { TODAY_ISO, getLatestBalanceSnapshots } from "@myfinance/domain";
+import {
+  buildHoldingRows,
+  filterTransactionsByPeriod,
+  filterTransactionsByScope,
+  getDatasetLatestDate,
+  getLatestBalanceSnapshots,
+  getPreviousComparablePeriod,
+  resolveFxRate,
+  resolvePeriodSelection,
+  resolveScopeEntityIds,
+  shiftIsoDate,
+  startOfMonthIso,
+  sumSnapshotField,
+  todayIso,
+} from "@myfinance/domain";
 import { metricRegistry } from "./registry";
 
 export { metricRegistry } from "./registry";
 
-const CURRENT_PERIOD: PeriodSelection = {
-  start: "2026-04-01",
-  end: TODAY_ISO,
-  preset: "mtd",
-};
-
-const PREVIOUS_MTD_PERIOD: PeriodSelection = {
-  start: "2026-03-01",
-  end: "2026-03-03",
-  preset: "mtd",
-};
-
-function sumStrings(values: Array<string | null | undefined>): string {
+function sumStrings(values: Array<string | null | undefined>) {
   return values.reduce((sum, value) => sum.plus(new Decimal(value ?? 0)), new Decimal(0)).toFixed(2);
 }
 
-function safeDividePercent(numerator: Decimal, denominator: Decimal): string | null {
+function safeDividePercent(numerator: Decimal, denominator: Decimal) {
   if (denominator.eq(0)) return null;
   return numerator.div(denominator).mul(100).toFixed(2);
 }
 
-function resolveScopeEntityIds(dataset: DomainDataset, scope: Scope): string[] {
-  if (scope.kind === "consolidated") {
-    return dataset.entities.map((entity) => entity.id);
-  }
-  if (scope.kind === "entity" && scope.entityId) {
-    return [scope.entityId];
-  }
-  if (scope.kind === "account" && scope.accountId) {
-    const account = dataset.accounts.find((row) => row.id === scope.accountId);
-    return account ? [account.entityId] : [];
-  }
-  return [];
-}
-
-function filterTransactionsByScope(dataset: DomainDataset, scope: Scope): Transaction[] {
-  if (scope.kind === "consolidated") {
-    return dataset.transactions;
-  }
-  if (scope.kind === "entity" && scope.entityId) {
-    return dataset.transactions.filter((row) => row.economicEntityId === scope.entityId);
-  }
-  if (scope.kind === "account" && scope.accountId) {
-    return dataset.transactions.filter((row) => row.accountId === scope.accountId);
-  }
-  return dataset.transactions;
-}
-
-function filterTransactionsByPeriod(
-  transactions: Transaction[],
-  period: PeriodSelection,
-): Transaction[] {
-  return transactions.filter(
-    (row) => row.transactionDate >= period.start && row.transactionDate <= period.end,
-  );
-}
-
-function resolveFxRate(dataset: DomainDataset, from: string, to: string): Decimal {
-  if (from === to) return new Decimal(1);
-  const match = dataset.fxRates.find(
-    (row) => row.baseCurrency === from && row.quoteCurrency === to,
-  );
-  if (match) return new Decimal(match.rate);
-  const reverse = dataset.fxRates.find(
-    (row) => row.baseCurrency === to && row.quoteCurrency === from,
-  );
-  if (reverse) return new Decimal(1).div(reverse.rate);
-  return new Decimal(1);
-}
-
-function toDisplayAmount(dataset: DomainDataset, amountEur: string | null, currency: string): string | null {
+function toDisplayAmount(dataset: DomainDataset, amountEur: string | null, currency: string) {
   if (amountEur === null) return null;
   if (currency === "EUR") return new Decimal(amountEur).toFixed(2);
   return new Decimal(amountEur).mul(resolveFxRate(dataset, "EUR", currency)).toFixed(2);
 }
 
-function amountMagnitudeEur(transaction: Transaction): Decimal {
+function amountMagnitudeEur(transaction: Transaction) {
   return new Decimal(transaction.amountBaseEur).abs();
 }
 
-function isIncomeLike(transaction: Transaction): boolean {
+function isIncomeLike(transaction: Transaction) {
   return ["income", "dividend", "interest"].includes(transaction.transactionClass);
 }
 
-function isExcludedIncome(transaction: Transaction): boolean {
+function isExcludedIncome(transaction: Transaction) {
   return [
     "owner_contribution",
     "reimbursement",
@@ -112,11 +64,11 @@ function isExcludedIncome(transaction: Transaction): boolean {
   ].includes(transaction.transactionClass);
 }
 
-function isSpendingLike(transaction: Transaction): boolean {
+function isSpendingLike(transaction: Transaction) {
   return ["expense", "fee", "refund"].includes(transaction.transactionClass);
 }
 
-function isExcludedSpending(transaction: Transaction): boolean {
+function isExcludedSpending(transaction: Transaction) {
   return [
     "transfer_internal",
     "transfer_external",
@@ -129,57 +81,9 @@ function isExcludedSpending(transaction: Transaction): boolean {
   ].includes(transaction.transactionClass);
 }
 
-function currentPortfolioHoldings(dataset: DomainDataset, scope: Scope): HoldingRow[] {
+function currentCashTotal(dataset: DomainDataset, scope: Scope, asOfDate: string) {
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const positions = dataset.investmentPositions.filter((position) =>
-    entityIds.has(position.entityId),
-  );
-  return positions.map((position) => {
-    const security = dataset.securities.find((row) => row.id === position.securityId);
-    const latestPrice = dataset.securityPrices.find((row) => row.securityId === position.securityId);
-    let currentValueEur: string | null = null;
-    let unrealizedPnlEur: string | null = null;
-    let unrealizedPnlPercent: string | null = null;
-
-    if (latestPrice && security) {
-      const fxToEur = resolveFxRate(dataset, latestPrice.currency, "EUR");
-      currentValueEur = new Decimal(position.openQuantity)
-        .mul(latestPrice.price)
-        .mul(fxToEur)
-        .toFixed(2);
-      unrealizedPnlEur = new Decimal(currentValueEur)
-        .minus(position.openCostBasisEur)
-        .toFixed(2);
-      unrealizedPnlPercent = safeDividePercent(
-        new Decimal(unrealizedPnlEur),
-        new Decimal(position.openCostBasisEur),
-      );
-    }
-
-    return {
-      securityId: position.securityId,
-      accountId: position.accountId,
-      entityId: position.entityId,
-      symbol: security?.displaySymbol ?? position.securityId,
-      securityName: security?.name ?? position.securityId,
-      quantity: position.openQuantity,
-      avgCostEur: position.avgCostEur,
-      currentPrice: latestPrice?.price ?? null,
-      currentPriceCurrency: latestPrice?.currency ?? null,
-      currentValueEur,
-      unrealizedPnlEur,
-      unrealizedPnlPercent,
-      quoteFreshness: latestPrice ? "delayed" : "missing",
-      quoteTimestamp: latestPrice?.quoteTimestamp ?? null,
-      unrealizedComplete: position.unrealizedComplete,
-    };
-  });
-}
-
-function currentCashTotal(dataset: DomainDataset, scope: Scope): string {
-  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const latestSnapshots = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots);
-  return latestSnapshots
+  return getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, asOfDate)
     .filter((snapshot) => {
       const account = dataset.accounts.find((row) => row.id === snapshot.accountId);
       return account && entityIds.has(account.entityId);
@@ -188,39 +92,49 @@ function currentCashTotal(dataset: DomainDataset, scope: Scope): string {
     .toFixed(2);
 }
 
-function currentPortfolioValue(dataset: DomainDataset, scope: Scope): string {
-  return sumStrings(currentPortfolioHoldings(dataset, scope).map((row) => row.currentValueEur));
+function currentPortfolioValue(dataset: DomainDataset, scope: Scope, asOfDate: string) {
+  return sumStrings(buildHoldingRows(dataset, scope, asOfDate).map((row) => row.currentValueEur));
 }
 
-function currentPortfolioUnrealized(dataset: DomainDataset, scope: Scope): string {
-  return sumStrings(currentPortfolioHoldings(dataset, scope).map((row) => row.unrealizedPnlEur));
+function currentPortfolioUnrealized(dataset: DomainDataset, scope: Scope, asOfDate: string) {
+  return sumStrings(buildHoldingRows(dataset, scope, asOfDate).map((row) => row.unrealizedPnlEur));
 }
 
-function currentValueComparison(dataset: DomainDataset, scope: Scope, selector: "cash" | "portfolio" | "networth" | "unrealized"): string {
+function latestPortfolioSnapshotDate(dataset: DomainDataset, scope: Scope, asOfDate: string) {
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const priorSnapshot = dataset.dailyPortfolioSnapshots
-    .filter(
-      (row) => row.snapshotDate === "2026-03-31" && entityIds.has(row.entityId),
-    )
-    .reduce((sum, row) => sum.plus(row.totalPortfolioValueEur), new Decimal(0));
-  const priorCash = getLatestBalanceSnapshots(
-    dataset.accountBalanceSnapshots.filter((row) => row.asOfDate <= "2026-03-31"),
-  )
-    .filter((row) => {
-      const account = dataset.accounts.find((accountRow) => accountRow.id === row.accountId);
-      return account && entityIds.has(account.entityId);
-    })
-    .reduce((sum, row) => sum.plus(row.balanceBaseEur), new Decimal(0));
-  if (selector === "cash") return priorCash.toFixed(2);
+  return dataset.dailyPortfolioSnapshots
+    .filter((row) => entityIds.has(row.entityId) && row.snapshotDate <= asOfDate)
+    .map((row) => row.snapshotDate)
+    .sort()
+    .at(-1) ?? null;
+}
+
+function currentValueComparison(
+  dataset: DomainDataset,
+  scope: Scope,
+  selector: "cash" | "portfolio" | "networth" | "unrealized",
+  referenceDate: string,
+) {
+  const previousMonthEnd = shiftIsoDate(startOfMonthIso(referenceDate), -1);
+  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
+  const snapshotDate = latestPortfolioSnapshotDate(dataset, scope, previousMonthEnd);
+  const snapshots = snapshotDate
+    ? dataset.dailyPortfolioSnapshots.filter(
+        (row) => row.snapshotDate === snapshotDate && entityIds.has(row.entityId),
+      )
+    : [];
+  const priorCash = currentCashTotal(dataset, scope, previousMonthEnd);
+
+  if (selector === "cash") return priorCash;
   if (selector === "portfolio") {
-    return priorSnapshot.minus(priorCash).toFixed(2);
+    return new Decimal(sumSnapshotField(snapshots, "totalPortfolioValueEur"))
+      .minus(priorCash)
+      .toFixed(2);
   }
-  if (selector === "networth") return priorSnapshot.toFixed(2);
-  return currentPortfolioHoldings(dataset, scope)
-    .map((row) => row.unrealizedPnlEur ?? "0")
-    .reduce((sum, value) => sum.plus(value), new Decimal(0))
-    .minus("279.81")
-    .toFixed(2);
+  if (selector === "networth") {
+    return sumSnapshotField(snapshots, "totalPortfolioValueEur");
+  }
+  return sumSnapshotField(snapshots, "unrealizedPnlEur");
 }
 
 function flowMetric(
@@ -228,11 +142,11 @@ function flowMetric(
   scope: Scope,
   period: PeriodSelection,
   kind: "income" | "spending",
-): string {
-  const scopedTransactions = filterTransactionsByScope(dataset, scope);
-  const transactions = filterTransactionsByPeriod(scopedTransactions, period).filter(
-    (row) => !row.excludeFromAnalytics,
-  );
+) {
+  const transactions = filterTransactionsByPeriod(
+    filterTransactionsByScope(dataset, scope),
+    period,
+  ).filter((row) => !row.excludeFromAnalytics);
 
   if (kind === "income") {
     return transactions
@@ -252,7 +166,8 @@ function flowMetric(
     .toFixed(2);
 }
 
-function qualitySummary(dataset: DomainDataset, scope: Scope): QualitySummary {
+function qualitySummary(dataset: DomainDataset, scope: Scope, referenceDate: string): QualitySummary {
+  const currentPeriod = resolvePeriodSelection({ preset: "mtd", referenceDate });
   const scopedTransactions = filterTransactionsByScope(dataset, scope);
   const scopedAccounts = scope.kind === "consolidated"
     ? dataset.accounts
@@ -261,13 +176,12 @@ function qualitySummary(dataset: DomainDataset, scope: Scope): QualitySummary {
       : scope.kind === "account" && scope.accountId
         ? dataset.accounts.filter((account) => account.id === scope.accountId)
         : dataset.accounts;
-
   const staleAccounts = scopedAccounts
     .map((account) => {
       const lastImportDate = account.lastImportedAt ? new Date(account.lastImportedAt) : null;
       const threshold = account.staleAfterDays ?? (account.assetDomain === "investment" ? 3 : 7);
       const ageDays = lastImportDate
-        ? Math.floor((Date.parse(`${TODAY_ISO}T12:00:00Z`) - lastImportDate.getTime()) / 86400000)
+        ? Math.floor((Date.parse(`${referenceDate}T12:00:00Z`) - lastImportDate.getTime()) / 86400000)
         : threshold + 1;
       return { account, ageDays, threshold };
     })
@@ -278,13 +192,9 @@ function qualitySummary(dataset: DomainDataset, scope: Scope): QualitySummary {
       staleSinceDays: row.ageDays,
     }));
 
-  const priceFreshness = dataset.securityPrices.every((price) => price.isDelayed)
-    ? "delayed"
-    : "fresh";
-
   return {
     pendingReviewCount: scopedTransactions.filter((row) => row.needsReview).length,
-    unclassifiedAmountMtdEur: filterTransactionsByPeriod(scopedTransactions, CURRENT_PERIOD)
+    unclassifiedAmountMtdEur: filterTransactionsByPeriod(scopedTransactions, currentPeriod)
       .filter((row) => row.categoryCode?.startsWith("uncategorized"))
       .reduce((sum, row) => sum.plus(amountMagnitudeEur(row)), new Decimal(0))
       .toFixed(2),
@@ -295,8 +205,8 @@ function qualitySummary(dataset: DomainDataset, scope: Scope): QualitySummary {
       accountName: account.displayName,
       latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
     })),
-    latestDataDateByScope: TODAY_ISO,
-    priceFreshness,
+    latestDataDateByScope: getDatasetLatestDate(dataset, referenceDate),
+    priceFreshness: dataset.securityPrices.every((price) => price.isDelayed) ? "delayed" : "fresh",
   };
 }
 
@@ -305,70 +215,68 @@ export function buildMetricResult(
   scope: Scope,
   displayCurrency: string,
   metricId: string,
+  options: { referenceDate?: string } = {},
 ): MetricResult {
   const definition = metricRegistry.find((metric) => metric.metricId === metricId);
   if (!definition) {
     throw new Error(`Metric ${metricId} is not registered.`);
   }
 
+  const referenceDate = options.referenceDate ?? todayIso();
+  const currentPeriod = resolvePeriodSelection({ preset: "mtd", referenceDate });
+  const comparisonPeriod = getPreviousComparablePeriod(currentPeriod);
   let valueBaseEur: string | null = null;
   let comparisonBaseEur: string | null = null;
 
   switch (metricId) {
     case "net_worth_current": {
-      const current = new Decimal(currentCashTotal(dataset, scope)).plus(
-        currentPortfolioValue(dataset, scope),
+      const current = new Decimal(currentCashTotal(dataset, scope, referenceDate)).plus(
+        currentPortfolioValue(dataset, scope, referenceDate),
       );
       valueBaseEur = current.toFixed(2);
-      comparisonBaseEur = currentValueComparison(dataset, scope, "networth");
+      comparisonBaseEur = currentValueComparison(dataset, scope, "networth", referenceDate);
       break;
     }
     case "cash_total_current":
-      valueBaseEur = currentCashTotal(dataset, scope);
-      comparisonBaseEur = currentValueComparison(dataset, scope, "cash");
+      valueBaseEur = currentCashTotal(dataset, scope, referenceDate);
+      comparisonBaseEur = currentValueComparison(dataset, scope, "cash", referenceDate);
       break;
     case "income_mtd_total":
-      valueBaseEur = flowMetric(dataset, scope, CURRENT_PERIOD, "income");
-      comparisonBaseEur = flowMetric(dataset, scope, PREVIOUS_MTD_PERIOD, "income");
+      valueBaseEur = flowMetric(dataset, scope, currentPeriod, "income");
+      comparisonBaseEur = flowMetric(dataset, scope, comparisonPeriod, "income");
       break;
     case "spending_mtd_total":
-      valueBaseEur = flowMetric(dataset, scope, CURRENT_PERIOD, "spending");
-      comparisonBaseEur = flowMetric(dataset, scope, PREVIOUS_MTD_PERIOD, "spending");
+      valueBaseEur = flowMetric(dataset, scope, currentPeriod, "spending");
+      comparisonBaseEur = flowMetric(dataset, scope, comparisonPeriod, "spending");
       break;
     case "operating_net_cash_flow_mtd": {
-      const income = new Decimal(flowMetric(dataset, scope, CURRENT_PERIOD, "income"));
-      const spending = new Decimal(flowMetric(dataset, scope, CURRENT_PERIOD, "spending"));
-      const previousIncome = new Decimal(flowMetric(dataset, scope, PREVIOUS_MTD_PERIOD, "income"));
-      const previousSpending = new Decimal(
-        flowMetric(dataset, scope, PREVIOUS_MTD_PERIOD, "spending"),
-      );
+      const income = new Decimal(flowMetric(dataset, scope, currentPeriod, "income"));
+      const spending = new Decimal(flowMetric(dataset, scope, currentPeriod, "spending"));
+      const comparisonIncome = new Decimal(flowMetric(dataset, scope, comparisonPeriod, "income"));
+      const comparisonSpending = new Decimal(flowMetric(dataset, scope, comparisonPeriod, "spending"));
       valueBaseEur = income.minus(spending).toFixed(2);
-      comparisonBaseEur = previousIncome.minus(previousSpending).toFixed(2);
+      comparisonBaseEur = comparisonIncome.minus(comparisonSpending).toFixed(2);
       break;
     }
     case "portfolio_market_value_current":
-      valueBaseEur = currentPortfolioValue(dataset, scope);
-      comparisonBaseEur = currentValueComparison(dataset, scope, "portfolio");
+      valueBaseEur = currentPortfolioValue(dataset, scope, referenceDate);
+      comparisonBaseEur = currentValueComparison(dataset, scope, "portfolio", referenceDate);
       break;
     case "portfolio_unrealized_pnl_current":
-      valueBaseEur = currentPortfolioUnrealized(dataset, scope);
-      comparisonBaseEur = currentValueComparison(dataset, scope, "unrealized");
+      valueBaseEur = currentPortfolioUnrealized(dataset, scope, referenceDate);
+      comparisonBaseEur = currentValueComparison(dataset, scope, "unrealized", referenceDate);
       break;
     case "pending_review_count":
-      valueBaseEur = String(qualitySummary(dataset, scope).pendingReviewCount);
-      comparisonBaseEur = null;
+      valueBaseEur = String(qualitySummary(dataset, scope, referenceDate).pendingReviewCount);
       break;
     case "unclassified_amount_mtd":
-      valueBaseEur = qualitySummary(dataset, scope).unclassifiedAmountMtdEur;
-      comparisonBaseEur = null;
+      valueBaseEur = qualitySummary(dataset, scope, referenceDate).unclassifiedAmountMtdEur;
       break;
     case "stale_accounts_count":
-      valueBaseEur = String(qualitySummary(dataset, scope).staleAccountsCount);
-      comparisonBaseEur = null;
+      valueBaseEur = String(qualitySummary(dataset, scope, referenceDate).staleAccountsCount);
       break;
     default:
       valueBaseEur = null;
-      comparisonBaseEur = null;
   }
 
   const valueDisplay =
@@ -382,7 +290,6 @@ export function buildMetricResult(
 
   let deltaDisplay: string | null = null;
   let deltaPercent: string | null = null;
-
   if (definition.unitType === "currency" && valueBaseEur !== null && comparisonBaseEur !== null) {
     const delta = new Decimal(valueBaseEur).minus(comparisonBaseEur);
     deltaDisplay = toDisplayAmount(dataset, delta.toFixed(2), displayCurrency);
@@ -401,44 +308,54 @@ export function buildMetricResult(
     comparisonValueDisplay,
     deltaDisplay,
     deltaPercent,
-    asOfDate: TODAY_ISO,
+    asOfDate: referenceDate,
     explanation: definition.description,
   };
 }
 
-export function buildInsights(dataset: DomainDataset, scope: Scope): InsightCard[] {
-  const spendingMetric = buildMetricResult(dataset, scope, "EUR", "spending_mtd_total");
-  const quality = qualitySummary(dataset, scope);
-  const holdings = currentPortfolioHoldings(dataset, scope)
+export function buildInsights(
+  dataset: DomainDataset,
+  scope: Scope,
+  options: { referenceDate?: string } = {},
+): InsightCard[] {
+  const referenceDate = options.referenceDate ?? todayIso();
+  const period = resolvePeriodSelection({ preset: "mtd", referenceDate });
+  const spendingMetric = buildMetricResult(dataset, scope, "EUR", "spending_mtd_total", {
+    referenceDate,
+  });
+  const quality = qualitySummary(dataset, scope, referenceDate);
+  const holdings = buildHoldingRows(dataset, scope, referenceDate)
     .filter((row) => row.currentValueEur)
-    .sort((a, b) => Number(b.currentValueEur) - Number(a.currentValueEur));
+    .sort((left, right) => Number(right.currentValueEur) - Number(left.currentValueEur));
   const largestHolding = holdings[0];
   const latestLargeOutflow = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, scope),
-    CURRENT_PERIOD,
+    period,
   )
     .filter((row) => new Decimal(row.amountBaseEur).lt(0))
-    .sort((a, b) => Number(amountMagnitudeEur(b)) - Number(amountMagnitudeEur(a)))[0];
+    .sort((left, right) => Number(amountMagnitudeEur(right).minus(amountMagnitudeEur(left))))[0];
 
   return [
     {
-      id: "spending-vs-trailing-3m",
-      title: "April spend is running above the March pace",
-      severity: "warning",
+      id: "spending-mtd",
+      title: "Spending pace for the current month",
+      severity: Number(spendingMetric.deltaPercent ?? "0") > 0 ? "warning" : "info",
       body:
-        "Current-period company and personal outflows are ahead of the same day-count comparison because Company B contractor spend landed early in the month.",
+        Number(spendingMetric.deltaPercent ?? "0") > 0
+          ? "Outflows are ahead of the previous comparable month-to-date window."
+          : "Outflows are at or below the previous comparable month-to-date window.",
       evidence: [
-        `Spending MTD: ${spendingMetric.valueBaseEur} EUR`,
-        `Comparison basis: ${spendingMetric.comparisonValueBaseEur ?? "0.00"} EUR`,
+        `Current MTD spending: ${spendingMetric.valueBaseEur ?? "0.00"} EUR`,
+        `Comparison window: ${spendingMetric.comparisonValueBaseEur ?? "0.00"} EUR`,
       ],
     },
     {
       id: "largest-outflow",
-      title: "Largest single outflow this period",
+      title: "Largest current-period outflow",
       severity: "info",
       body: latestLargeOutflow
-        ? `${latestLargeOutflow.descriptionRaw} is the biggest outflow in scope.`
-        : "No outflow rows found in the selected scope.",
+        ? `${latestLargeOutflow.descriptionRaw} is the largest outflow in the selected scope.`
+        : "No outflow rows were found in the selected scope and period.",
       evidence: latestLargeOutflow
         ? [
             `Date: ${latestLargeOutflow.transactionDate}`,
@@ -448,26 +365,26 @@ export function buildInsights(dataset: DomainDataset, scope: Scope): InsightCard
     },
     {
       id: "portfolio-concentration",
-      title: "Portfolio concentration is ETF-led",
-      severity: "positive",
+      title: "Largest priced holding",
+      severity: "info",
       body: largestHolding
-        ? `${largestHolding.securityName} is the largest holding by market value, which keeps single-name stock exposure limited.`
-        : "No priced holdings are currently available.",
+        ? `${largestHolding.securityName} is currently the largest priced position.`
+        : "No priced holdings are available for the selected scope.",
       evidence: largestHolding
         ? [
-            `Largest holding: ${largestHolding.symbol}`,
+            `Holding: ${largestHolding.symbol}`,
             `Value: ${largestHolding.currentValueEur ?? "0.00"} EUR`,
           ]
         : [],
     },
     {
       id: "data-quality",
-      title: "Data quality requires attention",
-      severity: quality.pendingReviewCount > 0 || quality.staleAccountsCount > 0 ? "warning" : "info",
+      title: "Data quality status",
+      severity: quality.pendingReviewCount > 0 || quality.staleAccountsCount > 0 ? "warning" : "positive",
       body:
-        quality.pendingReviewCount > 0
-          ? "Unresolved rows and stale accounts mean current totals should be read with caution."
-          : "Quality checks are currently green.",
+        quality.pendingReviewCount > 0 || quality.staleAccountsCount > 0
+          ? "Some rows or accounts still need attention before totals are fully trusted."
+          : "No outstanding review or freshness issues are currently flagged.",
       evidence: [
         `Pending review: ${quality.pendingReviewCount}`,
         `Stale accounts: ${quality.staleAccountsCount}`,
@@ -479,9 +396,10 @@ export function buildInsights(dataset: DomainDataset, scope: Scope): InsightCard
 
 export function buildDashboardSummary(
   dataset: DomainDataset,
-  input: { scope: Scope; displayCurrency: string; period?: PeriodSelection },
+  input: { scope: Scope; displayCurrency: string; period?: PeriodSelection; referenceDate?: string },
 ): DashboardSummaryResponse {
-  const period = input.period ?? CURRENT_PERIOD;
+  const referenceDate = input.referenceDate ?? todayIso();
+  const period = input.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
   const metrics = [
     "net_worth_current",
     "cash_total_current",
@@ -490,40 +408,43 @@ export function buildDashboardSummary(
     "operating_net_cash_flow_mtd",
     "portfolio_market_value_current",
     "portfolio_unrealized_pnl_current",
-  ].map((metricId) => buildMetricResult(dataset, input.scope, input.displayCurrency, metricId));
+  ].map((metricId) =>
+    buildMetricResult(dataset, input.scope, input.displayCurrency, metricId, { referenceDate }),
+  );
 
   const entityIds = new Set(resolveScopeEntityIds(dataset, input.scope));
+  const monthStart = startOfMonthIso(period.start);
+  const monthEnd = startOfMonthIso(period.end);
+  const monthLimit = period.preset === "24m" ? 24 : 12;
   const monthlySeries = dataset.monthlyCashFlowRollups
-    .filter((row) => entityIds.has(row.entityId))
+    .filter((row) => entityIds.has(row.entityId) && row.month >= monthStart && row.month <= monthEnd)
     .reduce<Array<{ month: string; incomeEur: string; spendingEur: string; operatingNetEur: string }>>(
-      (accumulator, row) => {
-        const existing = accumulator.find((item) => item.month === row.month);
-        if (existing) {
-          existing.incomeEur = new Decimal(existing.incomeEur).plus(row.incomeEur).toFixed(2);
-          existing.spendingEur = new Decimal(existing.spendingEur).plus(row.spendingEur).toFixed(2);
-          existing.operatingNetEur = new Decimal(existing.operatingNetEur)
-            .plus(row.operatingNetEur)
-            .toFixed(2);
-        } else {
-          accumulator.push({
-            month: row.month,
-            incomeEur: row.incomeEur,
-            spendingEur: row.spendingEur,
-            operatingNetEur: row.operatingNetEur,
-          });
+      (rows, row) => {
+        const current = rows.find((item) => item.month === row.month);
+        if (current) {
+          current.incomeEur = new Decimal(current.incomeEur).plus(row.incomeEur).toFixed(2);
+          current.spendingEur = new Decimal(current.spendingEur).plus(row.spendingEur).toFixed(2);
+          current.operatingNetEur = new Decimal(current.operatingNetEur).plus(row.operatingNetEur).toFixed(2);
+          return rows;
         }
-        return accumulator;
+
+        rows.push({
+          month: row.month,
+          incomeEur: row.incomeEur,
+          spendingEur: row.spendingEur,
+          operatingNetEur: row.operatingNetEur,
+        });
+        return rows;
       },
       [],
     )
-    .sort((a, b) => a.month.localeCompare(b.month))
-    .slice(-12);
+    .sort((left, right) => left.month.localeCompare(right.month))
+    .slice(-monthLimit);
 
   const scopedTransactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, input.scope),
     period,
   );
-
   const spendingByCategory = [...new Map(
     scopedTransactions
       .filter((row) => row.transactionClass === "expense" && row.categoryCode)
@@ -539,16 +460,17 @@ export function buildDashboardSummary(
         },
       ]),
   ).values()]
-    .map((item) => {
-      const amount = scopedTransactions
-        .filter((row) => row.categoryCode === item.categoryCode && row.transactionClass === "expense")
-        .reduce((sum, row) => sum.plus(amountMagnitudeEur(row)), new Decimal(0));
-      return { ...item, amountEur: amount.toFixed(2) };
-    })
-    .sort((a, b) => Number(b.amountEur) - Number(a.amountEur));
+    .map((row) => ({
+      ...row,
+      amountEur: scopedTransactions
+        .filter((transaction) => transaction.categoryCode === row.categoryCode && transaction.transactionClass === "expense")
+        .reduce((sum, transaction) => sum.plus(amountMagnitudeEur(transaction)), new Decimal(0))
+        .toFixed(2),
+    }))
+    .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
 
-  const holdings = currentPortfolioHoldings(dataset, input.scope).sort(
-    (a, b) => Number(b.currentValueEur ?? 0) - Number(a.currentValueEur ?? 0),
+  const holdings = buildHoldingRows(dataset, input.scope, referenceDate).sort(
+    (left, right) => Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
   );
   const totalPortfolio = new Decimal(sumStrings(holdings.map((row) => row.currentValueEur)));
   const portfolioAllocation = holdings.map((row) => ({
@@ -560,15 +482,12 @@ export function buildDashboardSummary(
   }));
 
   const recentLargeTransactions = [...scopedTransactions]
-    .sort((a, b) => {
-      const byDate = b.transactionDate.localeCompare(a.transactionDate);
+    .sort((left, right) => {
+      const byDate = right.transactionDate.localeCompare(left.transactionDate);
       if (byDate !== 0) return byDate;
-      return Number(amountMagnitudeEur(b).minus(amountMagnitudeEur(a)));
+      return Number(amountMagnitudeEur(right).minus(amountMagnitudeEur(left)));
     })
     .slice(0, 6);
-
-  const insights = buildInsights(dataset, input.scope);
-  const quality = qualitySummary(dataset, input.scope);
 
   return {
     schemaVersion: "v1",
@@ -580,8 +499,8 @@ export function buildDashboardSummary(
     portfolioAllocation,
     topHoldings: holdings.slice(0, 5),
     recentLargeTransactions,
-    insights,
-    quality,
+    insights: buildInsights(dataset, input.scope, { referenceDate }),
+    quality: qualitySummary(dataset, input.scope, referenceDate),
     generatedAt: new Date().toISOString(),
   };
 }

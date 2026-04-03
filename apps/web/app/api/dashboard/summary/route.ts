@@ -10,6 +10,7 @@ export async function GET(request: NextRequest) {
     scope: state.scope,
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   });
   return NextResponse.json(summary);
 }

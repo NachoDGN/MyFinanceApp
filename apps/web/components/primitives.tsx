@@ -15,11 +15,14 @@ function formatPercent(value: string | null | undefined) {
 }
 
 function formatDate(value: string) {
+  const normalized = value.length <= 10 ? `${value.slice(0, 10)}T00:00:00Z` : value;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(new Date(`${value}T00:00:00Z`));
+  }).format(date);
 }
 
 export function MetricCard({

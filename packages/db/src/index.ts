@@ -6,7 +6,6 @@ import { enrichImportedTransaction, getTransactionClassifierConfig } from "@myfi
 import {
   parseRuleDraftRequest,
   buildImportedTransactions,
-  createFixtureRepository,
   normalizeImportExecutionInput,
   runDeterministicImport,
   sanitizeImportResult,
@@ -23,9 +22,11 @@ import {
   type JobRunResult,
   type QueueRuleDraftInput,
   type Transaction,
-  SEEDED_USER_ID,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
+
+const DEFAULT_APP_USER_ID = "00000000-0000-0000-0000-000000000001";
+const DEFAULT_LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
 
 export interface DbRuntimeConfig {
   databaseUrl?: string;
@@ -33,15 +34,21 @@ export interface DbRuntimeConfig {
 }
 
 export function getDbRuntimeConfig(): DbRuntimeConfig {
+  const databaseUrl = process.env.DATABASE_URL?.trim()
+    || (process.env.NODE_ENV === "production" ? undefined : DEFAULT_LOCAL_DATABASE_URL);
   return {
-    databaseUrl: process.env.DATABASE_URL,
-    seededUserId: process.env.APP_SEEDED_USER_ID ?? SEEDED_USER_ID,
+    databaseUrl,
+    seededUserId: process.env.APP_SEEDED_USER_ID ?? DEFAULT_APP_USER_ID,
   };
 }
 
 export function createSqlClient() {
   const { databaseUrl } = getDbRuntimeConfig();
-  if (!databaseUrl) return null;
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL is required in production. In local development the app defaults to the local Supabase Postgres URL.",
+    );
+  }
   return postgres(databaseUrl, {
     max: 1,
     prepare: false,
@@ -51,13 +58,12 @@ export function createSqlClient() {
   });
 }
 
-type SqlClient = ReturnType<typeof createSqlClient> extends infer T ? Exclude<T, null> : never;
+type SqlClient = ReturnType<typeof createSqlClient>;
 
 async function withSeededUserContext<T>(
   runner: (sql: SqlClient) => Promise<T>,
-): Promise<T | null> {
+): Promise<T> {
   const sql = createSqlClient();
-  if (!sql) return null;
   const { seededUserId } = getDbRuntimeConfig();
   try {
     await sql`select set_config('app.current_user_id', ${seededUserId}, true)`;
@@ -71,9 +77,21 @@ function camelizeKey(value: string) {
   return value.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase());
 }
 
-function camelizeValue<T>(value: T): T {
+const DATE_ONLY_KEYS = new Set([
+  "openingBalanceDate",
+  "transactionDate",
+  "postedDate",
+  "asOfDate",
+  "priceDate",
+  "effectiveDate",
+  "lastTradeDate",
+  "snapshotDate",
+  "month",
+]);
+
+function camelizeValue<T>(value: T, key?: string): T {
   if (Array.isArray(value)) {
-    return value.map((item) => camelizeValue(item)) as T;
+    return value.map((item) => camelizeValue(item, key)) as T;
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -90,14 +108,18 @@ function camelizeValue<T>(value: T): T {
     return value;
   }
   if (value instanceof Date) {
-    return value.toISOString() as T;
+    const iso = value.toISOString();
+    return (key && DATE_ONLY_KEYS.has(key) ? iso.slice(0, 10) : iso) as T;
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
-        camelizeKey(key),
-        camelizeValue(nested),
-      ]),
+      Object.entries(value as Record<string, unknown>).map(([rawKey, nested]) => {
+        const nextKey = camelizeKey(rawKey);
+        return [
+          nextKey,
+          camelizeValue(nested, nextKey),
+        ];
+      }),
     ) as T;
   }
   return value;
@@ -218,7 +240,9 @@ class SqlFinanceRepository implements FinanceRepository {
       ]);
 
       if (!profiles[0]) {
-        return null;
+        throw new Error(
+          `Seeded user ${this.userId} was not found in the database. Run the seed or set APP_SEEDED_USER_ID correctly.`,
+        );
       }
 
       return {
@@ -255,7 +279,7 @@ class SqlFinanceRepository implements FinanceRepository {
       };
     });
 
-    return dataset ?? (await createFixtureRepository().getDataset());
+    return dataset;
   }
 
   async updateTransaction(
@@ -380,7 +404,7 @@ class SqlFinanceRepository implements FinanceRepository {
       };
     });
 
-    return result ?? createFixtureRepository().updateTransaction(input);
+    return result;
   }
 
   async createRule(input: CreateRuleInput) {
@@ -440,7 +464,7 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, ruleId };
     });
-    return result ?? createFixtureRepository().createRule(input);
+    return result;
   }
 
   async createTemplate(input: CreateTemplateInput) {
@@ -497,7 +521,7 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, templateId };
     });
-    return result ?? createFixtureRepository().createTemplate(input);
+    return result;
   }
 
   async addOpeningPosition(input: AddOpeningPositionInput) {
@@ -521,7 +545,7 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, adjustmentId };
     });
-    return result ?? createFixtureRepository().addOpeningPosition(input);
+    return result;
   }
 
   async queueRuleDraft(input: QueueRuleDraftInput) {
@@ -572,7 +596,7 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, jobId };
     });
-    return result ?? createFixtureRepository().queueRuleDraft(input);
+    return result;
   }
 
   async applyRuleDraft(input: ApplyRuleDraftInput) {
@@ -624,13 +648,13 @@ class SqlFinanceRepository implements FinanceRepository {
 
       return { applied: input.apply, ruleId: createResult.ruleId };
     });
-    return result ?? createFixtureRepository().applyRuleDraft(input);
+    return result;
   }
 
   async previewImport(input: ImportExecutionInput): Promise<ImportPreviewResult> {
     const normalizedInput = normalizeImportExecutionInput(input);
     if (!normalizedInput.filePath) {
-      return createFixtureRepository().previewImport(normalizedInput);
+      throw new Error("A file path is required to preview an import.");
     }
 
     const dataset = await this.getDataset();
@@ -688,7 +712,6 @@ class SqlFinanceRepository implements FinanceRepository {
           "transfer_rematch",
           "position_rebuild",
           "metric_refresh",
-          "insight_refresh",
         ] as const);
       await sql`
         insert into public.import_batches (
@@ -872,7 +895,7 @@ class SqlFinanceRepository implements FinanceRepository {
         jobsQueued: [...jobsQueued],
       };
     });
-    return result ?? createFixtureRepository().commitImport(normalizedInput);
+    return result;
   }
 
   async runPendingJobs(apply: boolean): Promise<JobRunResult> {
@@ -1075,12 +1098,10 @@ class SqlFinanceRepository implements FinanceRepository {
         generatedAt: new Date().toISOString(),
       };
     });
-    return result ?? createFixtureRepository().runPendingJobs(apply);
+    return result;
   }
 }
 
 export function createFinanceRepository(): FinanceRepository {
-  return getDbRuntimeConfig().databaseUrl
-    ? new SqlFinanceRepository()
-    : createFixtureRepository();
+  return new SqlFinanceRepository();
 }

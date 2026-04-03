@@ -27,7 +27,14 @@ export function AppShell({
 }: {
   children: ReactNode;
   pathname: string;
-  state: { scopeParam: string; currency: string; period: string };
+  state: {
+    scopeParam: string;
+    currency: string;
+    period: string;
+    referenceDate?: string;
+    start?: string;
+    end?: string;
+  };
   scopeOptions: Array<{ value: string; label: string }>;
 }) {
   return (

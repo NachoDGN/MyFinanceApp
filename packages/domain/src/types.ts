@@ -446,7 +446,7 @@ export interface Scope {
 export interface PeriodSelection {
   start: string;
   end: string;
-  preset: "mtd" | "ytd" | "custom";
+  preset: "week" | "mtd" | "ytd" | "24m" | "custom";
 }
 
 export interface MetricDefinition {

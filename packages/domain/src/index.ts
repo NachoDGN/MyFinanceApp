@@ -1,4 +1,4 @@
-export * from "./fixtures";
+export * from "./finance";
 export * from "./repository";
 export * from "./rule-drafts";
 export * from "./service";

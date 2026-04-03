@@ -9,7 +9,9 @@ const repository = createFinanceRepository();
 export async function GET(request: NextRequest) {
   const state = await resolveAppState(Object.fromEntries(request.nextUrl.searchParams));
   const dataset = await repository.getDataset();
-  const insights = buildInsights(dataset, state.scope);
+  const insights = buildInsights(dataset, state.scope, {
+    referenceDate: state.referenceDate,
+  });
   return NextResponse.json({
     schemaVersion: "v1",
     scope: state.scope,

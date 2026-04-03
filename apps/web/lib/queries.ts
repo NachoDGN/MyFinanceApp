@@ -5,7 +5,13 @@ import {
 } from "@myfinance/analytics";
 import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
 import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService, type Scope, type Transaction } from "@myfinance/domain";
+import {
+  FinanceDomainService,
+  resolvePeriodSelection,
+  todayIso,
+  type Scope,
+  type Transaction,
+} from "@myfinance/domain";
 
 export type RawSearchParams =
   | Promise<Record<string, string | string[] | undefined>>
@@ -28,9 +34,14 @@ export async function resolveAppState(searchParams: RawSearchParams) {
   const dataset = await repository.getDataset();
   const scopeParam = normalizeParam(params, "scope") ?? "consolidated";
   const currency = normalizeParam(params, "currency") === "USD" ? "USD" : "EUR";
-  const period = normalizeParam(params, "period") === "ytd"
-    ? { start: "2026-01-01", end: "2026-04-03", preset: "ytd" as const }
-    : { start: "2026-04-01", end: "2026-04-03", preset: "mtd" as const };
+  const referenceDate = normalizeParam(params, "asOf") ?? todayIso();
+  const periodParam = normalizeParam(params, "period") ?? "mtd";
+  const period = resolvePeriodSelection({
+    preset: periodParam,
+    start: normalizeParam(params, "start"),
+    end: normalizeParam(params, "end"),
+    referenceDate,
+  });
 
   const entityBySlug = new Map(dataset.entities.map((entity) => [entity.slug, entity.id]));
   const scope: Scope = scopeParam.startsWith("account:")
@@ -54,6 +65,8 @@ export async function resolveAppState(searchParams: RawSearchParams) {
     scope,
     scopeParam,
     currency,
+    referenceDate,
+    periodParam,
     period,
     scopeOptions,
   };
@@ -61,14 +74,39 @@ export async function resolveAppState(searchParams: RawSearchParams) {
 
 export function buildHref(
   pathname: string,
-  current: { scopeParam: string; currency: string; period: string },
-  overrides: Partial<{ scopeParam: string; currency: string; period: string }>,
+  current: {
+    scopeParam: string;
+    currency: string;
+    period: string;
+    referenceDate?: string;
+    start?: string;
+    end?: string;
+  },
+  overrides: Partial<{
+    scopeParam: string;
+    currency: string;
+    period: string;
+    referenceDate: string;
+    start: string;
+    end: string;
+  }>,
 ) {
+  const period = overrides.period ?? current.period;
   const query = new URLSearchParams({
     scope: overrides.scopeParam ?? current.scopeParam,
     currency: overrides.currency ?? current.currency,
-    period: overrides.period ?? current.period,
+    period,
   });
+  const referenceDate = overrides.referenceDate ?? current.referenceDate;
+  if (referenceDate) {
+    query.set("asOf", referenceDate);
+  }
+  const start = overrides.start ?? current.start;
+  const end = overrides.end ?? current.end;
+  if (period === "custom" && start && end) {
+    query.set("start", start);
+    query.set("end", end);
+  }
   return `${pathname}?${query.toString()}`;
 }
 
@@ -100,17 +138,20 @@ export async function getDashboardModel(searchParams: RawSearchParams) {
     scope: state.scope,
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   });
 
   const personalMetrics = buildDashboardSummary(state.dataset, {
     scope: { kind: "entity", entityId: state.dataset.entities[0]?.id },
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   }).metrics;
   const companyMetrics = buildDashboardSummary(state.dataset, {
     scope: { kind: "consolidated" },
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   }).metrics;
 
   return {
@@ -157,6 +198,7 @@ export async function getAccountsModel(searchParams: RawSearchParams) {
     scope: state.scope,
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   });
   return { ...state, accounts, dashboard };
 }
@@ -214,14 +256,18 @@ export async function getInvestmentsModel(searchParams: RawSearchParams) {
         state.scope,
         state.currency,
         "portfolio_market_value_current",
+        { referenceDate: state.referenceDate },
       ),
       unrealized: buildMetricResult(
         state.dataset,
         state.scope,
         state.currency,
         "portfolio_unrealized_pnl_current",
+        { referenceDate: state.referenceDate },
       ),
-      incomeYtd: buildMetricResult(state.dataset, state.scope, state.currency, "income_mtd_total"),
+      incomeYtd: buildMetricResult(state.dataset, state.scope, state.currency, "income_mtd_total", {
+        referenceDate: state.referenceDate,
+      }),
     },
   };
 }
@@ -232,6 +278,7 @@ export async function getSpendingModel(searchParams: RawSearchParams) {
     scope: state.scope,
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   });
   const transactions = (await domainService.listTransactions(state.scope)).transactions.filter((row) =>
     ["expense", "fee", "refund"].includes(row.transactionClass),
@@ -252,6 +299,7 @@ export async function getIncomeModel(searchParams: RawSearchParams) {
     scope: state.scope,
     displayCurrency: state.currency,
     period: state.period,
+    referenceDate: state.referenceDate,
   });
   const transactions = (await domainService.listTransactions(state.scope)).transactions.filter((row) =>
     ["income", "dividend", "interest"].includes(row.transactionClass),
@@ -263,11 +311,14 @@ export async function getInsightsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
   return {
     ...state,
-    insights: buildInsights(state.dataset, state.scope),
+    insights: buildInsights(state.dataset, state.scope, {
+      referenceDate: state.referenceDate,
+    }),
     summary: buildDashboardSummary(state.dataset, {
       scope: state.scope,
       displayCurrency: state.currency,
       period: state.period,
+      referenceDate: state.referenceDate,
     }),
   };
 }

@@ -3,28 +3,24 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { promisify } from "node:util";
+
 import { Decimal } from "decimal.js";
 
 import type {
-  Account,
-  AccountBalanceSnapshot,
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
   AuditEvent,
   CreateRuleInput,
   CreateTemplateInput,
   DomainDataset,
-  HoldingAdjustment,
-  ImportExecutionInput,
   ImportCommitResult,
+  ImportExecutionInput,
   ImportPreviewResult,
   JobRunResult,
   QueueRuleDraftInput,
   Transaction,
   UpdateTransactionInput,
 } from "./types";
-import { seedDataset, SEEDED_USER_ID, TODAY_ISO } from "./fixtures";
-import { parseRuleDraftRequest } from "./rule-drafts";
 
 const execFileAsync = promisify(execFile);
 
@@ -70,35 +66,6 @@ export interface FinanceRepository {
   previewImport(input: ImportExecutionInput): Promise<ImportPreviewResult>;
   commitImport(input: ImportExecutionInput): Promise<ImportCommitResult>;
   runPendingJobs(apply: boolean): Promise<JobRunResult>;
-}
-
-function cloneDataset(): DomainDataset {
-  return structuredClone(seedDataset);
-}
-
-function createAuditEvent(
-  sourceChannel: AuditEvent["sourceChannel"],
-  actorName: string,
-  commandName: string,
-  objectType: string,
-  objectId: string,
-  beforeJson: Record<string, unknown> | null,
-  afterJson: Record<string, unknown> | null,
-): AuditEvent {
-  return {
-    id: randomUUID(),
-    actorType: "agent",
-    actorId: SEEDED_USER_ID,
-    actorName,
-    sourceChannel,
-    commandName,
-    objectType,
-    objectId,
-    beforeJson,
-    afterJson,
-    createdAt: new Date().toISOString(),
-    notes: null,
-  };
 }
 
 export function normalizeImportExecutionInput(
@@ -193,13 +160,8 @@ export async function runDeterministicImport(
     throw new Error("A filePath is required to run the pandas ingestion wrapper.");
   }
 
-  const runnerPath = resolveIngestRunnerPath();
-  const pythonBin = resolvePythonBin();
-  const templateJson = JSON.stringify(
-    createRunnerTemplate(dataset, normalizedInput.templateId),
-  );
-  const { stdout } = await execFileAsync(pythonBin, [
-    runnerPath,
+  const { stdout } = await execFileAsync(resolvePythonBin(), [
+    resolveIngestRunnerPath(),
     mode,
     "--file-path",
     normalizedInput.filePath,
@@ -208,10 +170,10 @@ export async function runDeterministicImport(
     "--template-id",
     normalizedInput.templateId,
     "--template-json",
-    templateJson,
+    JSON.stringify(createRunnerTemplate(dataset, normalizedInput.templateId)),
   ]);
 
-  return JSON.parse(stdout) as ImportPreviewResult | ImportCommitResult;
+  return JSON.parse(stdout) as DeterministicImportResult;
 }
 
 export function sanitizeImportResult(result: DeterministicImportResult) {
@@ -248,9 +210,9 @@ function resolveSecurityId(
       security.displaySymbol,
       security.name,
     ].map((value) => normalizeFingerprintText(value));
+
     return (symbol && candidates.includes(symbol)) || (securityName && candidates.includes(securityName));
   });
-
   if (directMatch) {
     return directMatch.id;
   }
@@ -264,40 +226,20 @@ function resolveSecurityId(
 }
 
 function safeParseRawRowJson(row: CanonicalImportRow) {
-  if (row.raw_row_json) {
-    try {
-      const parsed = JSON.parse(row.raw_row_json) as Record<string, unknown>;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed;
-      }
-    } catch {
-      // Fall through to canonical payload if the Python runner returned malformed row JSON.
-    }
+  if (!row.raw_row_json) return {};
+  try {
+    const parsed = JSON.parse(row.raw_row_json) as Record<string, unknown>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
   }
-
-  return {
-    transaction_date: row.transaction_date,
-    posted_date: row.posted_date ?? null,
-    description_raw: row.description_raw,
-    amount_original_signed: row.amount_original_signed,
-    currency_original: row.currency_original ?? null,
-    balance_original: row.balance_original ?? null,
-    external_reference: row.external_reference ?? null,
-    transaction_type_raw: row.transaction_type_raw ?? null,
-    security_symbol: row.security_symbol ?? null,
-    security_name: row.security_name ?? null,
-    quantity: row.quantity ?? null,
-    unit_price_original: row.unit_price_original ?? null,
-    fees_original: row.fees_original ?? null,
-    fx_rate: row.fx_rate ?? null,
-  } satisfies Record<string, unknown>;
 }
 
 function buildImportFingerprint(
   accountId: string,
   row: {
     transactionDate: string;
-    postedDate: string | null;
+    postedDate: string;
     amountOriginal: string;
     currencyOriginal: string;
     descriptionRaw: string;
@@ -309,29 +251,24 @@ function buildImportFingerprint(
     transactionTypeRaw: string | null;
   },
 ) {
-  const components = [
-    accountId,
-    row.transactionDate,
-    row.postedDate ?? "",
-    row.amountOriginal,
-    row.currencyOriginal,
-    normalizeFingerprintText(row.descriptionRaw),
-  ];
-
-  const externalReference = normalizeFingerprintText(row.externalReference);
-  if (externalReference) {
-    components.push(externalReference);
-  } else {
-    components.push(
-      normalizeFingerprintText(row.quantity),
-      normalizeFingerprintText(row.unitPriceOriginal),
-      normalizeFingerprintText(row.securitySymbol),
-      normalizeFingerprintText(row.securityName),
-      normalizeFingerprintText(row.transactionTypeRaw),
-    );
-  }
-
-  return createHash("sha256").update(components.join("|")).digest("hex");
+  return createHash("sha256")
+    .update(
+      [
+        accountId,
+        row.transactionDate,
+        row.postedDate,
+        row.amountOriginal,
+        row.currencyOriginal,
+        normalizeFingerprintText(row.descriptionRaw),
+        normalizeFingerprintText(row.externalReference),
+        normalizeFingerprintText(row.quantity),
+        normalizeFingerprintText(row.unitPriceOriginal),
+        normalizeFingerprintText(row.securitySymbol),
+        normalizeFingerprintText(row.securityName),
+        normalizeFingerprintText(row.transactionTypeRaw),
+      ].join("|"),
+    )
+    .digest("hex");
 }
 
 function resolveFxRateToEur(
@@ -375,13 +312,12 @@ export function buildImportedTransactions(
 
   for (const row of rows) {
     const transactionDate = String(row.transaction_date ?? "").slice(0, 10);
-    const postedDateCandidate = String(row.posted_date ?? "").slice(0, 10);
-    const postedDate = postedDateCandidate || transactionDate;
     const descriptionRaw = String(row.description_raw ?? "").trim();
     if (!transactionDate || !descriptionRaw) {
       continue;
     }
 
+    const postedDate = String(row.posted_date ?? "").slice(0, 10) || transactionDate;
     const amountOriginal = new Decimal(String(row.amount_original_signed ?? "0")).toFixed(8);
     const currencyOriginal = String(
       row.currency_original ?? account.defaultCurrency ?? "EUR",
@@ -433,8 +369,6 @@ export function buildImportedTransactions(
         fx_rate: importedFxRate,
       },
     } satisfies Record<string, unknown>;
-
-    const categoryCode = account.assetDomain === "investment" ? "uncategorized_investment" : null;
     const securityId = resolveSecurityId(dataset, row);
     const initialReviewReasons = [
       "Pending enrichment pipeline.",
@@ -446,7 +380,7 @@ export function buildImportedTransactions(
 
     inserted.push({
       id: randomUUID(),
-      userId: SEEDED_USER_ID,
+      userId: dataset.profile.id,
       accountId: account.id,
       accountEntityId: account.entityId,
       economicEntityId: account.entityId,
@@ -464,7 +398,7 @@ export function buildImportedTransactions(
       merchantNormalized: null,
       counterpartyName: null,
       transactionClass: "unknown",
-      categoryCode,
+      categoryCode: account.assetDomain === "investment" ? "uncategorized_investment" : null,
       subcategoryCode: null,
       transferGroupId: null,
       relatedAccountId: null,
@@ -504,468 +438,6 @@ export function buildImportedTransactions(
   };
 }
 
-async function processRuleDraftJob(dataset: DomainDataset, job: DomainDataset["jobs"][number]) {
-  const requestText = typeof job.payloadJson.requestText === "string" ? job.payloadJson.requestText : "";
-  if (!requestText) {
-    throw new Error("Rule draft job is missing requestText.");
-  }
-
-  const parsedRule = await parseRuleDraftRequest(requestText, dataset);
-  job.payloadJson = {
-    ...job.payloadJson,
-    parsedRule,
-  };
-  job.status = "completed";
-  job.finishedAt = new Date().toISOString();
-  job.lastError = null;
-}
-
-export class InMemoryFinanceRepository implements FinanceRepository {
-  private dataset: DomainDataset = cloneDataset();
-
-  async getDataset(): Promise<DomainDataset> {
-    return this.dataset;
-  }
-
-  async updateTransaction(input: UpdateTransactionInput) {
-    const transaction = this.dataset.transactions.find(
-      (item) => item.id === input.transactionId,
-    );
-    if (!transaction) {
-      throw new Error(`Transaction ${input.transactionId} not found.`);
-    }
-
-    const nextTransaction: Transaction = {
-      ...transaction,
-      ...input.patch,
-      updatedAt: new Date().toISOString(),
-      classificationStatus:
-        Object.keys(input.patch).length > 0 ? "manual_override" : transaction.classificationStatus,
-      classificationSource:
-        Object.keys(input.patch).length > 0 ? "manual" : transaction.classificationSource,
-      classificationConfidence:
-        Object.keys(input.patch).length > 0 ? "1.00" : transaction.classificationConfidence,
-    };
-
-    const auditEvent = createAuditEvent(
-      input.sourceChannel,
-      input.actorName,
-      "transactions.update",
-      "transaction",
-      transaction.id,
-      transaction as unknown as Record<string, unknown>,
-      nextTransaction as unknown as Record<string, unknown>,
-    );
-
-    let generatedRuleId: string | undefined;
-
-    if (input.apply) {
-      Object.assign(transaction, nextTransaction);
-      this.dataset.auditEvents.unshift(auditEvent);
-      if (input.createRuleFromTransaction) {
-        generatedRuleId = randomUUID();
-        this.dataset.rules.unshift({
-          id: generatedRuleId,
-          userId: SEEDED_USER_ID,
-          priority: 50,
-          active: true,
-          scopeJson: { account_id: transaction.accountId },
-          conditionsJson: {
-            normalized_description_regex: transaction.descriptionClean,
-          },
-          outputsJson: {
-            transaction_class: nextTransaction.transactionClass,
-            category_code: nextTransaction.categoryCode,
-            economic_entity_id_override: nextTransaction.economicEntityId,
-          },
-          createdFromTransactionId: transaction.id,
-          autoGenerated: true,
-          hitCount: 0,
-          lastHitAt: null,
-          createdAt: auditEvent.createdAt,
-          updatedAt: auditEvent.createdAt,
-        });
-      }
-    }
-
-    return {
-      applied: input.apply,
-      transaction: nextTransaction,
-      auditEvent,
-      generatedRuleId,
-    };
-  }
-
-  async createRule(input: CreateRuleInput) {
-    const ruleId = randomUUID();
-    if (input.apply) {
-      this.dataset.rules.unshift({
-        id: ruleId,
-        userId: SEEDED_USER_ID,
-        priority: input.priority,
-        active: true,
-        scopeJson: input.scopeJson,
-        conditionsJson: input.conditionsJson,
-        outputsJson: input.outputsJson,
-        createdFromTransactionId: null,
-        autoGenerated: false,
-        hitCount: 0,
-        lastHitAt: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-      this.dataset.auditEvents.unshift(
-        createAuditEvent(
-          input.sourceChannel,
-          input.actorName,
-          "rules.create",
-          "classification_rule",
-          ruleId,
-          null,
-          input.outputsJson,
-        ),
-      );
-    }
-    return { applied: input.apply, ruleId };
-  }
-
-  async createTemplate(input: CreateTemplateInput) {
-    const templateId = randomUUID();
-    if (input.apply) {
-      this.dataset.templates.unshift({
-        ...input.template,
-        id: templateId,
-        version: 1,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-      this.dataset.auditEvents.unshift(
-        createAuditEvent(
-          input.sourceChannel,
-          input.actorName,
-          "templates.create",
-          "import_template",
-          templateId,
-          null,
-          input.template as unknown as Record<string, unknown>,
-        ),
-      );
-    }
-    return { applied: input.apply, templateId };
-  }
-
-  async addOpeningPosition(input: AddOpeningPositionInput) {
-    const adjustmentId = randomUUID();
-    if (input.apply) {
-      const adjustment: HoldingAdjustment = {
-        id: adjustmentId,
-        userId: SEEDED_USER_ID,
-        entityId: input.entityId,
-        accountId: input.accountId,
-        securityId: input.securityId,
-        effectiveDate: input.effectiveDate,
-        shareDelta: input.shareDelta,
-        costBasisDeltaEur: input.costBasisDeltaEur ?? null,
-        reason: "opening_position",
-        note: "Created from CLI/web opening position flow.",
-        createdAt: new Date().toISOString(),
-      };
-      this.dataset.holdingAdjustments.unshift(adjustment);
-      this.dataset.auditEvents.unshift(
-        createAuditEvent(
-          input.sourceChannel,
-          input.actorName,
-          "positions.add-opening",
-          "holding_adjustment",
-          adjustmentId,
-          null,
-          adjustment as unknown as Record<string, unknown>,
-        ),
-      );
-    }
-    return { applied: input.apply, adjustmentId };
-  }
-
-  async queueRuleDraft(input: QueueRuleDraftInput) {
-    const jobId = randomUUID();
-    if (input.apply) {
-      this.dataset.jobs.unshift({
-        id: jobId,
-        jobType: "rule_parse",
-        payloadJson: {
-          requestText: input.requestText,
-        },
-        status: "queued",
-        attempts: 0,
-        availableAt: new Date().toISOString(),
-        startedAt: null,
-        finishedAt: null,
-        lastError: null,
-        lockedBy: null,
-        createdAt: new Date().toISOString(),
-      });
-      this.dataset.auditEvents.unshift(
-        createAuditEvent(
-          input.sourceChannel,
-          input.actorName,
-          "rules.queue-draft",
-          "job",
-          jobId,
-          null,
-          { requestText: input.requestText },
-        ),
-      );
-    }
-    return { applied: input.apply, jobId };
-  }
-
-  async applyRuleDraft(input: ApplyRuleDraftInput) {
-    const job = this.dataset.jobs.find((item) => item.id === input.jobId && item.jobType === "rule_parse");
-    if (!job) {
-      throw new Error(`Rule draft job ${input.jobId} not found.`);
-    }
-
-    const parsedRule = job.payloadJson.parsedRule;
-    if (!parsedRule || typeof parsedRule !== "object") {
-      throw new Error("Rule draft has not been parsed yet.");
-    }
-
-    const result = await this.createRule({
-      priority: Number((parsedRule as { priority?: unknown }).priority ?? 60),
-      scopeJson: ((parsedRule as { scopeJson?: unknown }).scopeJson ?? {}) as Record<string, unknown>,
-      conditionsJson: ((parsedRule as { conditionsJson?: unknown }).conditionsJson ?? {}) as Record<string, unknown>,
-      outputsJson: ((parsedRule as { outputsJson?: unknown }).outputsJson ?? {}) as Record<string, unknown>,
-      actorName: input.actorName,
-      sourceChannel: input.sourceChannel,
-      apply: input.apply,
-    });
-
-    if (input.apply) {
-      job.payloadJson = {
-        ...job.payloadJson,
-        appliedRuleId: result.ruleId,
-      };
-    }
-
-    return { applied: input.apply, ruleId: result.ruleId };
-  }
-
-  async previewImport(input: ImportExecutionInput): Promise<ImportPreviewResult> {
-    const normalizedInput = normalizeImportExecutionInput(input);
-    if (normalizedInput.filePath) {
-      const rawResult = await runDeterministicImport(
-        "preview",
-        normalizedInput,
-        this.dataset,
-      );
-      const prepared = buildImportedTransactions(
-        this.dataset,
-        normalizedInput,
-        "preview-batch",
-        rawResult.normalizedRows ?? [],
-      );
-      const publicResult = sanitizeImportResult(rawResult) as ImportPreviewResult;
-      return {
-        ...publicResult,
-        rowCountDuplicates: prepared.duplicateCount,
-      };
-    }
-
-    return {
-      schemaVersion: "v1",
-      accountId: normalizedInput.accountId,
-      templateId: normalizedInput.templateId,
-      originalFilename: normalizedInput.originalFilename,
-      rowCountDetected: 4,
-      rowCountParsed: 4,
-      rowCountDuplicates: 1,
-      rowCountFailed: 0,
-      dateRange: { start: "2026-04-01", end: TODAY_ISO },
-      sampleRows: [
-        {
-          transaction_date: "2026-04-01",
-          description_raw: "Sample import row",
-          amount_original_signed: "-24.50",
-          currency_original: "EUR",
-        },
-        {
-          transaction_date: "2026-04-02",
-          description_raw: "Transfer to IBKR",
-          amount_original_signed: "-2000.00",
-          currency_original: "EUR",
-        },
-      ],
-      parseErrors: [],
-    };
-  }
-
-  async commitImport(input: ImportExecutionInput): Promise<ImportCommitResult> {
-    const normalizedInput = normalizeImportExecutionInput(input);
-    const commitResult = normalizedInput.filePath
-      ? (await runDeterministicImport(
-          "commit",
-          normalizedInput,
-          this.dataset,
-        ))
-      : null;
-    const importBatchId =
-      (commitResult as ImportCommitResult | null)?.importBatchId ?? randomUUID();
-    const preparedTransactions =
-      commitResult && normalizedInput.filePath
-        ? buildImportedTransactions(
-            this.dataset,
-            normalizedInput,
-            importBatchId,
-            commitResult.normalizedRows ?? [],
-          )
-        : null;
-    const preview =
-      commitResult && normalizedInput.filePath
-        ? ({
-            ...(sanitizeImportResult(commitResult) as ImportCommitResult),
-            rowCountDuplicates: preparedTransactions?.duplicateCount ?? 0,
-          } satisfies ImportCommitResult)
-        : await this.previewImport(normalizedInput);
-    const transactionIds =
-      preparedTransactions?.inserted.map((transaction) => transaction.id) ??
-      [randomUUID(), randomUUID(), randomUUID()];
-    const jobsQueued =
-      (commitResult as ImportCommitResult | null)?.jobsQueued ??
-      ([
-        "classification",
-        "transfer_rematch",
-        "position_rebuild",
-        "metric_refresh",
-        "insight_refresh",
-      ] as const);
-    this.dataset.importBatches.unshift({
-      id: importBatchId,
-      userId: SEEDED_USER_ID,
-      accountId: normalizedInput.accountId,
-      templateId: normalizedInput.templateId,
-      storagePath: normalizedInput.filePath
-        ? `private-imports/local/${normalizedInput.originalFilename}`
-        : `private-imports/manual/${normalizedInput.originalFilename}`,
-      originalFilename: normalizedInput.originalFilename,
-      fileSha256: randomUUID().replace(/-/g, ""),
-      status: "committed",
-      rowCountDetected: preview.rowCountDetected,
-      rowCountParsed: preview.rowCountParsed,
-      rowCountInserted: preparedTransactions?.inserted.length ?? 3,
-      rowCountDuplicates: preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates,
-      rowCountFailed: preview.rowCountFailed,
-      previewSummaryJson: {
-        sampleRows: preview.sampleRows,
-      },
-      commitSummaryJson: {
-        transactionIds,
-        jobsQueued,
-      },
-      importedByActor: "Seeded Developer",
-      importedAt: new Date().toISOString(),
-      classificationTriggeredAt: new Date().toISOString(),
-      notes: "Committed from in-memory preview flow.",
-      detectedDateRange: preview.dateRange,
-    });
-    if (preparedTransactions) {
-      this.dataset.transactions.unshift(...preparedTransactions.inserted);
-    }
-    for (const jobType of jobsQueued) {
-      this.dataset.jobs.unshift({
-        id: randomUUID(),
-        jobType,
-        payloadJson: { importBatchId, accountId: normalizedInput.accountId },
-        status: "queued",
-        attempts: 0,
-        availableAt: new Date().toISOString(),
-        startedAt: null,
-        finishedAt: null,
-        lastError: null,
-        lockedBy: null,
-        createdAt: new Date().toISOString(),
-      });
-    }
-    this.dataset.auditEvents.unshift(
-      createAuditEvent(
-        "system",
-        "import-commit",
-        "imports.commit",
-        "import_batch",
-        importBatchId,
-        null,
-        {
-          originalFilename: normalizedInput.originalFilename,
-          rowCountInserted: preparedTransactions?.inserted.length ?? 3,
-          transactionIds,
-        },
-      ),
-    );
-    return {
-      ...preview,
-      importBatchId,
-      rowCountInserted: preparedTransactions?.inserted.length ?? 3,
-      rowCountDuplicates: preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates,
-      transactionIds,
-      jobsQueued: [...jobsQueued],
-    };
-  }
-
-  async runPendingJobs(apply: boolean): Promise<JobRunResult> {
-    const queued = this.dataset.jobs.filter((job) => job.status === "queued");
-    if (apply) {
-      for (const job of queued) {
-        job.status = "running";
-        job.startedAt = new Date().toISOString();
-        job.attempts += 1;
-        try {
-          if (job.jobType === "rule_parse") {
-            await processRuleDraftJob(this.dataset, job);
-          } else {
-            job.status = "completed";
-            job.finishedAt = new Date().toISOString();
-          }
-        } catch (error) {
-          job.status = "failed";
-          job.finishedAt = new Date().toISOString();
-          job.lastError = error instanceof Error ? error.message : "Unknown job failure";
-        }
-      }
-    }
-    return {
-      schemaVersion: "v1",
-      applied: apply,
-      processedJobs: queued.map((job) => ({
-        id: job.id,
-        jobType: job.jobType,
-        status: apply ? job.status : job.status,
-      })),
-      generatedAt: new Date().toISOString(),
-    };
-  }
-}
-
-let defaultRepository: InMemoryFinanceRepository | null = null;
-
-export function createFixtureRepository(): FinanceRepository {
-  if (!defaultRepository) {
-    defaultRepository = new InMemoryFinanceRepository();
-  }
-  return defaultRepository;
-}
-
-export function getLatestBalanceSnapshots(
-  snapshots: AccountBalanceSnapshot[],
-): AccountBalanceSnapshot[] {
-  const byAccount = new Map<string, AccountBalanceSnapshot>();
-  for (const snapshot of snapshots) {
-    const current = byAccount.get(snapshot.accountId);
-    if (!current || current.asOfDate < snapshot.asOfDate) {
-      byAccount.set(snapshot.accountId, snapshot);
-    }
-  }
-  return [...byAccount.values()];
-}
-
-export function getAccountById(accounts: Account[], accountId: string): Account | undefined {
+export function getAccountById(accounts: DomainDataset["accounts"], accountId: string) {
   return accounts.find((account) => account.id === accountId);
 }

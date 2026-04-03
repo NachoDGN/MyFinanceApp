@@ -13,6 +13,8 @@ export async function GET(
   const { metricId } = await context.params;
   const state = await resolveAppState(Object.fromEntries(request.nextUrl.searchParams));
   const dataset = await repository.getDataset();
-  const metric = buildMetricResult(dataset, state.scope, state.currency, metricId);
+  const metric = buildMetricResult(dataset, state.scope, state.currency, metricId, {
+    referenceDate: state.referenceDate,
+  });
   return NextResponse.json(metric);
 }

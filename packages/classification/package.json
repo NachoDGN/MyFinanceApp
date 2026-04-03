@@ -2,8 +2,8 @@
   "name": "@myfinance/classification",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/classification/src/index.js",
+  "types": "./dist/classification/src/index.d.ts",
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json --noEmit"
