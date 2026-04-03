@@ -14,10 +14,14 @@ import {
   canonicalFieldKeys,
   createTemplateConfig,
   FinanceDomainService,
+  inferImportTemplateDraft,
+  logTemporaryImportDebug,
   signModeOptions,
 } from "@myfinance/domain";
+import { NEW_SPREADSHEET_TEMPLATE_ID } from "./import-constants";
 
-const domain = new FinanceDomainService(createFinanceRepository());
+const repository = createFinanceRepository();
+const domain = new FinanceDomainService(repository);
 
 const importFieldsSchema = z.object({
   accountId: z.string(),
@@ -113,15 +117,16 @@ function parseAliases(value: string) {
   ];
 }
 
-async function withUploadedImport(
+async function withUploadedImport<T>(
+  mode: "preview" | "commit",
   formData: FormData,
   run: (input: {
     accountId: string;
     templateId: string;
     originalFilename: string;
     filePath: string;
-  }) => Promise<unknown>,
-) {
+  }) => Promise<T>,
+): Promise<T | (T & { resolvedTemplateName: string })> {
   const fields = importFieldsSchema.parse({
     accountId: formData.get("accountId"),
     templateId: formData.get("templateId"),
@@ -139,27 +144,121 @@ async function withUploadedImport(
   await mkdir(uploadDirectory, { recursive: true });
   const filePath = join(uploadDirectory, file.name || "upload.bin");
   await writeFile(filePath, Buffer.from(await file.arrayBuffer()));
+  logTemporaryImportDebug("upload:start", {
+    accountId: fields.accountId,
+    templateId: fields.templateId,
+    originalFilename: file.name,
+    filePath,
+  });
 
   try {
-    return await run({
+    let resolvedTemplateId = fields.templateId;
+    let resolvedTemplateName: string | null = null;
+
+    if (fields.templateId === NEW_SPREADSHEET_TEMPLATE_ID) {
+      logTemporaryImportDebug("upload:new-spreadsheet-selected", {
+        accountId: fields.accountId,
+        originalFilename: file.name,
+      });
+      const dataset = await repository.getDataset();
+      const account = dataset.accounts.find(
+        (candidate) => candidate.id === fields.accountId,
+      );
+      if (!account) {
+        throw new Error(`Account ${fields.accountId} was not found.`);
+      }
+
+      const { seededUserId } = getDbRuntimeConfig();
+      const inferredTemplate = await inferImportTemplateDraft({
+        userId: seededUserId,
+        account,
+        filePath,
+        originalFilename: file.name,
+      });
+      const createResult = await domain.createTemplate({
+        template: inferredTemplate,
+        actorName: "web-action",
+        sourceChannel: "web",
+        apply: true,
+      });
+      resolvedTemplateId = createResult.templateId;
+      resolvedTemplateName = inferredTemplate.name;
+      logTemporaryImportDebug("upload:template-created", {
+        accountId: fields.accountId,
+        templateId: resolvedTemplateId,
+        templateName: resolvedTemplateName,
+      });
+      revalidatePath("/templates");
+      revalidatePath("/imports");
+    }
+
+    const result = await run({
       accountId: fields.accountId,
-      templateId: fields.templateId,
+      templateId: resolvedTemplateId,
       originalFilename: file.name,
       filePath,
     });
+    logTemporaryImportDebug("upload:run-complete", {
+      accountId: fields.accountId,
+      templateId: resolvedTemplateId,
+      mode,
+      rowCountParsed:
+        result && typeof result === "object" && "rowCountParsed" in result
+          ? result.rowCountParsed
+          : null,
+      rowCountFailed:
+        result && typeof result === "object" && "rowCountFailed" in result
+          ? result.rowCountFailed
+          : null,
+    });
+    if (
+      resolvedTemplateName &&
+      result &&
+      typeof result === "object" &&
+      !Array.isArray(result)
+    ) {
+      return {
+        ...(result as Record<string, unknown>),
+        resolvedTemplateName,
+      } as T & { resolvedTemplateName: string };
+    }
+    return result;
+  } catch (error) {
+    logTemporaryImportDebug("upload:error", {
+      accountId: fields.accountId,
+      templateId: fields.templateId,
+      originalFilename: file.name,
+      error: error instanceof Error ? error.message : "Unknown upload error.",
+    });
+    throw error;
   } finally {
     await rm(uploadDirectory, { recursive: true, force: true });
   }
 }
 
 export async function previewImportAction(formData: FormData) {
-  return withUploadedImport(formData, (input) => domain.previewImport(input));
+  return withUploadedImport("preview", formData, async (input) => {
+    logTemporaryImportDebug("preview-action:start", {
+      accountId: input.accountId,
+      templateId: input.templateId,
+      originalFilename: input.originalFilename,
+    });
+    return domain.previewImport(input);
+  });
 }
 
 export async function commitImportAction(formData: FormData) {
-  const result = await withUploadedImport(formData, (input) =>
+  logTemporaryImportDebug("commit-action:start");
+  const result = await withUploadedImport("commit", formData, (input) =>
     domain.commitImport(input),
   );
+  logTemporaryImportDebug("commit-action:complete", {
+    accountId: result.accountId,
+    templateId: result.templateId,
+    importBatchId: "importBatchId" in result ? result.importBatchId : null,
+    rowCountParsed: result.rowCountParsed,
+    rowCountFailed: result.rowCountFailed,
+  });
   revalidatePath("/imports");
   revalidatePath("/");
   revalidatePath("/transactions");
@@ -218,6 +317,20 @@ export async function createTemplateAction(
   });
   revalidatePath("/templates");
   revalidatePath("/imports");
+  return result;
+}
+
+export async function deleteTemplateAction(templateId: string) {
+  const parsed = z.string().uuid().parse(templateId);
+  const result = await domain.deleteTemplate({
+    templateId: parsed,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidatePath("/templates");
+  revalidatePath("/imports");
+  revalidatePath("/accounts");
   return result;
 }
 

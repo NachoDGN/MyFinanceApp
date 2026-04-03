@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import re
 import sys
@@ -18,6 +20,11 @@ import pandas as pd
 
 TEXT_JOIN_SEPARATOR = " "
 EXCEL_COLUMN_PATTERN = re.compile(r"^[A-Z]+$")
+RAW_PREVIEW_ROW_LIMIT = 18
+RAW_PREVIEW_COLUMN_LIMIT = 12
+TABLE_PREVIEW_ROW_LIMIT = 8
+TABLE_PREVIEW_COLUMN_LIMIT = 12
+CSV_DELIMITER_CANDIDATES = [",", ";", "\t", "|"]
 
 
 @dataclass
@@ -25,6 +32,22 @@ class CanonicalizationResult:
     normalized: pd.DataFrame
     row_count_detected: int
     parse_errors: list[dict[str, Any]]
+
+
+def camel_to_snake(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+
+
+def normalize_template_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, entry in value.items():
+            normalized_key = camel_to_snake(key) if isinstance(key, str) else key
+            normalized[normalized_key] = normalize_template_payload(entry)
+        return normalized
+    if isinstance(value, list):
+        return [normalize_template_payload(entry) for entry in value]
+    return value
 
 
 def normalize_header(value: Any) -> str:
@@ -50,6 +73,211 @@ def column_letter_to_index(column_letter: str) -> int:
     for character in column_letter:
         result = result * 26 + (ord(character) - ord("A") + 1)
     return result - 1
+
+
+def index_to_column_letter(index: int) -> str:
+    result = ""
+    current = index + 1
+    while current > 0:
+        current, remainder = divmod(current - 1, 26)
+        result = chr(ord("A") + remainder) + result
+    return result
+
+
+def infer_file_kind(file_path: Path) -> str:
+    suffix = file_path.suffix.lower()
+    if suffix == ".xlsx":
+        return "xlsx"
+    return "csv"
+
+
+def read_text_with_fallbacks(file_path: Path, encodings: list[str]) -> tuple[str, str]:
+    for encoding in encodings:
+        try:
+            return file_path.read_text(encoding=encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return file_path.read_text(encoding="latin-1"), "latin-1"
+
+
+def detect_csv_format(file_path: Path) -> tuple[str, str]:
+    sample_text, encoding = read_text_with_fallbacks(
+        file_path,
+        ["utf-8-sig", "utf-8", "cp1252", "latin-1"],
+    )
+    sample = sample_text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters="".join(CSV_DELIMITER_CANDIDATES))
+        delimiter = dialect.delimiter
+    except csv.Error:
+        delimiter = ","
+    return delimiter, encoding
+
+
+def load_csv_preview_frame(
+    file_path: Path,
+    *,
+    delimiter: str,
+    encoding: str,
+) -> pd.DataFrame:
+    text, _ = read_text_with_fallbacks(file_path, [encoding])
+    rows: list[list[str]] = []
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    for row in reader:
+        rows.append([normalize_text(value) for value in row[:RAW_PREVIEW_COLUMN_LIMIT]])
+        if len(rows) >= RAW_PREVIEW_ROW_LIMIT:
+            break
+
+    width = max((len(row) for row in rows), default=0)
+    padded_rows = [row + [""] * (width - len(row)) for row in rows]
+    return pd.DataFrame(padded_rows, dtype=object)
+
+
+def frame_to_coordinate_preview_csv(
+    frame: pd.DataFrame,
+    *,
+    row_offset: int = 0,
+    column_offset: int = 0,
+) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        ["row"]
+        + [index_to_column_letter(column_offset + index) for index in range(len(frame.columns))]
+    )
+    for index, row in enumerate(frame.itertuples(index=False), start=1):
+        writer.writerow(
+            [row_offset + index] + [normalize_text(value) for value in row]
+        )
+    return output.getvalue().strip()
+
+
+def frame_to_table_preview_csv(frame: pd.DataFrame) -> str:
+    output = io.StringIO()
+    frame.iloc[:TABLE_PREVIEW_ROW_LIMIT, :TABLE_PREVIEW_COLUMN_LIMIT].to_csv(
+        output,
+        index=False,
+    )
+    return output.getvalue().strip()
+
+
+def load_raw_preview_frame(
+    file_path: Path,
+    *,
+    file_kind: str,
+    sheet_name: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+) -> pd.DataFrame:
+    if file_kind == "csv":
+        frame = load_csv_preview_frame(
+            file_path,
+            delimiter=delimiter or ",",
+            encoding=encoding or "utf-8",
+        )
+    elif file_kind == "xlsx":
+        frame = pd.read_excel(
+            file_path,
+            sheet_name=sheet_name or 0,
+            header=None,
+            dtype=object,
+            nrows=RAW_PREVIEW_ROW_LIMIT,
+        )
+    else:
+        raise ValueError(f"Unsupported file kind: {file_kind}")
+
+    return frame.iloc[:, :RAW_PREVIEW_COLUMN_LIMIT].fillna("")
+
+
+def build_workbook_preview(file_path: Path) -> dict[str, Any]:
+    file_kind = infer_file_kind(file_path)
+    if file_kind == "csv":
+        delimiter, encoding = detect_csv_format(file_path)
+        frame = load_raw_preview_frame(
+            file_path,
+            file_kind=file_kind,
+            delimiter=delimiter,
+            encoding=encoding,
+        )
+        return {
+            "fileKind": file_kind,
+            "delimiter": delimiter,
+            "encoding": encoding,
+            "sheetPreviews": [
+                {
+                    "sheetName": None,
+                    "previewCsv": frame_to_coordinate_preview_csv(frame),
+                }
+            ],
+        }
+
+    workbook = pd.ExcelFile(file_path)
+    sheet_previews = []
+    for sheet_name in workbook.sheet_names[:3]:
+        frame = load_raw_preview_frame(
+            file_path,
+            file_kind=file_kind,
+            sheet_name=sheet_name,
+        )
+        sheet_previews.append(
+            {
+                "sheetName": sheet_name,
+                "previewCsv": frame_to_coordinate_preview_csv(frame),
+            }
+        )
+
+    return {
+        "fileKind": file_kind,
+        "delimiter": None,
+        "encoding": None,
+        "sheetPreviews": sheet_previews,
+    }
+
+
+def build_table_preview(
+    file_path: Path,
+    *,
+    file_kind: str,
+    header_row_index: int,
+    rows_to_skip_before_header: int,
+    start_column_index: int,
+    sheet_name: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+) -> dict[str, Any]:
+    header_zero_index = max(header_row_index - 1 - rows_to_skip_before_header, 0)
+
+    if file_kind == "csv":
+        frame = pd.read_csv(
+            file_path,
+            delimiter=delimiter or ",",
+            encoding=encoding or "utf-8",
+            skiprows=rows_to_skip_before_header,
+            header=header_zero_index,
+            dtype=object,
+        )
+    elif file_kind == "xlsx":
+        frame = pd.read_excel(
+            file_path,
+            sheet_name=sheet_name or 0,
+            skiprows=rows_to_skip_before_header,
+            header=header_zero_index,
+            dtype=object,
+        )
+    else:
+        raise ValueError(f"Unsupported file kind: {file_kind}")
+
+    if start_column_index > 0:
+        frame = frame.iloc[:, start_column_index:]
+    frame = frame.loc[:, ~frame.columns.map(lambda column: normalize_text(column) == "")]
+    frame = frame.fillna("")
+
+    headers = [normalize_text(column) for column in frame.columns[:TABLE_PREVIEW_COLUMN_LIMIT]]
+    return {
+        "sheetName": sheet_name,
+        "previewCsv": frame_to_table_preview_csv(frame),
+        "headers": headers,
+    }
 
 
 def resolve_column_name(frame: pd.DataFrame, spec: Any) -> Any | None:
@@ -236,6 +464,8 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
     header_row_index = int(template.get("header_row_index", 1))
     skip_before_header = int(template.get("rows_to_skip_before_header", 0))
     rows_to_skip_after_header = int(template.get("rows_to_skip_after_header", 0))
+    normalization_rules = template.get("normalization_rules_json", {}) or {}
+    start_column_index = int(normalization_rules.get("start_column_index", 0) or 0)
     header_zero_index = max(header_row_index - 1 - skip_before_header, 0)
 
     if file_kind == "csv":
@@ -258,6 +488,8 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
     else:
         raise ValueError(f"Unsupported file kind: {file_kind}")
 
+    if start_column_index > 0:
+        frame = frame.iloc[:, start_column_index:]
     if rows_to_skip_after_header > 0:
         frame = frame.iloc[rows_to_skip_after_header:]
 
@@ -552,10 +784,22 @@ def build_result(
     account_id: str,
     template_id: str,
     filename: str,
+    frame: pd.DataFrame,
     canonical: CanonicalizationResult,
 ) -> dict[str, Any]:
     normalized = canonical.normalized
     records = normalized.to_dict(orient="records")
+    preview_frame = frame.iloc[:TABLE_PREVIEW_ROW_LIMIT, :TABLE_PREVIEW_COLUMN_LIMIT].fillna("")
+    source_table_preview = {
+        "headers": [normalize_text(column) for column in preview_frame.columns],
+        "rows": [
+            {
+                str(column): to_serializable(value)
+                for column, value in row.items()
+            }
+            for _, row in preview_frame.iterrows()
+        ],
+    }
     summary: dict[str, Any] = {
         "schemaVersion": "v1",
         "accountId": account_id,
@@ -571,6 +815,7 @@ def build_result(
         }
         if records
         else None,
+        "sourceTablePreview": source_table_preview,
         "normalizedRows": records,
         "sampleRows": records[:5],
         "parseErrors": canonical.parse_errors,
@@ -590,15 +835,51 @@ def build_result(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Template-driven pandas ingest wrapper")
-    parser.add_argument("mode", choices=["preview", "commit"])
+    parser.add_argument(
+        "mode",
+        choices=["preview", "commit", "inspect-workbook", "preview-table"],
+    )
     parser.add_argument("--file-path", required=True)
-    parser.add_argument("--account-id", required=True)
-    parser.add_argument("--template-id", required=True)
-    parser.add_argument("--template-json", required=True)
+    parser.add_argument("--account-id")
+    parser.add_argument("--template-id")
+    parser.add_argument("--template-json")
+    parser.add_argument("--file-kind")
+    parser.add_argument("--sheet-name")
+    parser.add_argument("--header-row-index", type=int)
+    parser.add_argument("--rows-to-skip-before-header", type=int, default=0)
+    parser.add_argument("--start-column-index", type=int, default=0)
+    parser.add_argument("--delimiter")
+    parser.add_argument("--encoding")
     args = parser.parse_args()
 
     file_path = Path(args.file_path)
-    template = json.loads(args.template_json)
+    if args.mode == "inspect-workbook":
+        result = build_workbook_preview(file_path)
+        sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        return 0
+
+    if args.mode == "preview-table":
+        if not args.header_row_index:
+            raise ValueError("--header-row-index is required for preview-table.")
+        result = build_table_preview(
+            file_path,
+            file_kind=(args.file_kind or infer_file_kind(file_path)).lower(),
+            sheet_name=args.sheet_name or None,
+            header_row_index=args.header_row_index,
+            rows_to_skip_before_header=args.rows_to_skip_before_header,
+            start_column_index=args.start_column_index,
+            delimiter=args.delimiter,
+            encoding=args.encoding,
+        )
+        sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        return 0
+
+    if not args.account_id or not args.template_id or not args.template_json:
+        raise ValueError(
+            "--account-id, --template-id, and --template-json are required for preview and commit.",
+        )
+
+    template = normalize_template_payload(json.loads(args.template_json))
     frame = load_dataframe(file_path, template)
     canonical = canonicalize_frame(frame, template)
     result = build_result(
@@ -606,6 +887,7 @@ def main() -> int:
         args.account_id,
         args.template_id,
         file_path.name,
+        frame,
         canonical,
     )
     sys.stdout.write(json.dumps(result, ensure_ascii=False))

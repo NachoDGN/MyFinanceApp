@@ -15,6 +15,7 @@ class ProviderApiError extends Error {
   constructor(
     message: string,
     readonly statusCode?: number,
+    readonly responseBody?: string | null,
   ) {
     super(message);
     this.name = "ProviderApiError";
@@ -56,7 +57,10 @@ interface ProviderAdapter {
 }
 
 function getAbortSignal(timeoutMs: number) {
-  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+  if (
+    typeof AbortSignal !== "undefined" &&
+    typeof AbortSignal.timeout === "function"
+  ) {
     return AbortSignal.timeout(timeoutMs);
   }
 
@@ -72,7 +76,9 @@ function sleep(milliseconds: number) {
 function truncateForLog(value: string | null | undefined, maxLength = 240) {
   if (!value) return null;
   const collapsed = value.replace(/\s+/g, " ").trim();
-  return collapsed.length <= maxLength ? collapsed : `${collapsed.slice(0, maxLength)}...`;
+  return collapsed.length <= maxLength
+    ? collapsed
+    : `${collapsed.slice(0, maxLength)}...`;
 }
 
 function toErrorMessage(error: unknown) {
@@ -123,10 +129,16 @@ export function normaliseJsonPayload(
     .trim();
 
   normalized = extractOuterJson(normalized);
-  normalized = normalized.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)(\s*:)/g, '$1"$2"$3');
-  normalized = normalized.replace(/([{,]\s*)'([^']+)'(\s*:)/g, (_, prefix: string, key: string, suffix: string) => {
-    return `${prefix}"${normalizeStringFragment(key)}"${suffix}`;
-  });
+  normalized = normalized.replace(
+    /([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)(\s*:)/g,
+    '$1"$2"$3',
+  );
+  normalized = normalized.replace(
+    /([{,]\s*)'([^']+)'(\s*:)/g,
+    (_, prefix: string, key: string, suffix: string) => {
+      return `${prefix}"${normalizeStringFragment(key)}"${suffix}`;
+    },
+  );
   normalized = normalized.replace(/:\s*'([^']*)'/g, (_, value: string) => {
     return `: "${normalizeStringFragment(value)}"`;
   });
@@ -143,12 +155,20 @@ function parseJsonWithSchema<T>(rawPayload: string, schema: z.ZodType<T>) {
   try {
     parsedJson = JSON.parse(rawPayload);
   } catch (error) {
-    throw new JsonOutputError("malformed_json", toErrorMessage(error), rawPayload);
+    throw new JsonOutputError(
+      "malformed_json",
+      toErrorMessage(error),
+      rawPayload,
+    );
   }
 
   const parsed = schema.safeParse(parsedJson);
   if (!parsed.success) {
-    throw new JsonOutputError("schema_validation", parsed.error.message, rawPayload);
+    throw new JsonOutputError(
+      "schema_validation",
+      parsed.error.message,
+      rawPayload,
+    );
   }
 
   return parsed.data;
@@ -178,7 +198,9 @@ function extractOpenAIResponseText(payload: Record<string, unknown>) {
 }
 
 function extractGeminiResponseText(payload: Record<string, unknown>) {
-  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  const candidates = Array.isArray(payload.candidates)
+    ? payload.candidates
+    : [];
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
     const content = (candidate as { content?: { parts?: unknown[] } }).content;
@@ -223,8 +245,12 @@ class OpenAIProvider implements ProviderAdapter {
             content: [{ type: "input_text", text: request.userPrompt }],
           },
         ],
-        ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
-        ...(typeof request.maxTokens === "number" ? { max_output_tokens: request.maxTokens } : {}),
+        ...(typeof request.temperature === "number"
+          ? { temperature: request.temperature }
+          : {}),
+        ...(typeof request.maxTokens === "number"
+          ? { max_output_tokens: request.maxTokens }
+          : {}),
         ...(mode === "json"
           ? request.responseJsonSchema
             ? {
@@ -249,9 +275,11 @@ class OpenAIProvider implements ProviderAdapter {
     });
 
     if (!response.ok) {
+      const responseBody = await response.text();
       throw new ProviderApiError(
-        `OpenAI request failed with status ${response.status}.`,
+        `OpenAI request failed with status ${response.status}.${responseBody ? ` ${truncateForLog(responseBody, 600)}` : ""}`,
         response.status,
+        responseBody,
       );
     }
 
@@ -301,8 +329,11 @@ class GeminiProvider implements ProviderAdapter {
             },
           ],
           generationConfig: {
-            responseMimeType: mode === "json" ? "application/json" : "text/plain",
-            ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+            responseMimeType:
+              mode === "json" ? "application/json" : "text/plain",
+            ...(typeof request.temperature === "number"
+              ? { temperature: request.temperature }
+              : {}),
             ...(typeof request.maxTokens === "number"
               ? { maxOutputTokens: request.maxTokens }
               : {}),
@@ -312,9 +343,11 @@ class GeminiProvider implements ProviderAdapter {
     );
 
     if (!response.ok) {
+      const responseBody = await response.text();
       throw new ProviderApiError(
-        `Gemini request failed with status ${response.status}.`,
+        `Gemini request failed with status ${response.status}.${responseBody ? ` ${truncateForLog(responseBody, 600)}` : ""}`,
         response.status,
+        responseBody,
       );
     }
 
@@ -359,7 +392,10 @@ export class LLMClient {
     error: unknown,
     rawOutput?: string | null,
   ) {
-    const log = kind === "api_exception" || kind === "missing_credentials" ? this.logger.error : this.logger.warn;
+    const log =
+      kind === "api_exception" || kind === "missing_credentials"
+        ? this.logger.error
+        : this.logger.warn;
     log?.("LLM request failed", {
       provider,
       modelName,
@@ -392,8 +428,15 @@ export class LLMClient {
         });
       } catch (error) {
         lastError = error;
-        lastKind = error instanceof EmptyTextError ? "empty_text" : "api_exception";
-        this.logFailure(adapter.provider, params.modelName, attempt, lastKind, error);
+        lastKind =
+          error instanceof EmptyTextError ? "empty_text" : "api_exception";
+        this.logFailure(
+          adapter.provider,
+          params.modelName,
+          attempt,
+          lastKind,
+          error,
+        );
       }
     }
 
@@ -402,7 +445,10 @@ export class LLMClient {
       modelName: params.modelName,
       kind: lastKind,
       attempts: maxRetries,
-      statusCode: lastError instanceof ProviderApiError ? lastError.statusCode : undefined,
+      statusCode:
+        lastError instanceof ProviderApiError
+          ? lastError.statusCode
+          : undefined,
     });
   }
 
@@ -445,7 +491,10 @@ export class LLMClient {
               allowLocaleNumberStrings: params.allowLocaleNumberStrings,
             });
             if (normalizedPayload !== rawOutput) {
-              return parseJsonWithSchema(normalizedPayload, params.responseSchema);
+              return parseJsonWithSchema(
+                normalizedPayload,
+                params.responseSchema,
+              );
             }
           }
 
@@ -462,7 +511,14 @@ export class LLMClient {
         if (error instanceof JsonOutputError) {
           lastRawOutput = error.rawOutput;
         }
-        this.logFailure(adapter.provider, params.modelName, attempt, lastKind, error, lastRawOutput);
+        this.logFailure(
+          adapter.provider,
+          params.modelName,
+          attempt,
+          lastKind,
+          error,
+          lastRawOutput,
+        );
       }
     }
 
@@ -481,7 +537,10 @@ export class LLMClient {
       modelName: params.modelName,
       kind: lastKind,
       attempts: maxRetries,
-      statusCode: lastError instanceof ProviderApiError ? lastError.statusCode : undefined,
+      statusCode:
+        lastError instanceof ProviderApiError
+          ? lastError.statusCode
+          : undefined,
       rawOutput: lastRawOutput,
     });
   }

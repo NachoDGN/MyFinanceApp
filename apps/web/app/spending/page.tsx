@@ -3,6 +3,7 @@ import {
   DistributionList,
   MetricCard,
   MultiSeriesChart,
+  ReviewStateCell,
   SectionCard,
   SimpleTable,
 } from "../../components/primitives";
@@ -99,7 +100,10 @@ export default async function SpendingPage({
             row.merchantNormalized ?? "—",
             formatCurrency(row.amountBaseEur, model.currency),
             row.categoryCode ?? "—",
-            row.needsReview ? "Needs review" : "OK",
+            <ReviewStateCell
+              needsReview={row.needsReview}
+              reviewReason={row.reviewReason}
+            />,
           ])}
         />
       </div>

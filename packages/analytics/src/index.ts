@@ -16,6 +16,7 @@ import {
   filterTransactionsByScope,
   getDatasetLatestDate,
   getLatestBalanceSnapshots,
+  getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
   resolveFxRate,
   resolvePeriodSelection,
@@ -564,7 +565,7 @@ function averageMonthlySeries(
 function buildHoldingsSnapshot(dataset: DomainDataset, scope: Scope, referenceDate: string) {
   const holdings = buildHoldingRows(dataset, scope, referenceDate);
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const brokerageCashEur = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, referenceDate)
+  const brokerageCashEur = getLatestInvestmentCashBalances(dataset, referenceDate)
     .filter((snapshot) => {
       const account = dataset.accounts.find((candidate) => candidate.id === snapshot.accountId);
       return account?.assetDomain === "investment" && entityIds.has(account.entityId);
@@ -576,11 +577,13 @@ function buildHoldingsSnapshot(dataset: DomainDataset, scope: Scope, referenceDa
     schemaVersion: "v1" as const,
     scope,
     holdings,
-    quoteFreshness: holdings.every((row) => row.quoteFreshness === "delayed")
-      ? "delayed" as const
-      : holdings.some((row) => row.quoteFreshness === "fresh")
-        ? "fresh" as const
-        : "missing" as const,
+    quoteFreshness: holdings.some((row) => row.quoteFreshness === "fresh")
+      ? "fresh" as const
+      : holdings.some((row) => row.quoteFreshness === "delayed")
+        ? "delayed" as const
+        : holdings.some((row) => row.quoteFreshness === "stale")
+          ? "stale" as const
+          : "missing" as const,
     brokerageCashEur,
     generatedAt: new Date().toISOString(),
   };
@@ -713,6 +716,7 @@ export function buildInvestmentsReadModel(
     [
       "investment_trade_buy",
       "investment_trade_sell",
+      "transfer_internal",
       "dividend",
       "interest",
       "fee",
@@ -731,6 +735,18 @@ export function buildInvestmentsReadModel(
     holdings.holdings,
     (holding) => dataset.accounts.find((account) => account.id === holding.accountId)?.displayName ?? holding.accountId,
     (holding) => new Decimal(holding.currentValueEur ?? 0),
+  );
+  const unresolved = sortTransactionsNewestFirst(
+    filterTransactionsByScope(dataset, input.scope).filter((transaction) => {
+      const account = dataset.accounts.find(
+        (candidate) => candidate.id === transaction.accountId,
+      );
+      return (
+        account?.assetDomain === "investment" &&
+        transaction.transactionDate <= referenceDate &&
+        transaction.needsReview
+      );
+    }),
   );
 
   return {
@@ -764,7 +780,7 @@ export function buildInvestmentsReadModel(
       ytdInvestmentRows.filter((transaction) => transaction.transactionClass === "transfer_internal"),
       (transaction) => new Decimal(transaction.amountBaseEur),
     ),
-    unresolved: investmentRows.filter((transaction) => transaction.needsReview),
+    unresolved,
     accountAllocation,
   };
 }

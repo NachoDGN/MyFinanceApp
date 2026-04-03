@@ -619,12 +619,17 @@ export interface ImportPreviewResult {
   schemaVersion: "v1";
   accountId: string;
   templateId: string;
+  resolvedTemplateName?: string | null;
   originalFilename: string;
   rowCountDetected: number;
   rowCountParsed: number;
   rowCountDuplicates: number;
   rowCountFailed: number;
   dateRange: { start: string; end: string } | null;
+  sourceTablePreview?: {
+    headers: string[];
+    rows: Array<Record<string, unknown>>;
+  } | null;
   sampleRows: Array<Record<string, unknown>>;
   parseErrors: Array<{ row: number; message: string }>;
 }
@@ -645,6 +650,13 @@ export interface CreateAccountInput {
 
 export interface DeleteAccountInput {
   accountId: string;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface DeleteTemplateInput {
+  templateId: string;
   actorName: string;
   sourceChannel: AuditSourceChannel;
   apply: boolean;

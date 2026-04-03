@@ -9,8 +9,9 @@ import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
 import { createFinanceRepository } from "@myfinance/db";
 import {
   FinanceDomainService,
+  filterTransactionsByScope,
+  getDatasetLatestDate,
   resolvePeriodSelection,
-  todayIso,
   type Scope,
   type Transaction,
 } from "@myfinance/domain";
@@ -36,21 +37,27 @@ export async function resolveAppState(searchParams: RawSearchParams) {
   const dataset = await repository.getDataset();
   const scopeParam = normalizeParam(params, "scope") ?? "consolidated";
   const currency = normalizeParam(params, "currency") === "USD" ? "USD" : "EUR";
-  const referenceDate = normalizeParam(params, "asOf") ?? todayIso();
   const periodParam = normalizeParam(params, "period") ?? "mtd";
-  const period = resolvePeriodSelection({
-    preset: periodParam,
-    start: normalizeParam(params, "start"),
-    end: normalizeParam(params, "end"),
-    referenceDate,
-  });
-
   const entityBySlug = new Map(dataset.entities.map((entity) => [entity.slug, entity.id]));
   const scope: Scope = scopeParam.startsWith("account:")
     ? { kind: "account", accountId: scopeParam.replace("account:", "") }
     : scopeParam === "consolidated"
       ? { kind: "consolidated" }
       : { kind: "entity", entityId: entityBySlug.get(scopeParam) };
+  const latestScopedTransactionDate = filterTransactionsByScope(dataset, scope)
+    .map((row) => row.transactionDate)
+    .sort()
+    .at(-1);
+  const referenceDate =
+    normalizeParam(params, "asOf") ??
+    latestScopedTransactionDate ??
+    getDatasetLatestDate(dataset);
+  const period = resolvePeriodSelection({
+    preset: periodParam,
+    start: normalizeParam(params, "start"),
+    end: normalizeParam(params, "end"),
+    referenceDate,
+  });
 
   const scopeOptions = [
     { value: "consolidated", label: "Consolidated" },

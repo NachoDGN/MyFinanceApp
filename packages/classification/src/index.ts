@@ -1,7 +1,16 @@
 import { z } from "zod";
 
-import { analyzeBankTransaction, createLLMClient, isModelConfigured } from "@myfinance/llm";
-import type { Account, ClassificationRule, DomainDataset, Transaction } from "@myfinance/domain";
+import {
+  analyzeBankTransaction,
+  createLLMClient,
+  isModelConfigured,
+} from "@myfinance/llm";
+import type {
+  Account,
+  ClassificationRule,
+  DomainDataset,
+  Transaction,
+} from "@myfinance/domain";
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -9,35 +18,61 @@ export const NON_AI_RULE_SUMMARIES = [
     title: "Description normalization",
     summary:
       "Whitespace, repeated spaces, SEPA markers, and card-ending boilerplate are normalized before any rule logic runs.",
-    evidence: ["trim", "collapse spaces", "remove SEPA", "remove CARD ENDING ####"],
+    evidence: [
+      "trim",
+      "collapse spaces",
+      "remove SEPA",
+      "remove CARD ENDING ####",
+    ],
   },
   {
     id: "saved_rule_engine",
     title: "Saved rule engine",
     summary:
       "Active user rules are evaluated by priority and can currently match normalized-description regexes and merchant equality.",
-    evidence: ["normalized_description_regex", "merchant_equals", "priority ascending"],
+    evidence: [
+      "normalized_description_regex",
+      "merchant_equals",
+      "priority ascending",
+    ],
   },
   {
     id: "transfer_matcher",
     title: "Internal transfer matcher",
     summary:
       "Owned-account transfers are detected by opposite sign, near date, similar amount, currency match, and account alias hints.",
-    evidence: ["3-day window", "same currency", "opposite sign", "matching aliases"],
+    evidence: [
+      "3-day window",
+      "same currency",
+      "opposite sign",
+      "matching aliases",
+    ],
   },
   {
     id: "investment_parser",
     title: "Investment parser",
     summary:
       "Brokerage rows are deterministically parsed for buy, sell, dividend, interest, fee, and FX conversion patterns before any LLM is used.",
-    evidence: ["DIVIDEND", "INTEREST", "FEE", "FX", "@ quantity", "BUY/SELL quantity name"],
+    evidence: [
+      "DIVIDEND",
+      "INTEREST",
+      "FEE",
+      "FX",
+      "@ quantity",
+      "BUY/SELL quantity name",
+    ],
   },
   {
     id: "fallback_buckets",
     title: "Fallback buckets",
     summary:
       "When deterministic logic cannot safely decide, the system falls back to unknown or uncategorized codes instead of inventing categories.",
-    evidence: ["unknown", "uncategorized_income", "uncategorized_expense", "uncategorized_investment"],
+    evidence: [
+      "unknown",
+      "uncategorized_income",
+      "uncategorized_expense",
+      "uncategorized_investment",
+    ],
   },
 ] as const;
 
@@ -87,9 +122,30 @@ export function applyRuleMatch(
     .filter((rule) => rule.active)
     .sort((a, b) => a.priority - b.priority);
 
-  const comparison = normalizeDescription(transaction.descriptionRaw).comparison;
+  const comparison = normalizeDescription(
+    transaction.descriptionRaw,
+  ).comparison;
 
   for (const rule of ordered) {
+    const scopeAccountId =
+      typeof rule.scopeJson.account_id === "string"
+        ? rule.scopeJson.account_id
+        : null;
+    const scopeEntityId =
+      typeof rule.scopeJson.entity_id === "string"
+        ? rule.scopeJson.entity_id
+        : null;
+    if (scopeAccountId && scopeAccountId !== transaction.accountId) {
+      continue;
+    }
+    if (
+      scopeEntityId &&
+      scopeEntityId !== transaction.economicEntityId &&
+      scopeEntityId !== transaction.accountEntityId
+    ) {
+      continue;
+    }
+
     const regex = rule.conditionsJson.normalized_description_regex;
     const merchant = rule.conditionsJson.merchant_equals;
 
@@ -118,30 +174,38 @@ export function detectInternalTransfer(
     return null;
   }
 
-  return candidateRows.find((candidate) => {
-    if (candidate.id === transaction.id) return false;
-    const dateDelta =
-      Math.abs(
-        (Date.parse(`${candidate.transactionDate}T00:00:00Z`) -
-          Date.parse(`${transaction.transactionDate}T00:00:00Z`)) /
-          86400000,
-      ) <= dayWindow;
-    const oppositeSign =
-      Number(transaction.amountBaseEur) * Number(candidate.amountBaseEur) < 0;
-    const sameMagnitude =
-      Math.abs(
-        Math.abs(Number(transaction.amountBaseEur)) - Math.abs(Number(candidate.amountBaseEur)),
-      ) < 0.01;
-    const sameCurrency = candidate.currencyOriginal === transaction.currencyOriginal;
-    const aliasHint = ownedAccounts.some(
-      (account) =>
-        account.id === candidate.accountId &&
-        account.matchingAliases.some((alias) =>
-          normalizeDescription(transaction.descriptionRaw).comparison.includes(alias.toUpperCase()),
-        ),
-    );
-    return dateDelta && oppositeSign && sameMagnitude && sameCurrency && aliasHint;
-  }) ?? null;
+  return (
+    candidateRows.find((candidate) => {
+      if (candidate.id === transaction.id) return false;
+      const dateDelta =
+        Math.abs(
+          (Date.parse(`${candidate.transactionDate}T00:00:00Z`) -
+            Date.parse(`${transaction.transactionDate}T00:00:00Z`)) /
+            86400000,
+        ) <= dayWindow;
+      const oppositeSign =
+        Number(transaction.amountBaseEur) * Number(candidate.amountBaseEur) < 0;
+      const sameMagnitude =
+        Math.abs(
+          Math.abs(Number(transaction.amountBaseEur)) -
+            Math.abs(Number(candidate.amountBaseEur)),
+        ) < 0.01;
+      const sameCurrency =
+        candidate.currencyOriginal === transaction.currencyOriginal;
+      const aliasHint = ownedAccounts.some(
+        (account) =>
+          account.id === candidate.accountId &&
+          account.matchingAliases.some((alias) =>
+            normalizeDescription(
+              transaction.descriptionRaw,
+            ).comparison.includes(alias.toUpperCase()),
+          ),
+      );
+      return (
+        dateDelta && oppositeSign && sameMagnitude && sameCurrency && aliasHint
+      );
+    }) ?? null
+  );
 }
 
 export function parseInvestmentEvent(transaction: Transaction): {
@@ -157,12 +221,20 @@ export function parseInvestmentEvent(transaction: Transaction): {
   securityHint?: string;
   unitPriceOriginal?: string;
 } {
-  const comparison = normalizeDescription(transaction.descriptionRaw).comparison;
+  const comparison = normalizeDescription(
+    transaction.descriptionRaw,
+  ).comparison;
 
   if (comparison.includes("DIVIDEND")) {
     return { transactionClass: "dividend" };
   }
   if (comparison.includes("INTEREST")) {
+    return { transactionClass: "interest" };
+  }
+  if (
+    comparison.startsWith("PERIODO ") &&
+    Number(transaction.amountOriginal) > 0
+  ) {
     return { transactionClass: "interest" };
   }
   if (comparison.includes("COMMISSION") || comparison.includes("FEE")) {
@@ -173,16 +245,22 @@ export function parseInvestmentEvent(transaction: Transaction): {
   }
 
   const quantityMatch = comparison.match(/@\s*([0-9]+(?:\.[0-9]+)?)/);
-  const buyMatch = comparison.match(/(BUY|SELL)\s+([0-9]+(?:\.[0-9]+)?)\s+(.+)/);
+  const buyMatch = comparison.match(
+    /(BUY|SELL)\s+([0-9]+(?:\.[0-9]+)?)\s+(.+)/,
+  );
 
   if (quantityMatch) {
     const quantity = quantityMatch[1];
     const securityHint = comparison.split("@")[0]?.trim() ?? comparison;
     const gross = Math.abs(Number(transaction.amountOriginal));
-    const unitPriceOriginal = quantity === "0" ? undefined : (gross / Number(quantity)).toFixed(2);
+    const unitPriceOriginal =
+      quantity === "0" ? undefined : (gross / Number(quantity)).toFixed(2);
     return {
-      transactionClass: Number(transaction.amountOriginal) < 0 ? "investment_trade_buy" : "investment_trade_sell",
-      quantity,
+      transactionClass:
+        Number(transaction.amountOriginal) < 0
+          ? "investment_trade_buy"
+          : "investment_trade_sell",
+      quantity: quantity === "0" ? undefined : quantity,
       securityHint,
       unitPriceOriginal,
     };
@@ -190,9 +268,30 @@ export function parseInvestmentEvent(transaction: Transaction): {
 
   if (buyMatch) {
     return {
-      transactionClass: buyMatch[1] === "BUY" ? "investment_trade_buy" : "investment_trade_sell",
+      transactionClass:
+        buyMatch[1] === "BUY"
+          ? "investment_trade_buy"
+          : "investment_trade_sell",
       quantity: buyMatch[2],
       securityHint: buyMatch[3],
+    };
+  }
+
+  const genericSecurityHint = comparison
+    .replace(/\b(?:BUY|SELL)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const looksLikeNamedSecurity =
+    /\b(?:ETF|FUND|INDEX|STOCK|SHARES?|UCITS|ADR|GDR|INC|CORP|CORPORATION|HOLDINGS|CLASS|CAP)\b/.test(
+      comparison,
+    );
+  if (looksLikeNamedSecurity && genericSecurityHint) {
+    return {
+      transactionClass:
+        Number(transaction.amountOriginal) < 0
+          ? "investment_trade_buy"
+          : "investment_trade_sell",
+      securityHint: genericSecurityHint,
     };
   }
 
@@ -234,6 +333,9 @@ type DeterministicClassification = {
   explanation: string;
   needsReview: boolean;
   reviewReason: string | null;
+  securityHint: string | null;
+  quantity: string | null;
+  unitPriceOriginal: string | null;
 };
 
 type LlmClassification = {
@@ -263,6 +365,9 @@ export interface TransactionEnrichmentDecision {
   classificationConfidence: string;
   needsReview: boolean;
   reviewReason: string | null;
+  securityHint: string | null;
+  quantity: string | null;
+  unitPriceOriginal: string | null;
   llmPayload: Record<string, unknown>;
 }
 
@@ -293,15 +398,16 @@ function buildDeterministicClassification(
       categoryCode:
         typeof matchedRule.outputsJson.category_code === "string"
           ? matchedRule.outputsJson.category_code
-          : transaction.categoryCode ?? getFallbackCategory(transaction, account),
+          : (transaction.categoryCode ??
+            getFallbackCategory(transaction, account)),
       merchantNormalized:
         typeof matchedRule.outputsJson.merchant_normalized === "string"
           ? matchedRule.outputsJson.merchant_normalized
-          : transaction.merchantNormalized ?? null,
+          : (transaction.merchantNormalized ?? null),
       counterpartyName:
         typeof matchedRule.outputsJson.counterparty_name === "string"
           ? matchedRule.outputsJson.counterparty_name
-          : transaction.counterpartyName ?? null,
+          : (transaction.counterpartyName ?? null),
       economicEntityId:
         typeof matchedRule.outputsJson.economic_entity_id_override === "string"
           ? matchedRule.outputsJson.economic_entity_id_override
@@ -312,23 +418,37 @@ function buildDeterministicClassification(
       explanation: "Matched an existing saved classification rule.",
       needsReview: false,
       reviewReason: null,
+      securityHint: null,
+      quantity: transaction.quantity ?? null,
+      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
     };
   }
 
-  const transferMatch = detectInternalTransfer(transaction, dataset.transactions, dataset.accounts);
+  const transferMatch = detectInternalTransfer(
+    transaction,
+    dataset.transactions,
+    dataset.accounts,
+  );
   if (transferMatch) {
     return {
       transactionClass: "transfer_internal",
       categoryCode: transaction.categoryCode ?? null,
       merchantNormalized: transaction.merchantNormalized ?? null,
-      counterpartyName: transferMatch.counterpartyName ?? transferMatch.merchantNormalized ?? null,
+      counterpartyName:
+        transferMatch.counterpartyName ??
+        transferMatch.merchantNormalized ??
+        null,
       economicEntityId: transaction.economicEntityId,
       classificationStatus: "transfer_match",
       classificationSource: "transfer_matcher",
       classificationConfidence: "1.00",
-      explanation: "Matched an opposite-signed owned-account transfer candidate.",
+      explanation:
+        "Matched an opposite-signed owned-account transfer candidate.",
       needsReview: false,
       reviewReason: null,
+      securityHint: null,
+      quantity: transaction.quantity ?? null,
+      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
     };
   }
 
@@ -359,8 +479,12 @@ function buildDeterministicClassification(
         needsReview: !transaction.securityId && Boolean(parsed.securityHint),
         reviewReason:
           !transaction.securityId && parsed.securityHint
-            ? "Security mapping requires review."
+            ? `Parsed investment trade for "${parsed.securityHint}", but the system has not matched it to a tracked security yet.`
             : null,
+        securityHint: parsed.securityHint ?? null,
+        quantity: transaction.quantity ?? parsed.quantity ?? null,
+        unitPriceOriginal:
+          transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null,
       };
     }
   }
@@ -377,12 +501,19 @@ function buildDeterministicClassification(
     explanation: "No deterministic classifier matched the imported row.",
     needsReview: true,
     reviewReason: "Needs LLM enrichment.",
+    securityHint: null,
+    quantity: transaction.quantity ?? null,
+    unitPriceOriginal: transaction.unitPriceOriginal ?? null,
   };
 }
 
 export function getTransactionClassifierConfig() {
+  const defaultModel =
+    process.env.LLM_TRANSACTION_MODEL ??
+    process.env.OPENAI_TRANSACTION_MODEL ??
+    "gpt-4.1-mini";
   return {
-    model: process.env.LLM_TRANSACTION_MODEL ?? process.env.OPENAI_TRANSACTION_MODEL ?? "gpt-4.1-mini",
+    model: defaultModel,
     lowConfidenceCutoff: Number(
       process.env.LLM_TRANSACTION_LOW_CONFIDENCE ??
         process.env.OPENAI_TRANSACTION_LOW_CONFIDENCE ??
@@ -391,19 +522,38 @@ export function getTransactionClassifierConfig() {
   };
 }
 
+export function getInvestmentTransactionClassifierConfig() {
+  const base = getTransactionClassifierConfig();
+  return {
+    ...base,
+    model: process.env.INVESTMENT_TRANSACTION_REVIEW_LLM ?? "gpt-5.4-mini",
+  };
+}
+
 export function isTransactionClassifierConfigured() {
   return isModelConfigured(getTransactionClassifierConfig().model);
 }
 
+export function isInvestmentTransactionClassifierConfigured() {
+  return isModelConfigured(getInvestmentTransactionClassifierConfig().model);
+}
+
 function buildAllowedCategories(dataset: DomainDataset, account: Account) {
   const entityKind =
-    dataset.entities.find((entity) => entity.id === account.entityId)?.entityKind ?? "personal";
+    dataset.entities.find((entity) => entity.id === account.entityId)
+      ?.entityKind ?? "personal";
   const scopeKinds =
     account.assetDomain === "investment"
       ? new Set(["investment", "system", "both"])
-      : new Set([entityKind === "company" ? "company" : "personal", "system", "both"]);
+      : new Set([
+          entityKind === "company" ? "company" : "personal",
+          "system",
+          "both",
+        ]);
 
-  return dataset.categories.filter((category) => scopeKinds.has(category.scopeKind));
+  return dataset.categories.filter((category) =>
+    scopeKinds.has(category.scopeKind),
+  );
 }
 
 async function requestLlmClassification(
@@ -412,7 +562,10 @@ async function requestLlmClassification(
   transaction: Transaction,
   deterministic: DeterministicClassification,
 ): Promise<LlmClassification> {
-  const { model } = getTransactionClassifierConfig();
+  const { model } =
+    account.assetDomain === "investment"
+      ? getInvestmentTransactionClassifierConfig()
+      : getTransactionClassifierConfig();
   if (!isModelConfigured(model)) {
     return {
       analysisStatus: "skipped",
@@ -442,10 +595,12 @@ async function requestLlmClassification(
         accountType: account.accountType,
       },
       allowedTransactionClasses,
-      allowedCategories: buildAllowedCategories(dataset, account).map((category) => ({
-        code: category.code,
-        displayName: category.displayName,
-      })),
+      allowedCategories: buildAllowedCategories(dataset, account).map(
+        (category) => ({
+          code: category.code,
+          displayName: category.displayName,
+        }),
+      ),
       transaction: {
         transactionDate: transaction.transactionDate,
         postedDate: transaction.postedDate ?? null,
@@ -492,9 +647,15 @@ async function requestLlmClassification(
     model,
     transactionClass: result.output.transaction_class,
     categoryCode: normalizeOptionalText(result.output.category_code ?? null),
-    merchantNormalized: normalizeOptionalText(result.output.merchant_normalized ?? null),
-    counterpartyName: normalizeOptionalText(result.output.counterparty_name ?? null),
-    economicEntityId: normalizeOptionalText(result.output.economic_entity_override ?? null),
+    merchantNormalized: normalizeOptionalText(
+      result.output.merchant_normalized ?? null,
+    ),
+    counterpartyName: normalizeOptionalText(
+      result.output.counterparty_name ?? null,
+    ),
+    economicEntityId: normalizeOptionalText(
+      result.output.economic_entity_override ?? null,
+    ),
     securityHint: normalizeOptionalText(result.output.security_hint ?? null),
     confidence: result.output.confidence.toFixed(2),
     explanation: result.output.explanation,
@@ -509,10 +670,21 @@ export async function enrichImportedTransaction(
   account: Account,
   transaction: Transaction,
 ): Promise<TransactionEnrichmentDecision> {
-  const deterministic = buildDeterministicClassification(dataset, account, transaction);
-  const llm = await requestLlmClassification(dataset, account, transaction, deterministic);
+  const deterministic = buildDeterministicClassification(
+    dataset,
+    account,
+    transaction,
+  );
+  const llm = await requestLlmClassification(
+    dataset,
+    account,
+    transaction,
+    deterministic,
+  );
   const { lowConfidenceCutoff } = getTransactionClassifierConfig();
-  const allowedCategoryCodes = new Set(dataset.categories.map((category) => category.code));
+  const allowedCategoryCodes = new Set(
+    dataset.categories.map((category) => category.code),
+  );
   const allowedClassSet = new Set<string>(allowedTransactionClasses);
 
   let transactionClass = deterministic.transactionClass;
@@ -525,6 +697,12 @@ export async function enrichImportedTransaction(
   let classificationConfidence = deterministic.classificationConfidence;
   let needsReview = deterministic.needsReview;
   let reviewReason = deterministic.reviewReason;
+  let securityHint = deterministic.securityHint;
+  let quantity = deterministic.quantity;
+  let unitPriceOriginal = deterministic.unitPriceOriginal;
+  const reviewCanBeResolvedByLlm =
+    !deterministic.needsReview ||
+    deterministic.reviewReason === "Needs LLM enrichment.";
 
   if (llm.analysisStatus === "done") {
     const llmTransactionClass =
@@ -536,25 +714,30 @@ export async function enrichImportedTransaction(
         ? llm.categoryCode
         : deterministic.categoryCode;
 
-    const deterministicWins = new Set(["user_rule", "transfer_matcher", "investment_parser"]).has(
-      deterministic.classificationSource,
-    );
+    const deterministicWins = new Set([
+      "user_rule",
+      "transfer_matcher",
+      "investment_parser",
+    ]).has(deterministic.classificationSource);
     if (!deterministicWins) {
       transactionClass = llmTransactionClass;
       categoryCode = llmCategoryCode;
       economicEntityId = llm.economicEntityId ?? deterministic.economicEntityId;
       classificationStatus = "llm";
       classificationSource = "llm";
-      classificationConfidence = llm.confidence ?? deterministic.classificationConfidence;
+      classificationConfidence =
+        llm.confidence ?? deterministic.classificationConfidence;
     }
 
-    merchantNormalized = llm.merchantNormalized ?? deterministic.merchantNormalized;
+    merchantNormalized =
+      llm.merchantNormalized ?? deterministic.merchantNormalized;
     counterpartyName = llm.counterpartyName ?? deterministic.counterpartyName;
+    securityHint = llm.securityHint ?? deterministic.securityHint;
 
     if ((Number(llm.confidence ?? "0") || 0) < lowConfidenceCutoff) {
       needsReview = true;
       reviewReason = `Low-confidence ${transactionClass} classification.`;
-    } else if (transactionClass !== "unknown" && !deterministic.needsReview) {
+    } else if (transactionClass !== "unknown" && reviewCanBeResolvedByLlm) {
       needsReview = false;
       reviewReason = null;
     }
@@ -571,11 +754,11 @@ export async function enrichImportedTransaction(
   if (
     account.assetDomain === "investment" &&
     !transaction.securityId &&
-    transaction.quantity &&
+    securityHint &&
     !reviewReason
   ) {
     needsReview = true;
-    reviewReason = "Security mapping requires review.";
+    reviewReason = `Parsed investment trade for "${securityHint}", but the system has not matched it to a tracked security yet.`;
   }
 
   return {
@@ -589,9 +772,16 @@ export async function enrichImportedTransaction(
     classificationConfidence,
     needsReview,
     reviewReason,
+    securityHint,
+    quantity,
+    unitPriceOriginal,
     llmPayload: {
       analysisStatus: llm.analysisStatus,
-      model: llm.model,
+      model:
+        llm.model ??
+        (account.assetDomain === "investment"
+          ? getInvestmentTransactionClassifierConfig().model
+          : getTransactionClassifierConfig().model),
       explanation: llm.explanation ?? deterministic.explanation,
       reason: llm.reason ?? deterministic.explanation,
       confidence: llm.confidence ?? deterministic.classificationConfidence,
@@ -608,6 +798,9 @@ export async function enrichImportedTransaction(
         classificationConfidence,
         needsReview,
         reviewReason,
+        securityHint,
+        quantity,
+        unitPriceOriginal,
       },
       analyzedAt: new Date().toISOString(),
     },

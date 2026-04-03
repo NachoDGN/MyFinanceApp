@@ -63,6 +63,13 @@ function dayCountInclusive(start: string, end: string) {
   return Math.floor((toDate(end).getTime() - toDate(start).getTime()) / 86400000) + 1;
 }
 
+function dayDistance(start: string, end: string) {
+  return Math.max(
+    0,
+    Math.floor((toDate(end).getTime() - toDate(start).getTime()) / 86400000),
+  );
+}
+
 export function resolvePeriodSelection(input: {
   preset?: string;
   start?: string;
@@ -152,7 +159,6 @@ export function getDatasetLatestDate(dataset: DomainDataset, fallback = todayIso
   const latest = [
     ...dataset.transactions.map((row) => row.transactionDate),
     ...dataset.importBatches.flatMap((row) => [
-      row.importedAt.slice(0, 10),
       row.detectedDateRange?.end ?? "",
     ]),
     ...dataset.accountBalanceSnapshots.map((row) => row.asOfDate),
@@ -259,6 +265,90 @@ export function getLatestBalanceSnapshots(
   return [...byAccount.values()];
 }
 
+function parseImportedBalance(
+  transaction: Transaction,
+  accountCurrency: string,
+) {
+  const rawPayload =
+    transaction.rawPayload && typeof transaction.rawPayload === "object"
+      ? transaction.rawPayload
+      : {};
+  const importPayloadCandidate =
+    (rawPayload as Record<string, unknown>).Import ??
+    (rawPayload as Record<string, unknown>)._import ??
+    (rawPayload as Record<string, unknown>).import;
+  const importPayload =
+    importPayloadCandidate && typeof importPayloadCandidate === "object"
+      ? (importPayloadCandidate as Record<string, unknown>)
+      : null;
+  const balanceOriginalValue = importPayload?.balanceOriginal;
+  if (
+    balanceOriginalValue === undefined ||
+    balanceOriginalValue === null ||
+    `${balanceOriginalValue}`.trim() === ""
+  ) {
+    return null;
+  }
+
+  const balanceOriginal = new Decimal(String(balanceOriginalValue)).toFixed(8);
+  const balanceCurrency =
+    typeof importPayload?.balanceCurrency === "string" && importPayload.balanceCurrency.trim()
+      ? importPayload.balanceCurrency.trim()
+      : accountCurrency;
+
+  return {
+    balanceOriginal,
+    balanceCurrency,
+  };
+}
+
+export function getLatestInvestmentCashBalances(
+  dataset: DomainDataset,
+  asOfDate = todayIso(),
+) {
+  const seededSnapshots = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, asOfDate);
+  const snapshotsByAccount = new Map(seededSnapshots.map((snapshot) => [snapshot.accountId, snapshot]));
+
+  for (const account of dataset.accounts) {
+    if (account.assetDomain !== "investment" || snapshotsByAccount.has(account.id)) {
+      continue;
+    }
+
+    const latestTransaction = [...dataset.transactions]
+      .filter((transaction) => transaction.accountId === account.id && transaction.transactionDate <= asOfDate)
+      .sort(
+        (left, right) =>
+          `${right.transactionDate}${right.createdAt}`.localeCompare(`${left.transactionDate}${left.createdAt}`),
+      )
+      .find((transaction) => parseImportedBalance(transaction, account.defaultCurrency));
+
+    if (!latestTransaction) {
+      continue;
+    }
+
+    const parsedBalance = parseImportedBalance(latestTransaction, account.defaultCurrency);
+    if (!parsedBalance) {
+      continue;
+    }
+
+    const balanceBaseEur = new Decimal(parsedBalance.balanceOriginal)
+      .mul(resolveFxRate(dataset, parsedBalance.balanceCurrency, "EUR", asOfDate))
+      .toFixed(8);
+
+    snapshotsByAccount.set(account.id, {
+      accountId: account.id,
+      asOfDate: latestTransaction.transactionDate,
+      balanceOriginal: parsedBalance.balanceOriginal,
+      balanceCurrency: parsedBalance.balanceCurrency,
+      balanceBaseEur,
+      sourceKind: "statement",
+      importBatchId: latestTransaction.importBatchId ?? null,
+    });
+  }
+
+  return [...snapshotsByAccount.values()];
+}
+
 function latestSecurityPrice(
   dataset: DomainDataset,
   securityId: string,
@@ -286,8 +376,9 @@ export function buildHoldingRows(
       const security = dataset.securities.find((row) => row.id === position.securityId);
       const price = latestSecurityPrice(dataset, position.securityId, asOfDate);
       const priceFx = price
-        ? resolveFxRate(dataset, price.currency, "EUR", price.priceDate)
+        ? resolveFxRate(dataset, price.currency, "EUR", asOfDate)
         : new Decimal(1);
+      const quoteAgeDays = price ? dayDistance(price.priceDate.slice(0, 10), asOfDate) : null;
       const currentValueEur = price
         ? new Decimal(position.openQuantity).mul(price.price).mul(priceFx).toFixed(2)
         : null;
@@ -310,7 +401,13 @@ export function buildHoldingRows(
         unrealizedPnlPercent: unrealizedPnlEur
           ? safeDividePercent(new Decimal(unrealizedPnlEur), new Decimal(position.openCostBasisEur))
           : null,
-        quoteFreshness: price ? "delayed" : "missing",
+        quoteFreshness: price
+          ? !price.isDelayed
+            ? "fresh"
+            : quoteAgeDays !== null && quoteAgeDays > 5
+              ? "stale"
+              : "delayed"
+          : "missing",
         quoteTimestamp: price?.quoteTimestamp ?? null,
         unrealizedComplete: position.unrealizedComplete,
       };
@@ -322,4 +419,228 @@ export function sumSnapshotField(
   field: "totalPortfolioValueEur" | "cashBalanceEur" | "unrealizedPnlEur",
 ) {
   return snapshots.reduce((sum, row) => sum.plus(row[field] ?? 0), new Decimal(0)).toFixed(2);
+}
+
+type MutableInvestmentPosition = {
+  userId: string;
+  entityId: string;
+  accountId: string;
+  securityId: string;
+  openQuantity: Decimal;
+  openCostBasisEur: Decimal;
+  realizedPnlEur: Decimal;
+  dividendsEur: Decimal;
+  interestEur: Decimal;
+  feesEur: Decimal;
+  lastTradeDate: string | null;
+  provenanceJson: Record<string, unknown>;
+};
+
+function getPositionMapKey(
+  entityId: string,
+  accountId: string,
+  securityId: string,
+) {
+  return `${entityId}:${accountId}:${securityId}`;
+}
+
+export function rebuildInvestmentState(
+  dataset: DomainDataset,
+  referenceDate = todayIso(),
+): {
+  positions: DomainDataset["investmentPositions"];
+  snapshots: DomainDataset["dailyPortfolioSnapshots"];
+} {
+  const investmentAccounts = new Map(
+    dataset.accounts
+      .filter((account) => account.assetDomain === "investment")
+      .map((account) => [account.id, account]),
+  );
+  const positions = new Map<string, MutableInvestmentPosition>();
+
+  const ensurePosition = (entityId: string, accountId: string, securityId: string) => {
+    const key = getPositionMapKey(entityId, accountId, securityId);
+    const existing = positions.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const created: MutableInvestmentPosition = {
+      userId: dataset.profile.id,
+      entityId,
+      accountId,
+      securityId,
+      openQuantity: new Decimal(0),
+      openCostBasisEur: new Decimal(0),
+      realizedPnlEur: new Decimal(0),
+      dividendsEur: new Decimal(0),
+      interestEur: new Decimal(0),
+      feesEur: new Decimal(0),
+      lastTradeDate: null,
+      provenanceJson: { source: "transactions" },
+    };
+    positions.set(key, created);
+    return created;
+  };
+
+  const events = [
+    ...dataset.transactions
+      .filter((transaction) => {
+        if (transaction.transactionDate > referenceDate) return false;
+        if (transaction.excludeFromAnalytics || transaction.voidedAt) return false;
+        return investmentAccounts.has(transaction.accountId);
+      })
+      .map((transaction) => ({
+        type: "transaction" as const,
+        sortKey: `${transaction.transactionDate}:1:${transaction.createdAt}`,
+        transaction,
+      })),
+    ...dataset.holdingAdjustments
+      .filter((adjustment) => adjustment.effectiveDate <= referenceDate)
+      .map((adjustment) => ({
+        type: "adjustment" as const,
+        sortKey: `${adjustment.effectiveDate}:0:${adjustment.createdAt}`,
+        adjustment,
+      })),
+  ].sort((left, right) => left.sortKey.localeCompare(right.sortKey));
+
+  for (const event of events) {
+    if (event.type === "adjustment") {
+      const adjustment = event.adjustment;
+      const position = ensurePosition(
+        adjustment.entityId,
+        adjustment.accountId,
+        adjustment.securityId,
+      );
+      position.openQuantity = position.openQuantity.plus(adjustment.shareDelta);
+      position.openCostBasisEur = position.openCostBasisEur.plus(adjustment.costBasisDeltaEur ?? 0);
+      position.lastTradeDate = adjustment.effectiveDate;
+      continue;
+    }
+
+    const transaction = event.transaction;
+    if (!transaction.securityId) {
+      continue;
+    }
+
+    const quantity = new Decimal(transaction.quantity ?? 0);
+    const amountEur = new Decimal(transaction.amountBaseEur);
+    const position = ensurePosition(
+      transaction.economicEntityId,
+      transaction.accountId,
+      transaction.securityId,
+    );
+
+    switch (transaction.transactionClass) {
+      case "investment_trade_buy": {
+        if (quantity.lte(0)) break;
+        position.openQuantity = position.openQuantity.plus(quantity);
+        position.openCostBasisEur = position.openCostBasisEur.plus(amountEur.abs());
+        position.lastTradeDate = transaction.transactionDate;
+        break;
+      }
+      case "investment_trade_sell": {
+        if (quantity.lte(0) || position.openQuantity.lte(0)) break;
+        const sellQuantity = Decimal.min(position.openQuantity, quantity);
+        const currentAverageCost = position.openQuantity.eq(0)
+          ? new Decimal(0)
+          : position.openCostBasisEur.div(position.openQuantity);
+        const removedCostBasis = currentAverageCost.mul(sellQuantity);
+        const proportionalProceeds = amountEur.abs().mul(sellQuantity.div(quantity));
+
+        position.openQuantity = position.openQuantity.minus(sellQuantity);
+        position.openCostBasisEur = Decimal.max(
+          new Decimal(0),
+          position.openCostBasisEur.minus(removedCostBasis),
+        );
+        position.realizedPnlEur = position.realizedPnlEur.plus(
+          proportionalProceeds.minus(removedCostBasis),
+        );
+        position.lastTradeDate = transaction.transactionDate;
+        break;
+      }
+      case "dividend":
+        position.dividendsEur = position.dividendsEur.plus(amountEur.abs());
+        break;
+      case "interest":
+        position.interestEur = position.interestEur.plus(amountEur.abs());
+        break;
+      case "fee":
+        position.feesEur = position.feesEur.plus(amountEur.abs());
+        break;
+      default:
+        break;
+    }
+  }
+
+  const materializedPositions = [...positions.values()]
+    .filter((position) => position.openQuantity.gt(0))
+    .map((position) => ({
+      userId: position.userId,
+      entityId: position.entityId,
+      accountId: position.accountId,
+      securityId: position.securityId,
+      openQuantity: position.openQuantity.toFixed(8),
+      openCostBasisEur: position.openCostBasisEur.toFixed(8),
+      avgCostEur: position.openQuantity.eq(0)
+        ? "0.00000000"
+        : position.openCostBasisEur.div(position.openQuantity).toFixed(8),
+      realizedPnlEur: position.realizedPnlEur.toFixed(8),
+      dividendsEur: position.dividendsEur.toFixed(8),
+      interestEur: position.interestEur.toFixed(8),
+      feesEur: position.feesEur.toFixed(8),
+      lastTradeDate: position.lastTradeDate,
+      lastRebuiltAt: new Date().toISOString(),
+      provenanceJson: position.provenanceJson,
+      unrealizedComplete: true,
+    }));
+
+  const holdingsDataset = {
+    ...dataset,
+    investmentPositions: materializedPositions,
+  } satisfies DomainDataset;
+  const holdingRows = buildHoldingRows(holdingsDataset, { kind: "consolidated" }, referenceDate);
+  const holdingsByAccount = new Map<string, HoldingRow[]>();
+  for (const row of holdingRows) {
+    const existing = holdingsByAccount.get(row.accountId) ?? [];
+    existing.push(row);
+    holdingsByAccount.set(row.accountId, existing);
+  }
+  const cashSnapshotsByAccount = new Map(
+    getLatestInvestmentCashBalances(dataset, referenceDate).map((snapshot) => [snapshot.accountId, snapshot]),
+  );
+
+  const snapshots = [...investmentAccounts.values()].map((account) => {
+    const accountHoldings = holdingsByAccount.get(account.id) ?? [];
+    const marketValueEur = accountHoldings
+      .reduce((sum, holding) => sum.plus(holding.currentValueEur ?? 0), new Decimal(0))
+      .toFixed(8);
+    const costBasisEur = materializedPositions
+      .filter((position) => position.accountId === account.id)
+      .reduce((sum, position) => sum.plus(position.openCostBasisEur), new Decimal(0))
+      .toFixed(8);
+    const unrealizedPnlEur = accountHoldings
+      .reduce((sum, holding) => sum.plus(holding.unrealizedPnlEur ?? 0), new Decimal(0))
+      .toFixed(8);
+    const cashBalanceEur = cashSnapshotsByAccount.get(account.id)?.balanceBaseEur ?? "0.00000000";
+
+    return {
+      snapshotDate: referenceDate,
+      userId: dataset.profile.id,
+      entityId: account.entityId,
+      accountId: account.id,
+      securityId: null,
+      marketValueEur,
+      costBasisEur,
+      unrealizedPnlEur,
+      cashBalanceEur,
+      totalPortfolioValueEur: new Decimal(marketValueEur).plus(cashBalanceEur).toFixed(8),
+      generatedAt: new Date().toISOString(),
+    };
+  });
+
+  return {
+    positions: materializedPositions,
+    snapshots,
+  };
 }

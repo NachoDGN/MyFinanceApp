@@ -4,11 +4,11 @@ import { LLMError, type LLMTaskClient } from "../types";
 
 export const transactionAnalysisResponseSchema = z.object({
   transaction_class: z.string().min(1),
-  category_code: z.string().nullable().optional(),
-  merchant_normalized: z.string().nullable().optional(),
-  counterparty_name: z.string().nullable().optional(),
-  economic_entity_override: z.string().nullable().optional(),
-  security_hint: z.string().nullable().optional(),
+  category_code: z.string().nullable(),
+  merchant_normalized: z.string().nullable(),
+  counterparty_name: z.string().nullable(),
+  economic_entity_override: z.string().nullable(),
+  security_hint: z.string().nullable(),
   confidence: z.number().min(0).max(1),
   explanation: z.string().min(1).max(240),
   reason: z.string().min(1).max(320),
@@ -17,7 +17,17 @@ export const transactionAnalysisResponseSchema = z.object({
 const transactionAnalysisJsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["transaction_class", "confidence", "explanation", "reason"],
+  required: [
+    "transaction_class",
+    "category_code",
+    "merchant_normalized",
+    "counterparty_name",
+    "economic_entity_override",
+    "security_hint",
+    "confidence",
+    "explanation",
+    "reason",
+  ],
   properties: {
     transaction_class: { type: "string" },
     category_code: { type: ["string", "null"] },
@@ -62,7 +72,9 @@ export interface AnalyzeBankTransactionInput {
   };
 }
 
-export type TransactionAnalysisOutput = z.infer<typeof transactionAnalysisResponseSchema>;
+export type TransactionAnalysisOutput = z.infer<
+  typeof transactionAnalysisResponseSchema
+>;
 
 export interface AnalyzeBankTransactionResult {
   analysisStatus: "done" | "failed";
@@ -82,7 +94,12 @@ function buildSystemPrompt(assetDomain: "cash" | "investment") {
     "Use null instead of guessing unsupported values.",
     "Keep the explanation to one short sentence.",
     assetDomain === "investment"
-      ? "Never invent security ids or ticker symbols."
+      ? [
+          "Treat clearly named stocks, ETFs, index funds, and mutual funds as investment transactions even when ticker or quantity is missing.",
+          "Use security_hint for the best normalized issuer or fund name visible in the description.",
+          "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
+          "Never invent security ids or ticker symbols.",
+        ].join(" ")
       : "Never invent merchants, counterparties, or categories.",
   ].join(" ");
 }
@@ -106,6 +123,9 @@ function buildUserPrompt(input: AnalyzeBankTransactionInput) {
     `Security id: ${input.transaction.securityId ?? "null"}.`,
     `Quantity: ${input.transaction.quantity ?? "null"}.`,
     `Unit price: ${input.transaction.unitPriceOriginal ?? "null"}.`,
+    input.account.assetDomain === "investment"
+      ? "For investment accounts, prefer investment_trade_buy or investment_trade_sell when a company, fund, ETF, or index instrument is clearly named. Use transfer_internal for broker cash movements between owned accounts and leave statement-period rows as unknown."
+      : "For cash accounts, do not use investment classes unless the transaction data explicitly supports them.",
     `Current raw payload: ${JSON.stringify(input.transaction.rawPayload)}.`,
     `Deterministic hint: ${JSON.stringify(input.deterministicHint)}.`,
   ].join("\n");
@@ -139,7 +159,10 @@ export async function analyzeBankTransaction(
       analysisStatus: "failed",
       model: modelName,
       output: null,
-      error: error instanceof Error ? error.message : "Unknown LLM classification failure.",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unknown LLM classification failure.",
       rawOutput:
         error instanceof LLMError && error.rawOutput
           ? { invalidOutput: error.rawOutput }
