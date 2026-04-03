@@ -14,6 +14,7 @@ import type {
   CreateRuleInput,
   CreateTemplateInput,
   DeleteAccountInput,
+  DeleteTemplateInput,
   DomainDataset,
   ImportCommitResult,
   ImportExecutionInput,
@@ -89,6 +90,9 @@ export interface FinanceRepository {
   ): Promise<{ applied: boolean; ruleId: string }>;
   createTemplate(
     input: CreateTemplateInput,
+  ): Promise<{ applied: boolean; templateId: string }>;
+  deleteTemplate(
+    input: DeleteTemplateInput,
   ): Promise<{ applied: boolean; templateId: string }>;
   addOpeningPosition(
     input: AddOpeningPositionInput,

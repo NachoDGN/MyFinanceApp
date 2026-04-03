@@ -655,6 +655,13 @@ export interface DeleteAccountInput {
   apply: boolean;
 }
 
+export interface DeleteTemplateInput {
+  templateId: string;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
 export interface ResetWorkspaceInput {
   actorName: string;
   sourceChannel: AuditSourceChannel;

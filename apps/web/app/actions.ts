@@ -320,6 +320,20 @@ export async function createTemplateAction(
   return result;
 }
 
+export async function deleteTemplateAction(templateId: string) {
+  const parsed = z.string().uuid().parse(templateId);
+  const result = await domain.deleteTemplate({
+    templateId: parsed,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidatePath("/templates");
+  revalidatePath("/imports");
+  revalidatePath("/accounts");
+  return result;
+}
+
 export async function createAccountAction(
   input: z.input<typeof accountSchema>,
 ) {

@@ -19,6 +19,7 @@ import {
   type CreateRuleInput,
   type CreateTemplateInput,
   type DeleteAccountInput,
+  type DeleteTemplateInput,
   type DomainDataset,
   type FinanceRepository,
   type ImportExecutionInput,
@@ -498,33 +499,39 @@ class SqlFinanceRepository implements FinanceRepository {
     return result;
   }
 
-  async resetWorkspace(input: ResetWorkspaceInput): Promise<ResetWorkspaceResult> {
+  async resetWorkspace(
+    input: ResetWorkspaceInput,
+  ): Promise<ResetWorkspaceResult> {
     const result = await withSeededUserContext(async (sql) => {
-      const [portfolioSnapshots, investmentPositions, holdingAdjustments, balanceSnapshots] =
-        await Promise.all([
-          sql`
+      const [
+        portfolioSnapshots,
+        investmentPositions,
+        holdingAdjustments,
+        balanceSnapshots,
+      ] = await Promise.all([
+        sql`
             delete from public.daily_portfolio_snapshots
             where user_id = ${this.userId}
             returning id
           `,
-          sql`
+        sql`
             delete from public.investment_positions
             where user_id = ${this.userId}
             returning account_id
           `,
-          sql`
+        sql`
             delete from public.holding_adjustments
             where user_id = ${this.userId}
             returning id
           `,
-          sql`
+        sql`
             delete from public.account_balance_snapshots
             where account_id in (
               select id from public.accounts where user_id = ${this.userId}
             )
             returning account_id
           `,
-        ]);
+      ]);
 
       const [transactions, importBatches, rules, accounts, importTemplates] =
         await Promise.all([
@@ -601,7 +608,8 @@ class SqlFinanceRepository implements FinanceRepository {
             before_json: auditEvent.beforeJson,
             after_json: auditEvent.afterJson,
             created_at: auditEvent.createdAt,
-            notes: "Cleared seeded demo finance data for a fresh local workspace.",
+            notes:
+              "Cleared seeded demo finance data for a fresh local workspace.",
           } as Record<string, unknown>)}
         `;
       }
@@ -864,6 +872,89 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, templateId };
     });
+    return result;
+  }
+
+  async deleteTemplate(input: DeleteTemplateInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const before = await sql`
+        select * from public.import_templates
+        where id = ${input.templateId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = before[0];
+      if (!beforeRow) {
+        throw new Error(`Template ${input.templateId} not found.`);
+      }
+
+      const blockers = await sql`
+        with target as (
+          select ${input.templateId}::uuid as template_id
+        )
+        select
+          (
+            select count(*)::int
+            from public.accounts
+            where import_template_default_id = target.template_id
+              and user_id = ${this.userId}
+          ) as default_accounts,
+          (
+            select count(*)::int
+            from public.import_batches
+            where template_id = target.template_id
+              and user_id = ${this.userId}
+          ) as import_batches
+        from target
+      `;
+      const blockerRow = blockers[0] as Record<string, number>;
+      const activeBlockers = Object.entries(blockerRow).filter(
+        ([, count]) => Number(count) > 0,
+      );
+      if (activeBlockers.length > 0) {
+        throw new Error(
+          `Template cannot be removed because it already has dependent data: ${activeBlockers
+            .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`)
+            .join(", ")}.`,
+        );
+      }
+
+      const auditEvent = createAuditEvent(
+        input.sourceChannel,
+        input.actorName,
+        "templates.delete",
+        "import_template",
+        input.templateId,
+        beforeRow,
+        null,
+      );
+
+      if (input.apply) {
+        await sql`
+          delete from public.import_templates
+          where id = ${input.templateId}
+            and user_id = ${this.userId}
+        `;
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: auditEvent.notes,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return { applied: input.apply, templateId: input.templateId };
+    });
+
     return result;
   }
 

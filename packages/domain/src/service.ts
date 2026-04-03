@@ -5,6 +5,7 @@ import type {
   CreateRuleInput,
   CreateTemplateInput,
   DeleteAccountInput,
+  DeleteTemplateInput,
   HoldingsResponse,
   Job,
   QueueRuleDraftInput,
@@ -261,6 +262,10 @@ export class FinanceDomainService {
 
   createTemplate(input: CreateTemplateInput) {
     return this.repository.createTemplate(input);
+  }
+
+  deleteTemplate(input: DeleteTemplateInput) {
+    return this.repository.deleteTemplate(input);
   }
 
   addOpeningPosition(input: AddOpeningPositionInput) {
