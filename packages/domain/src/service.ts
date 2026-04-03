@@ -1,11 +1,14 @@
 import type {
   AccountListResponse,
   ApplyRuleDraftInput,
+  CreateAccountInput,
   CreateRuleInput,
   CreateTemplateInput,
+  DeleteAccountInput,
   HoldingsResponse,
   Job,
   QueueRuleDraftInput,
+  ResetWorkspaceInput,
   RuleDraft,
   RuleDraftListResponse,
   RuleListResponse,
@@ -33,10 +36,14 @@ function toIsoTimestamp(value: string | Date | null | undefined) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function ageInDays(referenceDate: string, timestamp: string | null | undefined) {
+function ageInDays(
+  referenceDate: string,
+  timestamp: string | null | undefined,
+) {
   if (!timestamp) return null;
   return Math.floor(
-    (Date.parse(`${referenceDate}T12:00:00Z`) - new Date(timestamp).getTime()) / 86400000,
+    (Date.parse(`${referenceDate}T12:00:00Z`) - new Date(timestamp).getTime()) /
+      86400000,
   );
 }
 
@@ -47,17 +54,23 @@ function buildQualitySummary(
   const referenceDate = todayIso();
   const period = resolvePeriodSelection({ preset: "mtd", referenceDate });
   const scopedTransactions = filterTransactionsByScope(dataset, scope);
-  const scopedAccounts = scope.kind === "consolidated"
-    ? dataset.accounts
-    : scope.kind === "entity" && scope.entityId
-      ? dataset.accounts.filter((account) => account.entityId === scope.entityId)
-      : scope.kind === "account" && scope.accountId
-        ? dataset.accounts.filter((account) => account.id === scope.accountId)
-        : dataset.accounts;
+  const scopedAccounts =
+    scope.kind === "consolidated"
+      ? dataset.accounts
+      : scope.kind === "entity" && scope.entityId
+        ? dataset.accounts.filter(
+            (account) => account.entityId === scope.entityId,
+          )
+        : scope.kind === "account" && scope.accountId
+          ? dataset.accounts.filter((account) => account.id === scope.accountId)
+          : dataset.accounts;
   const staleAccounts = scopedAccounts
     .map((account) => {
-      const threshold = account.staleAfterDays ?? (account.assetDomain === "investment" ? 3 : 7);
-      const ageDays = ageInDays(referenceDate, account.lastImportedAt) ?? (threshold + 1);
+      const threshold =
+        account.staleAfterDays ??
+        (account.assetDomain === "investment" ? 3 : 7);
+      const ageDays =
+        ageInDays(referenceDate, account.lastImportedAt) ?? threshold + 1;
       return { account, ageDays, threshold };
     })
     .filter((row) => row.ageDays > row.threshold)
@@ -68,8 +81,12 @@ function buildQualitySummary(
     }));
 
   return {
-    pendingReviewCount: scopedTransactions.filter((row) => row.needsReview).length,
-    unclassifiedAmountMtdEur: filterTransactionsByPeriod(scopedTransactions, period)
+    pendingReviewCount: scopedTransactions.filter((row) => row.needsReview)
+      .length,
+    unclassifiedAmountMtdEur: filterTransactionsByPeriod(
+      scopedTransactions,
+      period,
+    )
       .filter((row) => row.categoryCode?.startsWith("uncategorized"))
       .reduce((sum, row) => sum + Math.abs(Number(row.amountBaseEur)), 0)
       .toFixed(2),
@@ -81,7 +98,9 @@ function buildQualitySummary(
       latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
     })),
     latestDataDateByScope: getDatasetLatestDate(dataset),
-    priceFreshness: dataset.securityPrices.every((row) => row.isDelayed) ? "delayed" : "fresh",
+    priceFreshness: dataset.securityPrices.every((row) => row.isDelayed)
+      ? "delayed"
+      : "fresh",
   } as const;
 }
 
@@ -93,26 +112,35 @@ export class FinanceDomainService {
       .filter((job) => job.jobType === "rule_parse")
       .map((job) => ({
         id: job.id,
-        requestText: typeof job.payloadJson.requestText === "string" ? job.payloadJson.requestText : "",
+        requestText:
+          typeof job.payloadJson.requestText === "string"
+            ? job.payloadJson.requestText
+            : "",
         status: job.status,
         attempts: job.attempts,
         createdAt: toIsoTimestamp(job.createdAt),
         finishedAt: toIsoTimestamp(job.finishedAt) || null,
         lastError: job.lastError ?? null,
         parsedRule:
-          job.payloadJson.parsedRule && typeof job.payloadJson.parsedRule === "object"
+          job.payloadJson.parsedRule &&
+          typeof job.payloadJson.parsedRule === "object"
             ? (job.payloadJson.parsedRule as RuleDraft["parsedRule"])
             : null,
         appliedRuleId:
-          typeof job.payloadJson.appliedRuleId === "string" ? job.payloadJson.appliedRuleId : null,
+          typeof job.payloadJson.appliedRuleId === "string"
+            ? job.payloadJson.appliedRuleId
+            : null,
       }))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   async listTransactions(scope: Scope): Promise<TransactionListResponse> {
     const dataset = await this.repository.getDataset();
-    const transactions = [...filterTransactionsByScope(dataset, scope)].sort((a, b) =>
-      `${b.transactionDate}${b.createdAt}`.localeCompare(`${a.transactionDate}${a.createdAt}`),
+    const transactions = [...filterTransactionsByScope(dataset, scope)].sort(
+      (a, b) =>
+        `${b.transactionDate}${b.createdAt}`.localeCompare(
+          `${a.transactionDate}${a.createdAt}`,
+        ),
     );
     return {
       schemaVersion: "v1",
@@ -166,10 +194,17 @@ export class FinanceDomainService {
     const dataset = await this.repository.getDataset();
     const holdings = buildHoldingRows(dataset, scope);
     const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-    const brokerageCashEur = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots)
+    const brokerageCashEur = getLatestBalanceSnapshots(
+      dataset.accountBalanceSnapshots,
+    )
       .filter((row) => {
-        const account = dataset.accounts.find((candidate) => candidate.id === row.accountId);
-        return account?.assetDomain === "investment" && entityIds.has(account.entityId);
+        const account = dataset.accounts.find(
+          (candidate) => candidate.id === row.accountId,
+        );
+        return (
+          account?.assetDomain === "investment" &&
+          entityIds.has(account.entityId)
+        );
       })
       .reduce((sum, row) => sum + Number(row.balanceBaseEur), 0)
       .toFixed(2);
@@ -194,6 +229,18 @@ export class FinanceDomainService {
 
   commitImport(input: Parameters<FinanceRepository["commitImport"]>[0]) {
     return this.repository.commitImport(input);
+  }
+
+  createAccount(input: CreateAccountInput) {
+    return this.repository.createAccount(input);
+  }
+
+  deleteAccount(input: DeleteAccountInput) {
+    return this.repository.deleteAccount(input);
+  }
+
+  resetWorkspace(input: ResetWorkspaceInput) {
+    return this.repository.resetWorkspace(input);
   }
 
   updateTransaction(input: UpdateTransactionInput) {

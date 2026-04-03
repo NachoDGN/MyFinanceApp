@@ -1,5 +1,6 @@
 import { AppShell } from "../../components/app-shell";
 import { SectionCard } from "../../components/primitives";
+import { WorkspaceResetCard } from "../../components/workspace-reset-card";
 import { getSettingsModel } from "../../lib/queries";
 
 export default async function SettingsPage({
@@ -48,6 +49,10 @@ export default async function SettingsPage({
             <span className="pill">LLM low-confidence cutoff: 0.70</span>
             <span className="pill">Quote provider: Twelve Data</span>
           </div>
+        </SectionCard>
+
+        <SectionCard title="Data Management" subtitle="Start with a clean local dataset" span="span-12">
+          <WorkspaceResetCard />
         </SectionCard>
       </div>
     </AppShell>

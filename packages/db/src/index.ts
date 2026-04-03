@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import postgres from "postgres";
 
-import { enrichImportedTransaction, getTransactionClassifierConfig } from "@myfinance/classification";
+import {
+  enrichImportedTransaction,
+  getTransactionClassifierConfig,
+} from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
   buildImportedTransactions,
@@ -12,8 +15,10 @@ import {
   type AddOpeningPositionInput,
   type ApplyRuleDraftInput,
   type AuditEvent,
+  type CreateAccountInput,
   type CreateRuleInput,
   type CreateTemplateInput,
+  type DeleteAccountInput,
   type DomainDataset,
   type FinanceRepository,
   type ImportExecutionInput,
@@ -21,12 +26,15 @@ import {
   type ImportPreviewResult,
   type JobRunResult,
   type QueueRuleDraftInput,
+  type ResetWorkspaceInput,
+  type ResetWorkspaceResult,
   type Transaction,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
 
 const DEFAULT_APP_USER_ID = "00000000-0000-0000-0000-000000000001";
-const DEFAULT_LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
+const DEFAULT_LOCAL_DATABASE_URL =
+  "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
 
 export interface DbRuntimeConfig {
   databaseUrl?: string;
@@ -34,8 +42,11 @@ export interface DbRuntimeConfig {
 }
 
 export function getDbRuntimeConfig(): DbRuntimeConfig {
-  const databaseUrl = process.env.DATABASE_URL?.trim()
-    || (process.env.NODE_ENV === "production" ? undefined : DEFAULT_LOCAL_DATABASE_URL);
+  const databaseUrl =
+    process.env.DATABASE_URL?.trim() ||
+    (process.env.NODE_ENV === "production"
+      ? undefined
+      : DEFAULT_LOCAL_DATABASE_URL);
   return {
     databaseUrl,
     seededUserId: process.env.APP_SEEDED_USER_ID ?? DEFAULT_APP_USER_ID,
@@ -74,7 +85,9 @@ async function withSeededUserContext<T>(
 }
 
 function camelizeKey(value: string) {
-  return value.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase());
+  return value.replace(/_([a-z])/g, (_, character: string) =>
+    character.toUpperCase(),
+  );
 }
 
 const DATE_ONLY_KEYS = new Set([
@@ -113,13 +126,12 @@ function camelizeValue<T>(value: T, key?: string): T {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([rawKey, nested]) => {
-        const nextKey = camelizeKey(rawKey);
-        return [
-          nextKey,
-          camelizeValue(nested, nextKey),
-        ];
-      }),
+      Object.entries(value as Record<string, unknown>).map(
+        ([rawKey, nested]) => {
+          const nextKey = camelizeKey(rawKey);
+          return [nextKey, camelizeValue(nested, nextKey)];
+        },
+      ),
     ) as T;
   }
   return value;
@@ -251,40 +263,359 @@ class SqlFinanceRepository implements FinanceRepository {
         entities: mapFromSql<DomainDataset["entities"]>(entities),
         accounts: mapFromSql<DomainDataset["accounts"]>(accounts),
         templates: mapFromSql<DomainDataset["templates"]>(templates),
-        importBatches: mapFromSql<DomainDataset["importBatches"]>(importBatches),
+        importBatches:
+          mapFromSql<DomainDataset["importBatches"]>(importBatches),
         transactions: mapFromSql<DomainDataset["transactions"]>(transactions),
         categories: mapFromSql<DomainDataset["categories"]>(categories),
         rules: mapFromSql<DomainDataset["rules"]>(rules),
         auditEvents: mapFromSql<DomainDataset["auditEvents"]>(auditEvents),
         jobs: mapFromSql<DomainDataset["jobs"]>(jobs),
-        accountBalanceSnapshots: mapFromSql<DomainDataset["accountBalanceSnapshots"]>(
-          accountBalanceSnapshots,
-        ),
+        accountBalanceSnapshots: mapFromSql<
+          DomainDataset["accountBalanceSnapshots"]
+        >(accountBalanceSnapshots),
         securities: mapFromSql<DomainDataset["securities"]>(securities),
-        securityAliases: mapFromSql<DomainDataset["securityAliases"]>(securityAliases),
-        securityPrices: mapFromSql<DomainDataset["securityPrices"]>(securityPrices),
+        securityAliases:
+          mapFromSql<DomainDataset["securityAliases"]>(securityAliases),
+        securityPrices:
+          mapFromSql<DomainDataset["securityPrices"]>(securityPrices),
         fxRates: mapFromSql<DomainDataset["fxRates"]>(fxRates),
-        holdingAdjustments: mapFromSql<DomainDataset["holdingAdjustments"]>(
-          holdingAdjustments,
-        ),
-        investmentPositions: mapFromSql<DomainDataset["investmentPositions"]>(
-          investmentPositions,
-        ),
-        dailyPortfolioSnapshots: mapFromSql<DomainDataset["dailyPortfolioSnapshots"]>(
-          dailyPortfolioSnapshots,
-        ),
-        monthlyCashFlowRollups: mapFromSql<DomainDataset["monthlyCashFlowRollups"]>(
-          monthlyCashFlowRollups,
-        ),
+        holdingAdjustments:
+          mapFromSql<DomainDataset["holdingAdjustments"]>(holdingAdjustments),
+        investmentPositions:
+          mapFromSql<DomainDataset["investmentPositions"]>(investmentPositions),
+        dailyPortfolioSnapshots: mapFromSql<
+          DomainDataset["dailyPortfolioSnapshots"]
+        >(dailyPortfolioSnapshots),
+        monthlyCashFlowRollups: mapFromSql<
+          DomainDataset["monthlyCashFlowRollups"]
+        >(monthlyCashFlowRollups),
       };
     });
 
     return dataset;
   }
 
-  async updateTransaction(
-    input: UpdateTransactionInput,
-  ): Promise<{
+  async createAccount(input: CreateAccountInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const entityRows = await sql`
+        select * from public.entities
+        where id = ${input.account.entityId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      if (!entityRows[0]) {
+        throw new Error(`Entity ${input.account.entityId} not found.`);
+      }
+
+      if (input.account.importTemplateDefaultId) {
+        const templateRows = await sql`
+          select compatible_account_type from public.import_templates
+          where id = ${input.account.importTemplateDefaultId}
+            and user_id = ${this.userId}
+          limit 1
+        `;
+        const template = templateRows[0];
+        if (!template) {
+          throw new Error(
+            `Template ${input.account.importTemplateDefaultId} not found.`,
+          );
+        }
+        if (template.compatible_account_type !== input.account.accountType) {
+          throw new Error(
+            `Template ${input.account.importTemplateDefaultId} is not compatible with ${input.account.accountType}.`,
+          );
+        }
+      }
+
+      const accountId = randomUUID();
+      const afterJson = {
+        id: accountId,
+        userId: this.userId,
+        ...input.account,
+        importTemplateDefaultId: input.account.importTemplateDefaultId ?? null,
+        openingBalanceOriginal: input.account.openingBalanceOriginal ?? null,
+        openingBalanceCurrency: input.account.openingBalanceCurrency ?? null,
+        openingBalanceDate: input.account.openingBalanceDate ?? null,
+        accountSuffix: input.account.accountSuffix ?? null,
+        staleAfterDays: input.account.staleAfterDays ?? null,
+        lastImportedAt: null,
+      };
+
+      if (input.apply) {
+        await sql`
+          insert into public.accounts (
+            id,
+            user_id,
+            entity_id,
+            institution_name,
+            display_name,
+            account_type,
+            asset_domain,
+            default_currency,
+            opening_balance_original,
+            opening_balance_currency,
+            opening_balance_date,
+            include_in_consolidation,
+            is_active,
+            import_template_default_id,
+            matching_aliases,
+            account_suffix,
+            balance_mode,
+            stale_after_days
+          ) values (
+            ${accountId},
+            ${this.userId},
+            ${input.account.entityId},
+            ${input.account.institutionName},
+            ${input.account.displayName},
+            ${input.account.accountType},
+            ${input.account.assetDomain},
+            ${input.account.defaultCurrency},
+            ${input.account.openingBalanceOriginal ?? null},
+            ${input.account.openingBalanceCurrency ?? null},
+            ${input.account.openingBalanceDate ?? null},
+            ${input.account.includeInConsolidation},
+            ${input.account.isActive},
+            ${input.account.importTemplateDefaultId ?? null},
+            ${input.account.matchingAliases},
+            ${input.account.accountSuffix ?? null},
+            ${input.account.balanceMode},
+            ${input.account.staleAfterDays ?? null}
+          )
+        `;
+
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "accounts.create",
+          "account",
+          accountId,
+          null,
+          afterJson,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: auditEvent.notes,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return { applied: input.apply, accountId };
+    });
+
+    return result;
+  }
+
+  async deleteAccount(input: DeleteAccountInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const before = await sql`
+        select * from public.accounts
+        where id = ${input.accountId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = before[0];
+      if (!beforeRow) {
+        throw new Error(`Account ${input.accountId} not found.`);
+      }
+
+      const blockers = await sql`
+        with target as (
+          select ${input.accountId}::uuid as account_id
+        )
+        select
+          (select count(*)::int from public.import_batches where account_id = target.account_id) as import_batches,
+          (
+            select count(*)::int
+            from public.transactions
+            where account_id = target.account_id
+               or related_account_id = target.account_id
+          ) as transactions,
+          (select count(*)::int from public.account_balance_snapshots where account_id = target.account_id) as balance_snapshots,
+          (select count(*)::int from public.holding_adjustments where account_id = target.account_id) as holding_adjustments,
+          (select count(*)::int from public.investment_positions where account_id = target.account_id) as investment_positions,
+          (select count(*)::int from public.daily_portfolio_snapshots where account_id = target.account_id) as portfolio_snapshots
+        from target
+      `;
+      const blockerRow = blockers[0] as Record<string, number>;
+      const activeBlockers = Object.entries(blockerRow).filter(
+        ([, count]) => Number(count) > 0,
+      );
+      if (activeBlockers.length > 0) {
+        throw new Error(
+          `Account cannot be removed because it already has dependent data: ${activeBlockers
+            .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`)
+            .join(", ")}.`,
+        );
+      }
+
+      const auditEvent = createAuditEvent(
+        input.sourceChannel,
+        input.actorName,
+        "accounts.delete",
+        "account",
+        input.accountId,
+        beforeRow,
+        null,
+      );
+
+      if (input.apply) {
+        await sql`
+          delete from public.accounts
+          where id = ${input.accountId}
+            and user_id = ${this.userId}
+        `;
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: auditEvent.notes,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return { applied: input.apply, accountId: input.accountId };
+    });
+
+    return result;
+  }
+
+  async resetWorkspace(input: ResetWorkspaceInput): Promise<ResetWorkspaceResult> {
+    const result = await withSeededUserContext(async (sql) => {
+      const [portfolioSnapshots, investmentPositions, holdingAdjustments, balanceSnapshots] =
+        await Promise.all([
+          sql`
+            delete from public.daily_portfolio_snapshots
+            where user_id = ${this.userId}
+            returning id
+          `,
+          sql`
+            delete from public.investment_positions
+            where user_id = ${this.userId}
+            returning account_id
+          `,
+          sql`
+            delete from public.holding_adjustments
+            where user_id = ${this.userId}
+            returning id
+          `,
+          sql`
+            delete from public.account_balance_snapshots
+            where account_id in (
+              select id from public.accounts where user_id = ${this.userId}
+            )
+            returning account_id
+          `,
+        ]);
+
+      const [transactions, importBatches, rules, accounts, importTemplates] =
+        await Promise.all([
+          sql`
+            delete from public.transactions
+            where user_id = ${this.userId}
+            returning id
+          `,
+          sql`
+            delete from public.import_batches
+            where user_id = ${this.userId}
+            returning id
+          `,
+          sql`
+            delete from public.classification_rules
+            where user_id = ${this.userId}
+            returning id
+          `,
+          sql`
+            delete from public.accounts
+            where user_id = ${this.userId}
+            returning id
+          `,
+          sql`
+            delete from public.import_templates
+            where user_id = ${this.userId}
+            returning id
+          `,
+        ]);
+
+      const jobs = await sql`
+          delete from public.jobs
+          returning id
+      `;
+
+      await sql`
+        delete from public.audit_events
+        where actor_id = ${this.userId}
+           or object_type in ('account', 'classification_rule', 'job', 'import_template', 'transaction')
+      `;
+
+      const deleted = {
+        accounts: accounts.length,
+        importTemplates: importTemplates.length,
+        importBatches: importBatches.length,
+        transactions: transactions.length,
+        balanceSnapshots: balanceSnapshots.length,
+        holdingAdjustments: holdingAdjustments.length,
+        investmentPositions: investmentPositions.length,
+        portfolioSnapshots: portfolioSnapshots.length,
+        rules: rules.length,
+        jobs: jobs.length,
+      };
+
+      if (input.apply) {
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "workspace.reset",
+          "workspace",
+          this.userId,
+          null,
+          deleted,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: "Cleared seeded demo finance data for a fresh local workspace.",
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        deleted,
+      };
+    });
+
+    return result;
+  }
+
+  async updateTransaction(input: UpdateTransactionInput): Promise<{
     applied: boolean;
     transaction: Transaction;
     auditEvent: AuditEvent;
@@ -306,16 +637,26 @@ class SqlFinanceRepository implements FinanceRepository {
       const updatePayload: Record<string, unknown> = {
         updated_at: new Date().toISOString(),
       };
-      if (patch.transactionClass !== undefined) updatePayload.transaction_class = patch.transactionClass;
-      if (patch.categoryCode !== undefined) updatePayload.category_code = patch.categoryCode;
-      if (patch.economicEntityId !== undefined) updatePayload.economic_entity_id = patch.economicEntityId;
-      if (patch.merchantNormalized !== undefined) updatePayload.merchant_normalized = patch.merchantNormalized;
-      if (patch.counterpartyName !== undefined) updatePayload.counterparty_name = patch.counterpartyName;
-      if (patch.needsReview !== undefined) updatePayload.needs_review = patch.needsReview;
-      if (patch.reviewReason !== undefined) updatePayload.review_reason = patch.reviewReason;
-      if (patch.excludeFromAnalytics !== undefined) updatePayload.exclude_from_analytics = patch.excludeFromAnalytics;
-      if (patch.securityId !== undefined) updatePayload.security_id = patch.securityId;
-      if (patch.manualNotes !== undefined) updatePayload.manual_notes = patch.manualNotes;
+      if (patch.transactionClass !== undefined)
+        updatePayload.transaction_class = patch.transactionClass;
+      if (patch.categoryCode !== undefined)
+        updatePayload.category_code = patch.categoryCode;
+      if (patch.economicEntityId !== undefined)
+        updatePayload.economic_entity_id = patch.economicEntityId;
+      if (patch.merchantNormalized !== undefined)
+        updatePayload.merchant_normalized = patch.merchantNormalized;
+      if (patch.counterpartyName !== undefined)
+        updatePayload.counterparty_name = patch.counterpartyName;
+      if (patch.needsReview !== undefined)
+        updatePayload.needs_review = patch.needsReview;
+      if (patch.reviewReason !== undefined)
+        updatePayload.review_reason = patch.reviewReason;
+      if (patch.excludeFromAnalytics !== undefined)
+        updatePayload.exclude_from_analytics = patch.excludeFromAnalytics;
+      if (patch.securityId !== undefined)
+        updatePayload.security_id = patch.securityId;
+      if (patch.manualNotes !== undefined)
+        updatePayload.manual_notes = patch.manualNotes;
       if (Object.keys(input.patch).length > 0) {
         updatePayload.classification_status = "manual_override";
         updatePayload.classification_source = "manual";
@@ -382,12 +723,14 @@ class SqlFinanceRepository implements FinanceRepository {
               true,
               ${serializeJson(sql, { account_id: persistedTransaction.accountId })}::jsonb,
               ${serializeJson(sql, {
-                normalized_description_regex: persistedTransaction.descriptionClean,
+                normalized_description_regex:
+                  persistedTransaction.descriptionClean,
               })}::jsonb,
               ${serializeJson(sql, {
                 transaction_class: persistedTransaction.transactionClass,
                 category_code: persistedTransaction.categoryCode,
-                economic_entity_id_override: persistedTransaction.economicEntityId,
+                economic_entity_id_override:
+                  persistedTransaction.economicEntityId,
               })}::jsonb,
               ${persistedTransaction.id},
               true
@@ -612,7 +955,9 @@ class SqlFinanceRepository implements FinanceRepository {
         throw new Error(`Rule draft job ${input.jobId} not found.`);
       }
 
-      const payloadJson = parseJsonColumn<Record<string, unknown>>(job.payload_json ?? {});
+      const payloadJson = parseJsonColumn<Record<string, unknown>>(
+        job.payload_json ?? {},
+      );
       const parsedRule =
         payloadJson &&
         typeof payloadJson === "object" &&
@@ -628,7 +973,10 @@ class SqlFinanceRepository implements FinanceRepository {
       const createResult = await this.createRule({
         priority: Number(parsedRule.priority ?? 60),
         scopeJson: (parsedRule.scopeJson ?? {}) as Record<string, unknown>,
-        conditionsJson: (parsedRule.conditionsJson ?? {}) as Record<string, unknown>,
+        conditionsJson: (parsedRule.conditionsJson ?? {}) as Record<
+          string,
+          unknown
+        >,
         outputsJson: (parsedRule.outputsJson ?? {}) as Record<string, unknown>,
         actorName: input.actorName,
         sourceChannel: input.sourceChannel,
@@ -651,7 +999,9 @@ class SqlFinanceRepository implements FinanceRepository {
     return result;
   }
 
-  async previewImport(input: ImportExecutionInput): Promise<ImportPreviewResult> {
+  async previewImport(
+    input: ImportExecutionInput,
+  ): Promise<ImportPreviewResult> {
     const normalizedInput = normalizeImportExecutionInput(input);
     if (!normalizedInput.filePath) {
       throw new Error("A file path is required to preview an import.");
@@ -681,14 +1031,11 @@ class SqlFinanceRepository implements FinanceRepository {
     const result = await withSeededUserContext(async (sql) => {
       const dataset = await this.getDataset();
       const commitResult = normalizedInput.filePath
-        ? (await runDeterministicImport(
-            "commit",
-            normalizedInput,
-            dataset,
-          ))
+        ? await runDeterministicImport("commit", normalizedInput, dataset)
         : null;
       const importBatchId =
-        (commitResult as ImportCommitResult | null)?.importBatchId ?? randomUUID();
+        (commitResult as ImportCommitResult | null)?.importBatchId ??
+        randomUUID();
       const preparedTransactions =
         commitResult && normalizedInput.filePath
           ? buildImportedTransactions(
@@ -874,14 +1221,17 @@ class SqlFinanceRepository implements FinanceRepository {
       `;
       const commitDuplicates =
         (preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates) +
-        ((preparedTransactions?.inserted.length ?? 0) - insertedTransactions.length);
+        ((preparedTransactions?.inserted.length ?? 0) -
+          insertedTransactions.length);
       await sql`
         update public.import_batches
         set row_count_inserted = ${insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed)},
             row_count_duplicates = ${preparedTransactions ? commitDuplicates : preview.rowCountDuplicates},
             commit_summary_json = ${serializeJson(sql, {
               jobsQueued,
-              transactionIds: insertedTransactions.map((transaction) => transaction.id),
+              transactionIds: insertedTransactions.map(
+                (transaction) => transaction.id,
+              ),
             })}::jsonb
         where id = ${importBatchId}
           and user_id = ${this.userId}
@@ -889,9 +1239,15 @@ class SqlFinanceRepository implements FinanceRepository {
       return {
         ...preview,
         importBatchId,
-        rowCountInserted: insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed),
-        rowCountDuplicates: preparedTransactions ? commitDuplicates : preview.rowCountDuplicates,
-        transactionIds: insertedTransactions.map((transaction) => transaction.id),
+        rowCountInserted:
+          insertedTransactions.length ||
+          (preparedTransactions ? 0 : preview.rowCountParsed),
+        rowCountDuplicates: preparedTransactions
+          ? commitDuplicates
+          : preview.rowCountDuplicates,
+        transactionIds: insertedTransactions.map(
+          (transaction) => transaction.id,
+        ),
         jobsQueued: [...jobsQueued],
       };
     });
@@ -912,7 +1268,9 @@ class SqlFinanceRepository implements FinanceRepository {
           const startedAt = new Date().toISOString();
           try {
             if (job.job_type === "rule_parse") {
-              const payloadJson = parseJsonColumn<Record<string, unknown>>(job.payload_json ?? {});
+              const payloadJson = parseJsonColumn<Record<string, unknown>>(
+                job.payload_json ?? {},
+              );
               const requestText =
                 payloadJson && typeof payloadJson.requestText === "string"
                   ? payloadJson.requestText
@@ -921,7 +1279,10 @@ class SqlFinanceRepository implements FinanceRepository {
                 throw new Error("Rule draft job is missing requestText.");
               }
 
-              const parsedRule = await parseRuleDraftRequest(requestText, dataset);
+              const parsedRule = await parseRuleDraftRequest(
+                requestText,
+                dataset,
+              );
               await sql`
                 update public.jobs
                 set status = 'completed',
@@ -944,7 +1305,9 @@ class SqlFinanceRepository implements FinanceRepository {
             }
 
             if (job.job_type === "classification") {
-              const payloadJson = parseJsonColumn<Record<string, unknown>>(job.payload_json ?? {});
+              const payloadJson = parseJsonColumn<Record<string, unknown>>(
+                job.payload_json ?? {},
+              );
               const importBatchId =
                 payloadJson && typeof payloadJson.importBatchId === "string"
                   ? payloadJson.importBatchId
@@ -969,7 +1332,9 @@ class SqlFinanceRepository implements FinanceRepository {
                   (candidate) => candidate.id === transaction.accountId,
                 );
                 if (!account) {
-                  throw new Error(`Account ${transaction.accountId} not found for classification.`);
+                  throw new Error(
+                    `Account ${transaction.accountId} not found for classification.`,
+                  );
                 }
 
                 try {
@@ -1006,7 +1371,9 @@ class SqlFinanceRepository implements FinanceRepository {
                             : "Transaction enrichment failed."
                         },
                         llm_payload = ${serializeJson(sql, {
-                          ...(parseJsonColumn<Record<string, unknown>>(row.llm_payload ?? {}) ?? {}),
+                          ...(parseJsonColumn<Record<string, unknown>>(
+                            row.llm_payload ?? {},
+                          ) ?? {}),
                           analysisStatus: "failed",
                           explanation: null,
                           model: getTransactionClassifierConfig().model,
@@ -1073,7 +1440,9 @@ class SqlFinanceRepository implements FinanceRepository {
                   started_at = ${startedAt},
                   finished_at = ${new Date().toISOString()},
                   last_error = ${
-                    error instanceof Error ? error.message : "Unknown job failure"
+                    error instanceof Error
+                      ? error.message
+                      : "Unknown job failure"
                   }
               where id = ${job.id}
             `;

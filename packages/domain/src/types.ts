@@ -42,11 +42,7 @@ export type TransferMatchStatus =
   | "suspected_pending"
   | "manual"
   | "not_transfer";
-export type ReimbursementStatus =
-  | "none"
-  | "expected"
-  | "received"
-  | "linked";
+export type ReimbursementStatus = "none" | "expected" | "received" | "linked";
 export type ClassificationStatus =
   | "manual_override"
   | "rule"
@@ -638,6 +634,42 @@ export interface ImportExecutionInput {
   templateId: string;
   originalFilename?: string;
   filePath?: string | null;
+}
+
+export interface CreateAccountInput {
+  account: Omit<Account, "id" | "userId" | "lastImportedAt" | "createdAt">;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface DeleteAccountInput {
+  accountId: string;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface ResetWorkspaceInput {
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface ResetWorkspaceResult {
+  applied: boolean;
+  deleted: {
+    accounts: number;
+    importTemplates: number;
+    importBatches: number;
+    transactions: number;
+    balanceSnapshots: number;
+    holdingAdjustments: number;
+    investmentPositions: number;
+    portfolioSnapshots: number;
+    rules: number;
+    jobs: number;
+  };
 }
 
 export interface ImportCommitResult extends ImportPreviewResult {

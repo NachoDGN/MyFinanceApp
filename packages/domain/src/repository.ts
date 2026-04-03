@@ -10,14 +10,18 @@ import type {
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
   AuditEvent,
+  CreateAccountInput,
   CreateRuleInput,
   CreateTemplateInput,
+  DeleteAccountInput,
   DomainDataset,
   ImportCommitResult,
   ImportExecutionInput,
   ImportPreviewResult,
   JobRunResult,
   QueueRuleDraftInput,
+  ResetWorkspaceInput,
+  ResetWorkspaceResult,
   Transaction,
   UpdateTransactionInput,
 } from "./types";
@@ -48,21 +52,34 @@ type DeterministicImportResult = (ImportPreviewResult | ImportCommitResult) & {
 
 export interface FinanceRepository {
   getDataset(): Promise<DomainDataset>;
+  createAccount(
+    input: CreateAccountInput,
+  ): Promise<{ applied: boolean; accountId: string }>;
+  deleteAccount(
+    input: DeleteAccountInput,
+  ): Promise<{ applied: boolean; accountId: string }>;
+  resetWorkspace(input: ResetWorkspaceInput): Promise<ResetWorkspaceResult>;
   updateTransaction(input: UpdateTransactionInput): Promise<{
     applied: boolean;
     transaction: Transaction;
     auditEvent: AuditEvent;
     generatedRuleId?: string;
   }>;
-  createRule(input: CreateRuleInput): Promise<{ applied: boolean; ruleId: string }>;
+  createRule(
+    input: CreateRuleInput,
+  ): Promise<{ applied: boolean; ruleId: string }>;
   createTemplate(
     input: CreateTemplateInput,
   ): Promise<{ applied: boolean; templateId: string }>;
   addOpeningPosition(
     input: AddOpeningPositionInput,
   ): Promise<{ applied: boolean; adjustmentId: string }>;
-  queueRuleDraft(input: QueueRuleDraftInput): Promise<{ applied: boolean; jobId: string }>;
-  applyRuleDraft(input: ApplyRuleDraftInput): Promise<{ applied: boolean; ruleId: string }>;
+  queueRuleDraft(
+    input: QueueRuleDraftInput,
+  ): Promise<{ applied: boolean; jobId: string }>;
+  applyRuleDraft(
+    input: ApplyRuleDraftInput,
+  ): Promise<{ applied: boolean; ruleId: string }>;
   previewImport(input: ImportExecutionInput): Promise<ImportPreviewResult>;
   commitImport(input: ImportExecutionInput): Promise<ImportCommitResult>;
   runPendingJobs(apply: boolean): Promise<JobRunResult>;
@@ -157,7 +174,9 @@ export async function runDeterministicImport(
 ): Promise<DeterministicImportResult> {
   const normalizedInput = normalizeImportExecutionInput(input);
   if (!normalizedInput.filePath) {
-    throw new Error("A filePath is required to run the pandas ingestion wrapper.");
+    throw new Error(
+      "A filePath is required to run the pandas ingestion wrapper.",
+    );
   }
 
   const { stdout } = await execFileAsync(resolvePythonBin(), [
@@ -211,7 +230,10 @@ function resolveSecurityId(
       security.name,
     ].map((value) => normalizeFingerprintText(value));
 
-    return (symbol && candidates.includes(symbol)) || (securityName && candidates.includes(securityName));
+    return (
+      (symbol && candidates.includes(symbol)) ||
+      (securityName && candidates.includes(securityName))
+    );
   });
   if (directMatch) {
     return directMatch.id;
@@ -219,7 +241,10 @@ function resolveSecurityId(
 
   const aliasMatch = dataset.securityAliases.find((alias) => {
     const aliasText = normalizeFingerprintText(alias.aliasTextNormalized);
-    return (symbol && aliasText === symbol) || (securityName && aliasText === securityName);
+    return (
+      (symbol && aliasText === symbol) ||
+      (securityName && aliasText === securityName)
+    );
   });
 
   return aliasMatch?.securityId ?? null;
@@ -317,19 +342,25 @@ export function buildImportedTransactions(
       continue;
     }
 
-    const postedDate = String(row.posted_date ?? "").slice(0, 10) || transactionDate;
-    const amountOriginal = new Decimal(String(row.amount_original_signed ?? "0")).toFixed(8);
+    const postedDate =
+      String(row.posted_date ?? "").slice(0, 10) || transactionDate;
+    const amountOriginal = new Decimal(
+      String(row.amount_original_signed ?? "0"),
+    ).toFixed(8);
     const currencyOriginal = String(
       row.currency_original ?? account.defaultCurrency ?? "EUR",
     ).toUpperCase();
     const externalReference = String(row.external_reference ?? "");
-    const quantity = row.quantity ? new Decimal(String(row.quantity)).toFixed(8) : null;
+    const quantity = row.quantity
+      ? new Decimal(String(row.quantity)).toFixed(8)
+      : null;
     const unitPriceOriginal = row.unit_price_original
       ? new Decimal(String(row.unit_price_original)).toFixed(8)
       : null;
     const securitySymbol = String(row.security_symbol ?? "").trim() || null;
     const securityName = String(row.security_name ?? "").trim() || null;
-    const transactionTypeRaw = String(row.transaction_type_raw ?? "").trim() || null;
+    const transactionTypeRaw =
+      String(row.transaction_type_raw ?? "").trim() || null;
     const sourceFingerprint = buildImportFingerprint(input.accountId, {
       transactionDate,
       postedDate,
@@ -349,8 +380,12 @@ export function buildImportedTransactions(
       continue;
     }
 
-    const importedFxRate = row.fx_rate ? new Decimal(String(row.fx_rate)).toFixed(8) : null;
-    const fxRateToEur = importedFxRate ?? resolveFxRateToEur(dataset, currencyOriginal, transactionDate);
+    const importedFxRate = row.fx_rate
+      ? new Decimal(String(row.fx_rate)).toFixed(8)
+      : null;
+    const fxRateToEur =
+      importedFxRate ??
+      resolveFxRateToEur(dataset, currencyOriginal, transactionDate);
     const amountBaseEur = new Decimal(amountOriginal)
       .times(new Decimal(fxRateToEur ?? "1"))
       .toFixed(8);
@@ -372,8 +407,12 @@ export function buildImportedTransactions(
     const securityId = resolveSecurityId(dataset, row);
     const initialReviewReasons = [
       "Pending enrichment pipeline.",
-      currencyOriginal !== "EUR" && !fxRateToEur ? "Missing FX rate for base-currency conversion." : null,
-      account.assetDomain === "investment" && !securityId && (securitySymbol || securityName)
+      currencyOriginal !== "EUR" && !fxRateToEur
+        ? "Missing FX rate for base-currency conversion."
+        : null,
+      account.assetDomain === "investment" &&
+      !securityId &&
+      (securitySymbol || securityName)
         ? "Security mapping unresolved."
         : null,
     ].filter(Boolean);
@@ -398,7 +437,10 @@ export function buildImportedTransactions(
       merchantNormalized: null,
       counterpartyName: null,
       transactionClass: "unknown",
-      categoryCode: account.assetDomain === "investment" ? "uncategorized_investment" : null,
+      categoryCode:
+        account.assetDomain === "investment"
+          ? "uncategorized_investment"
+          : null,
       subcategoryCode: null,
       transferGroupId: null,
       relatedAccountId: null,
@@ -438,6 +480,9 @@ export function buildImportedTransactions(
   };
 }
 
-export function getAccountById(accounts: DomainDataset["accounts"], accountId: string) {
+export function getAccountById(
+  accounts: DomainDataset["accounts"],
+  accountId: string,
+) {
   return accounts.find((account) => account.id === accountId);
 }

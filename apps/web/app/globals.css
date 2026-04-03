@@ -28,7 +28,11 @@ html {
 body {
   background-color: var(--color-bg);
   color: var(--color-text-main);
-  font-family: var(--font-family), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family:
+    var(--font-family),
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   line-height: 1.5;
   padding: 32px;
   -webkit-font-smoothing: antialiased;
@@ -237,6 +241,14 @@ textarea {
 .btn-pill:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(255, 75, 43, 0.2);
+}
+
+.btn-pill:disabled,
+.btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .btn-ghost {

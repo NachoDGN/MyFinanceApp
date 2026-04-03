@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
 import {
+  accountTypeOptions,
   canonicalFieldKeys,
   createTemplateConfig,
   FinanceDomainService,
@@ -63,6 +64,55 @@ const templateSchema = z.object({
   active: z.boolean().default(true),
 });
 
+const accountSchema = z.object({
+  entityId: z.string().uuid(),
+  institutionName: z.string().min(1),
+  displayName: z.string().min(1),
+  accountType: z.enum(accountTypeOptions),
+  defaultCurrency: z.string().min(1).default("EUR"),
+  openingBalanceOriginal: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+  openingBalanceDate: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+  includeInConsolidation: z.boolean().default(true),
+  importTemplateDefaultId: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+  matchingAliasesText: z.string().trim().optional().default(""),
+  accountSuffix: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+  balanceMode: z.enum(["statement", "computed"]).default("statement"),
+  staleAfterDays: z.coerce.number().int().min(1).max(365).nullable().optional(),
+});
+
+function toAssetDomain(
+  accountType: z.infer<typeof accountSchema>["accountType"],
+) {
+  return accountType === "brokerage_account" ? "investment" : "cash";
+}
+
+function parseAliases(value: string) {
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 async function withUploadedImport(
   formData: FormData,
   run: (input: {
@@ -77,7 +127,11 @@ async function withUploadedImport(
     templateId: formData.get("templateId"),
   });
   const file = formData.get("file");
-  if (!file || typeof file !== "object" || typeof (file as File).arrayBuffer !== "function") {
+  if (
+    !file ||
+    typeof file !== "object" ||
+    typeof (file as File).arrayBuffer !== "function"
+  ) {
     throw new Error("A file upload is required.");
   }
 
@@ -103,7 +157,9 @@ export async function previewImportAction(formData: FormData) {
 }
 
 export async function commitImportAction(formData: FormData) {
-  const result = await withUploadedImport(formData, (input) => domain.commitImport(input));
+  const result = await withUploadedImport(formData, (input) =>
+    domain.commitImport(input),
+  );
   revalidatePath("/imports");
   revalidatePath("/");
   revalidatePath("/transactions");
@@ -114,7 +170,9 @@ export async function commitImportAction(formData: FormData) {
   return result;
 }
 
-export async function createTemplateAction(input: z.input<typeof templateSchema>) {
+export async function createTemplateAction(
+  input: z.input<typeof templateSchema>,
+) {
   const template = templateSchema.parse(input);
   const {
     columnMappings: _columnMappings,
@@ -128,17 +186,18 @@ export async function createTemplateAction(input: z.input<typeof templateSchema>
     dateDayFirst: _dateDayFirst,
     ...templateFields
   } = template;
-  const { columnMapJson, signLogicJson, normalizationRulesJson } = createTemplateConfig({
-    columnMappings: template.columnMappings,
-    signMode: template.signMode,
-    invertSign: template.invertSign,
-    directionColumn: template.directionColumn,
-    debitColumn: template.debitColumn,
-    creditColumn: template.creditColumn,
-    debitValuesText: template.debitValuesText,
-    creditValuesText: template.creditValuesText,
-    dateDayFirst: template.dateDayFirst,
-  });
+  const { columnMapJson, signLogicJson, normalizationRulesJson } =
+    createTemplateConfig({
+      columnMappings: template.columnMappings,
+      signMode: template.signMode,
+      invertSign: template.invertSign,
+      directionColumn: template.directionColumn,
+      debitColumn: template.debitColumn,
+      creditColumn: template.creditColumn,
+      debitValuesText: template.debitValuesText,
+      creditValuesText: template.creditValuesText,
+      dateDayFirst: template.dateDayFirst,
+    });
   const { seededUserId } = getDbRuntimeConfig();
   const result = await domain.createTemplate({
     template: {
@@ -159,6 +218,77 @@ export async function createTemplateAction(input: z.input<typeof templateSchema>
   });
   revalidatePath("/templates");
   revalidatePath("/imports");
+  return result;
+}
+
+export async function createAccountAction(
+  input: z.input<typeof accountSchema>,
+) {
+  const account = accountSchema.parse(input);
+  const result = await domain.createAccount({
+    account: {
+      entityId: account.entityId,
+      institutionName: account.institutionName,
+      displayName: account.displayName,
+      accountType: account.accountType,
+      assetDomain: toAssetDomain(account.accountType),
+      defaultCurrency: account.defaultCurrency,
+      openingBalanceOriginal: account.openingBalanceOriginal,
+      openingBalanceCurrency: account.openingBalanceOriginal
+        ? account.defaultCurrency
+        : null,
+      openingBalanceDate: account.openingBalanceOriginal
+        ? account.openingBalanceDate
+        : null,
+      includeInConsolidation: account.includeInConsolidation,
+      isActive: true,
+      importTemplateDefaultId: account.importTemplateDefaultId,
+      matchingAliases: parseAliases(account.matchingAliasesText),
+      accountSuffix: account.accountSuffix,
+      balanceMode: account.balanceMode,
+      staleAfterDays: account.staleAfterDays ?? null,
+    },
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidatePath("/accounts");
+  revalidatePath("/imports");
+  revalidatePath("/");
+  return result;
+}
+
+export async function deleteAccountAction(accountId: string) {
+  const parsed = z.string().uuid().parse(accountId);
+  const result = await domain.deleteAccount({
+    accountId: parsed,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidatePath("/accounts");
+  revalidatePath("/imports");
+  revalidatePath("/");
+  return result;
+}
+
+export async function resetWorkspaceAction() {
+  const result = await domain.resetWorkspace({
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidatePath("/");
+  revalidatePath("/accounts");
+  revalidatePath("/imports");
+  revalidatePath("/investments");
+  revalidatePath("/income");
+  revalidatePath("/insights");
+  revalidatePath("/spending");
+  revalidatePath("/transactions");
+  revalidatePath("/rules");
+  revalidatePath("/templates");
+  revalidatePath("/settings");
   return result;
 }
 

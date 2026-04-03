@@ -38,6 +38,7 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState<string | null>(null);
+  const [fileKind, setFileKind] = useState<ImportTemplate["fileKind"]>("csv");
   const [columnMappings, setColumnMappings] = useState<TemplateColumnMapping[]>(() =>
     createDefaultColumnMappings(),
   );
@@ -59,13 +60,13 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
       compatibleAccountType: String(
         formData.get("compatibleAccountType") ?? "",
       ) as ImportTemplate["compatibleAccountType"],
-      fileKind: String(formData.get("fileKind") ?? "csv") as ImportTemplate["fileKind"],
-      sheetName: String(formData.get("sheetName") ?? "") || null,
+      fileKind,
+      sheetName: fileKind === "xlsx" ? String(formData.get("sheetName") ?? "") || null : null,
       headerRowIndex: Number(formData.get("headerRowIndex") ?? 1),
       rowsToSkipBeforeHeader: Number(formData.get("rowsToSkipBeforeHeader") ?? 0),
       rowsToSkipAfterHeader: Number(formData.get("rowsToSkipAfterHeader") ?? 0),
-      delimiter: String(formData.get("delimiter") ?? "") || null,
-      encoding: String(formData.get("encoding") ?? "") || null,
+      delimiter: fileKind === "csv" ? String(formData.get("delimiter") ?? "") || null : null,
+      encoding: fileKind === "csv" ? String(formData.get("encoding") ?? "") || null : null,
       decimalSeparator: String(formData.get("decimalSeparator") ?? "") || null,
       thousandsSeparator: String(formData.get("thousandsSeparator") ?? "") || null,
       dateFormat: String(formData.get("dateFormat") ?? "%Y-%m-%d"),
@@ -124,7 +125,12 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
         </label>
         <label className="input-label">
           File Kind
-          <select className="input-select" name="fileKind" defaultValue="csv">
+          <select
+            className="input-select"
+            name="fileKind"
+            value={fileKind}
+            onChange={(event) => setFileKind(event.target.value as ImportTemplate["fileKind"])}
+          >
             {fileKindOptions.map((fileKind) => (
               <option key={fileKind} value={fileKind}>
                 {fileKind}
@@ -132,10 +138,12 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
             ))}
           </select>
         </label>
-        <label className="input-label">
-          Worksheet
-          <input className="input-field" name="sheetName" placeholder="Optional for xlsx" />
-        </label>
+        {fileKind === "xlsx" ? (
+          <label className="input-label">
+            Worksheet
+            <input className="input-field" name="sheetName" placeholder="Transactions" />
+          </label>
+        ) : null}
         <label className="input-label">
           Header Row
           <input className="input-field" name="headerRowIndex" type="number" min="1" defaultValue="1" />
@@ -156,14 +164,21 @@ export function TemplateWorkbench({ templates }: { templates: ImportTemplate[] }
           Default Currency
           <input className="input-field" name="defaultCurrency" defaultValue="EUR" />
         </label>
-        <label className="input-label">
-          Delimiter
-          <input className="input-field" name="delimiter" defaultValue="," />
-        </label>
-        <label className="input-label">
-          Encoding
-          <input className="input-field" name="encoding" defaultValue="utf-8" />
-        </label>
+        {fileKind === "csv" ? (
+          <label className="input-label">
+            Delimiter
+            <input className="input-field" name="delimiter" defaultValue="," />
+          </label>
+        ) : null}
+        {fileKind === "csv" ? (
+          <label className="input-label">
+            Encoding
+            <input className="input-field" name="encoding" defaultValue="utf-8" />
+            <span className="muted">
+              Usually leave this as `utf-8`. Change it only if accented characters import incorrectly.
+            </span>
+          </label>
+        ) : null}
         <label className="input-label">
           Decimal Separator
           <input className="input-field" name="decimalSeparator" defaultValue="." />
