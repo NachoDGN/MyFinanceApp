@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+.turbo
+.env
+.env.local
+coverage
+.DS_Store
+supabase/.branches
+supabase/.temp
+apps/web/.next
+apps/web/out
+__pycache__
+*.pyc
+*.tsbuildinfo
+.venv

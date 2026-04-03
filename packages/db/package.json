@@ -1,0 +1,16 @@
+{
+  "name": "@myfinance/db",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@myfinance/domain": "workspace:*",
+    "postgres": "^3.4.5",
+    "zod": "^3.24.2"
+  }
+}

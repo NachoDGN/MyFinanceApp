@@ -1,0 +1,22 @@
+{
+  "name": "@myfinance/cli",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "myfinance": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@myfinance/analytics": "workspace:*",
+    "@myfinance/classification": "workspace:*",
+    "@myfinance/db": "workspace:*",
+    "@myfinance/domain": "workspace:*",
+    "@myfinance/market-data": "workspace:*",
+    "commander": "^13.1.0",
+    "zod": "^3.24.2"
+  }
+}

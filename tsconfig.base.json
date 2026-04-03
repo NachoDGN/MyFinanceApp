@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": false,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "baseUrl": ".",
+    "paths": {
+      "@myfinance/analytics": ["packages/analytics/src/index.ts"],
+      "@myfinance/classification": ["packages/classification/src/index.ts"],
+      "@myfinance/db": ["packages/db/src/index.ts"],
+      "@myfinance/domain": ["packages/domain/src/index.ts"],
+      "@myfinance/market-data": ["packages/market-data/src/index.ts"]
+    }
+  }
+}
