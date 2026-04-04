@@ -17,6 +17,7 @@ import {
   inferImportTemplateDraft,
   logTemporaryImportDebug,
   signModeOptions,
+  validateSpreadsheetFile,
 } from "@myfinance/domain";
 import { NEW_SPREADSHEET_TEMPLATE_ID } from "./import-constants";
 
@@ -152,6 +153,20 @@ async function withUploadedImport<T>(
   });
 
   try {
+    const validation = await validateSpreadsheetFile(filePath);
+    logTemporaryImportDebug("upload:file-validation", {
+      accountId: fields.accountId,
+      templateId: fields.templateId,
+      originalFilename: file.name,
+      issues: validation.issues,
+    });
+    const blockingIssue = validation.issues.find(
+      (issue) => issue.severity === "error",
+    );
+    if (blockingIssue) {
+      throw new Error(blockingIssue.message);
+    }
+
     let resolvedTemplateId = fields.templateId;
     let resolvedTemplateName: string | null = null;
 
@@ -220,7 +235,14 @@ async function withUploadedImport<T>(
       return {
         ...(result as Record<string, unknown>),
         resolvedTemplateName,
-      } as T & { resolvedTemplateName: string };
+        fileValidationIssues: validation.issues,
+      } as unknown as T & { resolvedTemplateName: string };
+    }
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      return {
+        ...(result as Record<string, unknown>),
+        fileValidationIssues: validation.issues,
+      } as unknown as T;
     }
     return result;
   } catch (error) {

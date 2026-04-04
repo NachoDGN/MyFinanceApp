@@ -83,6 +83,60 @@ function buildSignLogicJson(
   });
 }
 
+function normalizeSheetName(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function resolvePreviewSheetName(
+  sheetPreviews: ReadonlyArray<{ sheetName: string | null }>,
+  inferredSheetName: string | null,
+) {
+  const availableSheetNames = sheetPreviews
+    .map((sheet) => sheet.sheetName)
+    .filter((sheetName): sheetName is string => Boolean(sheetName?.trim()));
+
+  if (availableSheetNames.length === 0) {
+    return null;
+  }
+
+  if (!inferredSheetName?.trim()) {
+    return availableSheetNames[0];
+  }
+
+  const exactMatch = availableSheetNames.find(
+    (sheetName) => sheetName === inferredSheetName,
+  );
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const normalizedInferredSheetName = normalizeSheetName(inferredSheetName);
+  const normalizedExactMatch = availableSheetNames.find(
+    (sheetName) => normalizeSheetName(sheetName) === normalizedInferredSheetName,
+  );
+  if (normalizedExactMatch) {
+    return normalizedExactMatch;
+  }
+
+  const normalizedContainmentMatch = availableSheetNames.find((sheetName) => {
+    const normalizedSheetName = normalizeSheetName(sheetName);
+    return (
+      normalizedSheetName.includes(normalizedInferredSheetName) ||
+      normalizedInferredSheetName.includes(normalizedSheetName)
+    );
+  });
+  if (normalizedContainmentMatch) {
+    return normalizedContainmentMatch;
+  }
+
+  return availableSheetNames[0];
+}
+
 function assertInferredLayout(
   layout: Awaited<ReturnType<typeof inferSpreadsheetLayout>>,
 ) {
@@ -146,7 +200,9 @@ export async function inferImportTemplateDraft(
   const workbookPreview = await inspectWorkbook(input.filePath);
   if (workbookPreview.sheetPreviews.length === 0) {
     throw new Error(
-      "No spreadsheet preview could be generated from the uploaded file.",
+      workbookPreview.fileKind === "xlsx"
+        ? "The uploaded spreadsheet does not contain any worksheet tabs with rows and columns to preview."
+        : "No spreadsheet preview could be generated from the uploaded file.",
     );
   }
   logTemporaryImportDebug("template-inference:workbook-preview", {
@@ -177,10 +233,24 @@ export async function inferImportTemplateDraft(
     Math.max(tableStart.header_row_index - 1, 0);
   const resolvedSheetName =
     workbookPreview.fileKind === "xlsx"
-      ? (tableStart.sheet_name ??
-        workbookPreview.sheetPreviews[0]?.sheetName ??
-        null)
+      ? resolvePreviewSheetName(
+          workbookPreview.sheetPreviews,
+          tableStart.sheet_name,
+        )
       : null;
+  if (
+    workbookPreview.fileKind === "xlsx" &&
+    tableStart.sheet_name &&
+    resolvedSheetName !== tableStart.sheet_name
+  ) {
+    logTemporaryImportDebug("template-inference:sheet-name-corrected", {
+      inferredSheetName: tableStart.sheet_name,
+      resolvedSheetName,
+      availableSheetNames: workbookPreview.sheetPreviews.map(
+        (sheet) => sheet.sheetName,
+      ),
+    });
+  }
 
   const tablePreview = await previewTable({
     filePath: input.filePath,

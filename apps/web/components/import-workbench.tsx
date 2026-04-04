@@ -99,6 +99,10 @@ export function ImportWorkbench({
       ? commitImportAction(formData)
       : previewImportAction(formData))) as ImportResult;
     setResult(payload);
+    const validationWarningCount =
+      payload.fileValidationIssues?.filter(
+        (issue) => issue.severity === "warning",
+      ).length ?? 0;
     if (usedNewTemplateSelection && payload.resolvedTemplateName) {
       const resolvedTemplateName = payload.resolvedTemplateName;
       setAvailableTemplates((current) =>
@@ -114,11 +118,11 @@ export function ImportWorkbench({
     setMessage(
       mode === "commit"
         ? usedNewTemplateSelection && payload.resolvedTemplateName
-          ? `Import committed. Template saved as ${payload.resolvedTemplateName}. Classification and rebuild jobs were queued.`
-          : "Import committed. Classification and rebuild jobs were queued."
+          ? `Import committed. Template saved as ${payload.resolvedTemplateName}. Classification and rebuild jobs were queued.${validationWarningCount > 0 ? ` ${validationWarningCount} file warning(s) detected.` : ""}`
+          : `Import committed. Classification and rebuild jobs were queued.${validationWarningCount > 0 ? ` ${validationWarningCount} file warning(s) detected.` : ""}`
         : usedNewTemplateSelection && payload.resolvedTemplateName
-          ? `Preview generated and template saved as ${payload.resolvedTemplateName}.`
-          : "Preview generated from the uploaded file.",
+          ? `Preview generated and template saved as ${payload.resolvedTemplateName}.${validationWarningCount > 0 ? ` ${validationWarningCount} file warning(s) detected.` : ""}`
+          : `Preview generated from the uploaded file.${validationWarningCount > 0 ? ` ${validationWarningCount} file warning(s) detected.` : ""}`,
     );
 
     if (mode === "commit") {
@@ -301,6 +305,42 @@ export function ImportWorkbench({
             >
               {JSON.stringify(result.parseErrors, null, 2)}
             </pre>
+          ) : null}
+          {result.fileValidationIssues && result.fileValidationIssues.length > 0 ? (
+            <div style={{ marginTop: 20 }}>
+              <span className="label-sm">File Validator</span>
+              <h3
+                className="section-title"
+                style={{ marginTop: 8, marginBottom: 12 }}
+              >
+                Preflight checks on the uploaded file
+              </h3>
+              <div className="legend-list" style={{ marginBottom: 12 }}>
+                {result.fileValidationIssues.map((issue, index) => (
+                  <span
+                    key={`${issue.code}-${issue.sheetName ?? "global"}-${index}`}
+                    className="pill"
+                  >
+                    {issue.severity.toUpperCase()} | {issue.code}
+                    {issue.sheetName ? ` | ${issue.sheetName}` : ""}
+                    {issue.columnName ? ` | ${issue.columnName}` : ""}
+                  </span>
+                ))}
+              </div>
+              <pre
+                style={{
+                  marginTop: 16,
+                  padding: 16,
+                  background: "rgba(12, 18, 28, 0.92)",
+                  color: "white",
+                  borderRadius: 16,
+                  overflowX: "auto",
+                  fontSize: 12,
+                }}
+              >
+                {JSON.stringify(result.fileValidationIssues, null, 2)}
+              </pre>
+            </div>
           ) : null}
         </div>
       ) : null}

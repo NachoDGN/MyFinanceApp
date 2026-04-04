@@ -608,6 +608,14 @@ export interface TemplateListResponse {
   generatedAt: string;
 }
 
+export interface ImportFileValidationIssue {
+  severity: "warning" | "error";
+  code: string;
+  message: string;
+  sheetName?: string | null;
+  columnName?: string | null;
+}
+
 export interface AccountListResponse {
   schemaVersion: "v1";
   accounts: Account[];
@@ -630,6 +638,7 @@ export interface ImportPreviewResult {
     headers: string[];
     rows: Array<Record<string, unknown>>;
   } | null;
+  fileValidationIssues?: ImportFileValidationIssue[];
   sampleRows: Array<Record<string, unknown>>;
   parseErrors: Array<{ row: number; message: string }>;
 }

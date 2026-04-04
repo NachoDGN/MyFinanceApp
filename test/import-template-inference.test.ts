@@ -215,3 +215,111 @@ test("inferImportTemplateDraft preserves csv dialect details and debit-credit si
     start_column_letter: "A",
   });
 });
+
+test("inferImportTemplateDraft resolves inferred xlsx sheet names to an existing preview sheet", async () => {
+  let previewTableInput: Record<string, unknown> | null = null;
+
+  const template = await inferImportTemplateDraft(
+    {
+      userId: "user-1",
+      account: {
+        id: "account-1",
+        institutionName: "MyInvestor",
+        accountType: "brokerage_account",
+        defaultCurrency: "EUR",
+      },
+      filePath: "/tmp/myinvestor.xlsx",
+      originalFilename: "myinvestor.xlsx",
+    },
+    {
+      llmClient: {
+        async generateText() {
+          throw new Error("Not used in this test.");
+        },
+        async generateJson({ schemaName }) {
+          if (schemaName === "spreadsheet_table_start") {
+            return {
+              sheet_name: "Movimientos MyInvestor",
+              header_row_index: 2,
+              rows_to_skip_before_header: 1,
+              start_column_letter: "A",
+            };
+          }
+          if (schemaName === "spreadsheet_layout") {
+            return {
+              column_map: {
+                transaction_date: "Fecha",
+                description_raw: "Concepto",
+                amount_original_signed: "Importe",
+              },
+              sign_logic: {
+                mode: "signed_amount",
+                invert_sign: false,
+              },
+              date_day_first: true,
+            };
+          }
+          throw new Error(`Unexpected schema ${schemaName}`);
+        },
+      },
+      inspectWorkbook: async () => ({
+        fileKind: "xlsx",
+        delimiter: null,
+        encoding: null,
+        sheetPreviews: [
+          {
+            sheetName: "Movimientos",
+            previewCsv: "row,A,B,C\n1,MyInvestor movimientos,,\n2,Fecha,Concepto,Importe",
+          },
+        ],
+      }),
+      previewTable: async (input) => {
+        previewTableInput = input as unknown as Record<string, unknown>;
+        return {
+          sheetName: "Movimientos",
+          previewCsv: "Fecha,Concepto,Importe\n03/04/2026,Compra ETF,-100.00",
+          headers: ["Fecha", "Concepto", "Importe"],
+        };
+      },
+    },
+  );
+
+  assert.equal(previewTableInput?.sheetName, "Movimientos");
+  assert.equal(template.sheetName, "Movimientos");
+});
+
+test("inferImportTemplateDraft explains when an xlsx has no worksheet previews", async () => {
+  await assert.rejects(
+    () =>
+      inferImportTemplateDraft(
+        {
+          userId: "user-1",
+          account: {
+            id: "account-1",
+            institutionName: "Broker",
+            accountType: "brokerage_account",
+            defaultCurrency: "EUR",
+          },
+          filePath: "/tmp/chart-only.xlsx",
+          originalFilename: "chart-only.xlsx",
+        },
+        {
+          llmClient: {
+            async generateText() {
+              throw new Error("Not used in this test.");
+            },
+            async generateJson() {
+              throw new Error("Not used in this test.");
+            },
+          },
+          inspectWorkbook: async () => ({
+            fileKind: "xlsx",
+            delimiter: null,
+            encoding: null,
+            sheetPreviews: [],
+          }),
+        },
+      ),
+    /does not contain any worksheet tabs with rows and columns to preview/i,
+  );
+});

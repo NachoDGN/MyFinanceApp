@@ -9,13 +9,17 @@ import json
 import re
 import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
+from zipfile import ZipFile
 
 import pandas as pd
+from openpyxl import load_workbook
 
 
 TEXT_JOIN_SEPARATOR = " "
@@ -25,6 +29,17 @@ RAW_PREVIEW_COLUMN_LIMIT = 12
 TABLE_PREVIEW_ROW_LIMIT = 8
 TABLE_PREVIEW_COLUMN_LIMIT = 12
 CSV_DELIMITER_CANDIDATES = [",", ";", "\t", "|"]
+OPENXML_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+STRICT_OPENXML_MAIN_NAMESPACE = b"http://purl.oclc.org/ooxml/spreadsheetml/main"
+STRICT_OPENXML_REL_NAMESPACE = b"http://purl.oclc.org/ooxml/officeDocument/relationships"
+TRANSITIONAL_OPENXML_MAIN_NAMESPACE = (
+    b"http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+)
+TRANSITIONAL_OPENXML_REL_NAMESPACE = (
+    b"http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+SUSPICIOUS_TEXT_MARKERS = ["√", "Ã", "Â", "�"]
+DATE_TEXT_PATTERN = re.compile(r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$")
 
 
 @dataclass
@@ -64,8 +79,34 @@ def normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def has_suspicious_text_encoding(value: Any) -> bool:
+    text = normalize_text(value)
+    return bool(text) and any(marker in text for marker in SUSPICIOUS_TEXT_MARKERS)
+
+
 def is_blank(value: Any) -> bool:
     return normalize_text(value) == ""
+
+
+def looks_like_date_header(value: Any) -> bool:
+    normalized = normalize_text(value).lower()
+    return bool(normalized) and ("fecha" in normalized or "date" in normalized)
+
+
+def classify_date_representation(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        return "typed_date"
+
+    text = normalize_text(value)
+    if not text:
+        return None
+    if DATE_TEXT_PATTERN.fullmatch(text):
+        return "text_date"
+    return "other"
 
 
 def column_letter_to_index(column_letter: str) -> int:
@@ -86,9 +127,81 @@ def index_to_column_letter(index: int) -> str:
 
 def infer_file_kind(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
-    if suffix == ".xlsx":
+    if suffix in OPENXML_EXCEL_SUFFIXES:
         return "xlsx"
     return "csv"
+
+
+def normalize_strict_openxml_bytes(data: bytes) -> bytes:
+    return (
+        data.replace(
+            STRICT_OPENXML_MAIN_NAMESPACE,
+            TRANSITIONAL_OPENXML_MAIN_NAMESPACE,
+        ).replace(
+            STRICT_OPENXML_REL_NAMESPACE,
+            TRANSITIONAL_OPENXML_REL_NAMESPACE,
+        )
+    )
+
+
+def is_strict_openxml_workbook(file_path: Path) -> bool:
+    try:
+        with ZipFile(file_path) as archive:
+            workbook_xml = archive.read("xl/workbook.xml")
+    except Exception:
+        return False
+
+    return (
+        STRICT_OPENXML_MAIN_NAMESPACE in workbook_xml
+        or STRICT_OPENXML_REL_NAMESPACE in workbook_xml
+    )
+
+
+@contextmanager
+def compatible_excel_path(file_path: Path):
+    if not is_strict_openxml_workbook(file_path):
+        yield file_path
+        return
+
+    with TemporaryDirectory() as temp_directory:
+        converted_path = Path(temp_directory) / file_path.name
+        with ZipFile(file_path) as source_archive, ZipFile(
+            converted_path, "w"
+        ) as target_archive:
+            for entry in source_archive.infolist():
+                data = source_archive.read(entry.filename)
+                if entry.filename.endswith(".xml") or entry.filename.endswith(".rels"):
+                    data = normalize_strict_openxml_bytes(data)
+                target_archive.writestr(entry, data)
+        yield converted_path
+
+
+def list_excel_preview_sheet_names(file_path: Path) -> list[str]:
+    workbook = pd.ExcelFile(file_path)
+    try:
+        if workbook.sheet_names:
+            return workbook.sheet_names
+    finally:
+        workbook.close()
+
+    openpyxl_workbook = load_workbook(file_path, read_only=True, data_only=True)
+    non_tabular_sheet_names: list[str] = []
+    try:
+        worksheet_names = [worksheet.title for worksheet in openpyxl_workbook.worksheets]
+        if worksheet_names:
+            return worksheet_names
+        non_tabular_sheet_names = list(openpyxl_workbook.sheetnames)
+    finally:
+        openpyxl_workbook.close()
+
+    if non_tabular_sheet_names:
+        raise ValueError(
+            "The uploaded spreadsheet does not contain any worksheet tabs with rows and columns to preview."
+        )
+
+    raise ValueError(
+        "The uploaded spreadsheet does not contain any worksheet tabs to preview."
+    )
 
 
 def read_text_with_fallbacks(file_path: Path, encodings: list[str]) -> tuple[str, str]:
@@ -211,26 +324,100 @@ def build_workbook_preview(file_path: Path) -> dict[str, Any]:
             ],
         }
 
-    workbook = pd.ExcelFile(file_path)
     sheet_previews = []
-    for sheet_name in workbook.sheet_names[:3]:
-        frame = load_raw_preview_frame(
-            file_path,
-            file_kind=file_kind,
-            sheet_name=sheet_name,
-        )
-        sheet_previews.append(
-            {
-                "sheetName": sheet_name,
-                "previewCsv": frame_to_coordinate_preview_csv(frame),
-            }
-        )
+    with compatible_excel_path(file_path) as compatible_path:
+        for sheet_name in list_excel_preview_sheet_names(compatible_path)[:3]:
+            frame = load_raw_preview_frame(
+                compatible_path,
+                file_kind=file_kind,
+                sheet_name=sheet_name,
+            )
+            sheet_previews.append(
+                {
+                    "sheetName": sheet_name,
+                    "previewCsv": frame_to_coordinate_preview_csv(frame),
+                }
+            )
 
     return {
         "fileKind": file_kind,
         "delimiter": None,
         "encoding": None,
         "sheetPreviews": sheet_previews,
+    }
+
+
+def build_workbook_validation(file_path: Path) -> dict[str, Any]:
+    file_kind = infer_file_kind(file_path)
+    issues: list[dict[str, Any]] = []
+
+    if file_kind == "csv":
+        return {
+            "fileKind": file_kind,
+            "issues": issues,
+        }
+
+    strict_openxml = is_strict_openxml_workbook(file_path)
+    if strict_openxml:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "strict_openxml_compatibility",
+                "message": "The workbook uses Strict Open XML. The importer normalized it for compatibility before parsing.",
+                "sheetName": None,
+                "columnName": None,
+            }
+        )
+
+    with compatible_excel_path(file_path) as compatible_path:
+        for sheet_name in list_excel_preview_sheet_names(compatible_path)[:3]:
+            frame = load_raw_preview_frame(
+                compatible_path,
+                file_kind=file_kind,
+                sheet_name=sheet_name,
+            )
+
+            if any(has_suspicious_text_encoding(value) for value in frame.to_numpy().flatten().tolist()):
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "code": "suspicious_text_encoding",
+                        "message": "The sheet contains suspicious character sequences such as '√' or 'Ã', which usually indicates broken text encoding in the source file.",
+                        "sheetName": sheet_name,
+                        "columnName": None,
+                    }
+                )
+
+            if frame.empty:
+                continue
+
+            header_row = frame.iloc[0].tolist()
+            for column_index, header_value in enumerate(header_row):
+                if not looks_like_date_header(header_value):
+                    continue
+
+                representations = {
+                    classification
+                    for classification in (
+                        classify_date_representation(value)
+                        for value in frame.iloc[1:, column_index].tolist()
+                    )
+                    if classification and classification != "other"
+                }
+                if "typed_date" in representations and "text_date" in representations:
+                    issues.append(
+                        {
+                            "severity": "warning",
+                            "code": "mixed_date_representations",
+                            "message": "This date column mixes text dates and Excel date cells. Review imported dates carefully or prefer the original CSV export.",
+                            "sheetName": sheet_name,
+                            "columnName": normalize_text(header_value) or None,
+                        }
+                    )
+
+    return {
+        "fileKind": file_kind,
+        "issues": issues,
     }
 
 
@@ -257,13 +444,14 @@ def build_table_preview(
             dtype=object,
         )
     elif file_kind == "xlsx":
-        frame = pd.read_excel(
-            file_path,
-            sheet_name=sheet_name or 0,
-            skiprows=rows_to_skip_before_header,
-            header=header_zero_index,
-            dtype=object,
-        )
+        with compatible_excel_path(file_path) as compatible_path:
+            frame = pd.read_excel(
+                compatible_path,
+                sheet_name=sheet_name or 0,
+                skiprows=rows_to_skip_before_header,
+                header=header_zero_index,
+                dtype=object,
+            )
     else:
         raise ValueError(f"Unsupported file kind: {file_kind}")
 
@@ -478,13 +666,14 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
             dtype=object,
         )
     elif file_kind == "xlsx":
-        frame = pd.read_excel(
-            file_path,
-            sheet_name=template.get("sheet_name") or 0,
-            skiprows=skip_before_header,
-            header=header_zero_index,
-            dtype=object,
-        )
+        with compatible_excel_path(file_path) as compatible_path:
+            frame = pd.read_excel(
+                compatible_path,
+                sheet_name=template.get("sheet_name") or 0,
+                skiprows=skip_before_header,
+                header=header_zero_index,
+                dtype=object,
+            )
     else:
         raise ValueError(f"Unsupported file kind: {file_kind}")
 
@@ -837,7 +1026,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Template-driven pandas ingest wrapper")
     parser.add_argument(
         "mode",
-        choices=["preview", "commit", "inspect-workbook", "preview-table"],
+        choices=[
+            "preview",
+            "commit",
+            "inspect-workbook",
+            "preview-table",
+            "validate-workbook",
+        ],
     )
     parser.add_argument("--file-path", required=True)
     parser.add_argument("--account-id")
@@ -855,6 +1050,11 @@ def main() -> int:
     file_path = Path(args.file_path)
     if args.mode == "inspect-workbook":
         result = build_workbook_preview(file_path)
+        sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        return 0
+
+    if args.mode == "validate-workbook":
+        result = build_workbook_validation(file_path)
         sys.stdout.write(json.dumps(result, ensure_ascii=False))
         return 0
 
@@ -895,4 +1095,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        sys.stderr.write(f"{exc}\n")
+        raise SystemExit(1)

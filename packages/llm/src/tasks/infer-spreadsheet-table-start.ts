@@ -51,6 +51,7 @@ function buildSystemPrompt() {
     "Each preview includes row numbers and Excel-style column letters.",
     "Identify the header row and the left-most column of the transaction table.",
     "Prefer the sheet that clearly contains transaction rows rather than cover pages or summaries.",
+    "For XLSX files, sheet_name must exactly match one of the provided sheet labels. Do not invent, translate, or paraphrase sheet names.",
     "Always include sheet_name. Use null for CSV files or when uncertain.",
   ].join(" ");
 }
