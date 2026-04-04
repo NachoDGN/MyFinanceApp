@@ -143,6 +143,17 @@ function normalizeSecurityIdentifier(value: string | null | undefined) {
     .toUpperCase();
 }
 
+function extractIsinFromText(...values: Array<string | null | undefined>) {
+  const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}\d\b/i;
+  for (const value of values) {
+    const match = String(value ?? "").toUpperCase().match(isinPattern);
+    if (match?.[0]) {
+      return normalizeSecurityIdentifier(match[0]);
+    }
+  }
+  return null;
+}
+
 function normalizedSecurityNameMatches(
   left: string | null | undefined,
   right: string | null | undefined,
@@ -176,7 +187,14 @@ function buildSecurityResolutionContext(
     rawOutput?.resolved_instrument_name,
   );
   const resolvedInstrumentIsin = normalizeSecurityIdentifier(
-    readOptionalString(rawOutput?.resolved_instrument_isin),
+    readOptionalString(rawOutput?.resolved_instrument_isin) ??
+      extractIsinFromText(
+        transaction.manualNotes,
+        readOptionalString(reviewContext?.previousUserContext),
+        readOptionalString(reviewContext?.userProvidedContext),
+        readOptionalString(rawOutput?.reason),
+        readOptionalString(rawOutput?.explanation),
+      ),
   );
   const resolvedInstrumentTicker = readOptionalString(
     rawOutput?.resolved_instrument_ticker,

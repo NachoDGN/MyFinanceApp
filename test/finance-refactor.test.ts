@@ -24,6 +24,10 @@ import {
   rebuildInvestmentState,
   resolvePeriodSelection,
 } from "../packages/domain/src/index.ts";
+import {
+  buildReviewPropagationUserContext,
+  canSeedReviewPropagationFromTransaction,
+} from "../packages/db/src/index.ts";
 
 import {
   createAccount,
@@ -464,6 +468,86 @@ test("investment review uses the dedicated model override when configured", () =
       process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previous;
     }
   }
+});
+
+test("review propagation can seed from a mapped investment transaction that still needs review", () => {
+  const account = createAccount({
+    id: "broker-propagation-source",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const transaction = createTransaction({
+    id: "propagation-source",
+    accountId: account.id,
+    transactionClass: "investment_trade_buy",
+    securityId: "security-vanguard-fund",
+    needsReview: true,
+    reviewReason:
+      'Mapped to IE0032126645, but no reliable historical fund price was available to derive quantity for "VANGUARD US 500 STOCK INDEX EU".',
+  });
+
+  assert.equal(
+    canSeedReviewPropagationFromTransaction(account, transaction),
+    true,
+  );
+});
+
+test("review propagation still rejects unresolved investment transactions without a mapped security", () => {
+  const account = createAccount({
+    id: "broker-propagation-unmapped",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const transaction = createTransaction({
+    id: "propagation-unmapped",
+    accountId: account.id,
+    transactionClass: "investment_trade_buy",
+    securityId: null,
+    needsReview: true,
+    reviewReason:
+      'Security mapping unresolved after analyzer web search for "VANGUARD US 500 STOCK INDEX EU".',
+  });
+
+  assert.equal(
+    canSeedReviewPropagationFromTransaction(account, transaction),
+    false,
+  );
+});
+
+test("review propagation user context includes resolved instrument evidence from the source transaction", () => {
+  const transaction = createTransaction({
+    id: "propagation-source-context",
+    accountId: "broker-1",
+    transactionClass: "investment_trade_buy",
+    descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+    descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+    securityId: "security-vanguard-fund",
+    needsReview: true,
+    reviewReason:
+      'Mapped to IE0032126645, but no reliable historical fund price was available to derive quantity for "VANGUARD US 500 STOCK INDEX EU".',
+    llmPayload: {
+      llm: {
+        rawOutput: {
+          resolved_instrument_name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+          resolved_instrument_isin: "IE0032126645",
+          current_price: 69.39,
+          current_price_currency: "EUR",
+          current_price_timestamp: "2026-04-02T00:00:00Z",
+          current_price_source: "Vanguard official fund page",
+          current_price_type: "NAV",
+        },
+      },
+    },
+  });
+
+  const reviewContext = buildReviewPropagationUserContext(transaction);
+
+  assert.match(reviewContext, /manually re-reviewed/i);
+  assert.match(reviewContext, /VANGUARD US 500 STOCK INDEX EU/);
+  assert.match(reviewContext, /security-vanguard-fund/);
+  assert.match(reviewContext, /IE0032126645/);
+  assert.match(reviewContext, /69\.39 EUR/);
+  assert.match(reviewContext, /NAV/);
 });
 
 test("investment parser recognizes named fund purchases even without explicit quantity", () => {
@@ -1685,6 +1769,119 @@ test("exact ISIN from a manual re-review can remap a mismatched ETF security", a
   }
 });
 
+test("manual review ISIN fallback resolves web-mapped fund security even when structured instrument fields are sparse", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const searchQueries: string[] = [];
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+    if (url.pathname.endsWith("/symbol_search")) {
+      searchQueries.push(url.searchParams.get("symbol") ?? "");
+    }
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-review-isin-fallback",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "review-isin-fallback-vanguard",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-24",
+      postedDate: "2026-03-24",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.94",
+      securityId: null,
+      manualNotes:
+        "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+      needsReview: true,
+      reviewReason:
+        'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+      llmPayload: {
+        llm: {
+          rawOutput: {
+            resolved_instrument_name: null,
+            resolved_instrument_isin: null,
+            resolved_instrument_ticker: null,
+            resolved_instrument_exchange: null,
+            current_price: null,
+            current_price_currency: null,
+            current_price_timestamp: null,
+            current_price_source: null,
+            current_price_type: null,
+            explanation:
+              "The ISIN uniquely identifies the Vanguard U.S. 500 Stock Index Fund EUR Acc, and Vanguard published a EUR NAV for it.",
+            reason:
+              "Exact ISIN match; NAV retrieved from Vanguard official fund page.",
+            transaction_class: "investment_trade_buy",
+            category_code: "stock_buy",
+            merchant_normalized: null,
+            counterparty_name: null,
+            economic_entity_override: null,
+            security_hint: "VANGUARD US 500 STOCK INDEX EU",
+            confidence: 0.94,
+          },
+        },
+        reviewContext: {
+          trigger: "manual_review_update",
+          userProvidedContext:
+            "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+        },
+      },
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+
+    assert.equal(rebuilt.insertedSecurities[0]?.providerName, "llm_web_search");
+    assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "IE0032126645");
+    assert.equal(rebuilt.insertedSecurities[0]?.isin, "IE0032126645");
+    assert.equal(
+      rebuilt.transactionPatches[0]?.securityId,
+      rebuilt.insertedSecurities[0]?.id,
+    );
+    assert.match(
+      rebuilt.transactionPatches[0]?.reviewReason ?? "",
+      /historical fund price/i,
+    );
+    assert.equal(searchQueries.length, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
 test("successful confident LLM classifications clear fallback review state", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
@@ -2194,6 +2391,14 @@ test("investment review includes portfolio state and can override commission-lik
     assert.match(
       capturedSystemPrompt,
       /If any exact identifier such as ISIN, CUSIP, or SEDOL appears anywhere in the transaction, prior analysis, or user review context, search that identifier directly first/,
+    );
+    assert.match(
+      capturedSystemPrompt,
+      /When you have an exact or near-exact resolution, populate the structured fields explicitly instead of leaving them only in explanation or reason\./,
+    );
+    assert.match(
+      capturedSystemPrompt,
+      /For mutual funds and non-exchange-traded index funds, use an explicit two-step workflow: first resolve identity, then retrieve NAV\./,
     );
     assert.match(capturedUserPrompt, /Portfolio state:/);
     assert.match(capturedUserPrompt, /Similar same-account resolved history:/);

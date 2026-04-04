@@ -20,6 +20,48 @@ import {
   getInvestmentsModel,
 } from "../../lib/queries";
 
+function splitIsoDate(value: string) {
+  const [year, month, day] = value.split("-");
+  return {
+    top: year ? `${year}-` : value,
+    bottom: month && day ? `${month}-${day}` : "",
+  };
+}
+
+function readOptionalRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function getTransactionSecurityLabel(
+  model: Awaited<ReturnType<typeof getInvestmentsModel>>,
+  row: (typeof model.processedRows)[number] | (typeof model.unresolved)[number],
+) {
+  const security = model.dataset.securities.find(
+    (candidate) => candidate.id === row.securityId,
+  );
+  if (security?.displaySymbol) {
+    return security.displaySymbol;
+  }
+  if (security?.isin) {
+    return security.isin;
+  }
+
+  const llmPayload = readOptionalRecord(row.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+  return (
+    readOptionalString(rawOutput?.resolved_instrument_isin) ??
+    readOptionalString(rawOutput?.resolved_instrument_ticker) ??
+    "—"
+  );
+}
+
 export default async function InvestmentsPage({
   searchParams,
 }: {
@@ -104,6 +146,10 @@ export default async function InvestmentsPage({
       },
       {},
     )}&page=${page}`;
+  const processedLedgerColumns =
+    "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)";
+  const unresolvedLedgerColumns =
+    "100px 240px 160px 110px minmax(320px, 1fr)";
 
   return (
     <AppShell
@@ -255,13 +301,21 @@ export default async function InvestmentsPage({
           })}
         />
 
-        <SectionCard
-          title="Processed Investment Transactions"
-          subtitle={`${totalProcessedRows} resolved rows`}
-          span="span-8"
-          actions={
-            totalPages > 1 ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <section className="section-card span-12 investment-review-section">
+          <div className="investment-review-header">
+            <div>
+              <span className="investment-review-kicker">
+                {totalProcessedRows} resolved rows
+              </span>
+              <h2 className="investment-review-title">
+                Processed Investment Transactions
+              </h2>
+            </div>
+            {totalPages > 1 ? (
+              <div className="investment-review-pagination">
+                <span className="investment-review-page-pill">
+                  Page {safePage} of {totalPages}
+                </span>
                 {safePage > 1 ? (
                   <a
                     className="btn-ghost"
@@ -270,9 +324,6 @@ export default async function InvestmentsPage({
                     Previous
                   </a>
                 ) : null}
-                <span className="pill">
-                  Page {safePage} of {totalPages}
-                </span>
                 {safePage < totalPages ? (
                   <a
                     className="btn-ghost"
@@ -282,45 +333,72 @@ export default async function InvestmentsPage({
                   </a>
                 ) : null}
               </div>
-            ) : null
-          }
-        >
+            ) : null}
+          </div>
           {processedRows.length === 0 ? (
             <div className="table-empty-state">
               No processed investment transactions are available for this scope.
             </div>
           ) : (
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    {[
-                      "Date",
-                      "Description",
-                      "Class",
-                      "Qty",
-                      "Security",
-                      "Amount",
-                      "Review",
-                    ].map((header) => (
-                      <th key={header}>{header}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {processedRows.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.transactionDate}</td>
-                      <td>{row.descriptionRaw}</td>
-                      <td>{row.transactionClass}</td>
-                      <td>{formatQuantity(row.quantity)}</td>
-                      <td>
-                        {model.dataset.securities.find(
-                          (security) => security.id === row.securityId,
-                        )?.displaySymbol ?? "—"}
-                      </td>
-                      <td>{formatDisplayAmount(row.amountBaseEur)}</td>
-                      <td>
+            <div className="investment-review-scroll">
+              <div className="investment-review-table">
+                <div
+                  className="investment-review-grid-head"
+                  style={{ gridTemplateColumns: processedLedgerColumns }}
+                >
+                  {[
+                    "Date",
+                    "Description",
+                    "Class",
+                    "Qty",
+                    "Security",
+                    "Amount",
+                    "Review",
+                  ].map((header, index) => (
+                    <div
+                      className={
+                        index === 3
+                          ? "investment-review-head-cell centered"
+                          : index === 5
+                            ? "investment-review-head-cell amount"
+                            : "investment-review-head-cell"
+                      }
+                      key={header}
+                    >
+                      {header}
+                    </div>
+                  ))}
+                </div>
+                {processedRows.map((row) => {
+                  const dateParts = splitIsoDate(row.transactionDate);
+                  const securityLabel = getTransactionSecurityLabel(model, row);
+
+                  return (
+                    <div
+                      className="investment-review-grid-row"
+                      key={row.id}
+                      style={{ gridTemplateColumns: processedLedgerColumns }}
+                    >
+                      <div className="investment-review-date">
+                        <span>{dateParts.top}</span>
+                        {dateParts.bottom ? <span>{dateParts.bottom}</span> : null}
+                      </div>
+                      <div className="investment-review-description">
+                        {row.descriptionRaw}
+                      </div>
+                      <div className="investment-review-copy">
+                        {row.transactionClass}
+                      </div>
+                      <div className="investment-review-copy centered">
+                        {formatQuantity(row.quantity)}
+                      </div>
+                      <div className="investment-review-copy breakable">
+                        {securityLabel}
+                      </div>
+                      <div className="investment-review-copy amount">
+                        {formatDisplayAmount(row.amountBaseEur)}
+                      </div>
+                      <div className="investment-review-panel">
                         <ReviewEditorCell
                           transactionId={row.id}
                           needsReview={row.needsReview}
@@ -328,56 +406,78 @@ export default async function InvestmentsPage({
                           manualNotes={row.manualNotes}
                           transactionClass={row.transactionClass}
                           classificationSource={row.classificationSource}
-                          securitySymbol={
-                            model.dataset.securities.find(
-                              (security) => security.id === row.securityId,
-                            )?.displaySymbol ?? null
-                          }
+                          securitySymbol={securityLabel === "—" ? null : securityLabel}
                           quantity={row.quantity}
                           llmPayload={row.llmPayload}
                         />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
-        </SectionCard>
+        </section>
 
-        <SectionCard
-          title="Unresolved Investment Events"
-          subtitle="Review queue"
-          span="span-4"
-        >
+        <section className="section-card span-12 investment-review-section">
+          <div className="investment-review-header">
+            <div>
+              <span className="investment-review-kicker">Review queue</span>
+              <h2 className="investment-review-title">
+                Unresolved Investment Events
+              </h2>
+            </div>
+          </div>
           {model.unresolved.length === 0 ? (
             <div className="table-empty-state">
               No unresolved investment transactions are waiting for review.
             </div>
           ) : (
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    {["Date", "Description", "Security", "Amount", "Review"].map(
-                      (header) => (
-                        <th key={header}>{header}</th>
-                      ),
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {model.unresolved.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.transactionDate}</td>
-                      <td>{row.descriptionRaw}</td>
-                      <td>
-                        {model.dataset.securities.find(
-                          (security) => security.id === row.securityId,
-                        )?.displaySymbol ?? "—"}
-                      </td>
-                      <td>{formatDisplayAmount(row.amountBaseEur)}</td>
-                      <td>
+            <div className="investment-review-scroll">
+              <div className="investment-review-table">
+                <div
+                  className="investment-review-grid-head"
+                  style={{ gridTemplateColumns: unresolvedLedgerColumns }}
+                >
+                  {["Date", "Description", "Security", "Amount", "Review"].map(
+                    (header, index) => (
+                      <div
+                        className={
+                          index === 3
+                            ? "investment-review-head-cell amount"
+                            : "investment-review-head-cell"
+                        }
+                        key={header}
+                      >
+                        {header}
+                      </div>
+                    ),
+                  )}
+                </div>
+                {model.unresolved.map((row) => {
+                  const dateParts = splitIsoDate(row.transactionDate);
+                  const securityLabel = getTransactionSecurityLabel(model, row);
+
+                  return (
+                    <div
+                      className="investment-review-grid-row"
+                      key={row.id}
+                      style={{ gridTemplateColumns: unresolvedLedgerColumns }}
+                    >
+                      <div className="investment-review-date">
+                        <span>{dateParts.top}</span>
+                        {dateParts.bottom ? <span>{dateParts.bottom}</span> : null}
+                      </div>
+                      <div className="investment-review-description">
+                        {row.descriptionRaw}
+                      </div>
+                      <div className="investment-review-copy breakable">
+                        {securityLabel}
+                      </div>
+                      <div className="investment-review-copy amount">
+                        {formatDisplayAmount(row.amountBaseEur)}
+                      </div>
+                      <div className="investment-review-panel">
                         <ReviewEditorCell
                           transactionId={row.id}
                           needsReview={row.needsReview}
@@ -385,22 +485,18 @@ export default async function InvestmentsPage({
                           manualNotes={row.manualNotes}
                           transactionClass={row.transactionClass}
                           classificationSource={row.classificationSource}
-                          securitySymbol={
-                            model.dataset.securities.find(
-                              (security) => security.id === row.securityId,
-                            )?.displaySymbol ?? null
-                          }
+                          securitySymbol={securityLabel === "—" ? null : securityLabel}
                           quantity={row.quantity}
                           llmPayload={row.llmPayload}
                         />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
-        </SectionCard>
+        </section>
       </div>
     </AppShell>
   );

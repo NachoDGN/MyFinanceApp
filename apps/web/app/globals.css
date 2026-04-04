@@ -935,6 +935,133 @@ textarea {
   font-size: 14px;
 }
 
+.investment-review-section {
+  padding: 32px;
+  border-radius: 28px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.04);
+}
+
+.investment-review-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+}
+
+.investment-review-kicker {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.investment-review-title {
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.investment-review-pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.investment-review-page-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--color-text-main);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.investment-review-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.investment-review-table {
+  min-width: 100%;
+}
+
+.investment-review-grid-head,
+.investment-review-grid-row {
+  display: grid;
+  gap: 16px;
+}
+
+.investment-review-grid-head {
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.investment-review-grid-row {
+  padding: 24px 0;
+  align-items: flex-start;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.investment-review-table > .investment-review-grid-row:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.investment-review-head-cell {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.investment-review-head-cell.centered,
+.investment-review-copy.centered {
+  text-align: center;
+}
+
+.investment-review-head-cell.amount,
+.investment-review-copy.amount {
+  text-align: right;
+}
+
+.investment-review-date {
+  display: grid;
+  gap: 2px;
+  padding-top: 2px;
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--color-text-main);
+}
+
+.investment-review-description,
+.investment-review-copy {
+  min-width: 0;
+  padding-top: 2px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-text-main);
+  overflow-wrap: anywhere;
+}
+
+.investment-review-copy.breakable {
+  overflow-wrap: anywhere;
+}
+
+.investment-review-panel {
+  min-width: 0;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -1199,6 +1326,11 @@ textarea {
   .mapping-row {
     grid-template-columns: 1fr;
   }
+
+  .investment-review-grid-head,
+  .investment-review-grid-row {
+    min-width: 980px;
+  }
 }
 
 @media (max-width: 768px) {
@@ -1231,6 +1363,10 @@ textarea {
   .table-card,
   .banner-card,
   .details-section {
+    padding: 24px;
+  }
+
+  .investment-review-section {
     padding: 24px;
   }
 
@@ -1269,6 +1405,10 @@ textarea {
   .investment-allocation-layout {
     min-height: auto;
     gap: 28px;
+  }
+
+  .investment-review-pagination {
+    width: 100%;
   }
 
   .investment-allocation-name,

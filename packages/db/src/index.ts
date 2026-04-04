@@ -355,6 +355,92 @@ function serializeJson(sql: SqlClient, value: unknown) {
   return sql.json((value ?? {}) as Parameters<SqlClient["json"]>[0]);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readOptionalRecord(value: unknown) {
+  return isRecord(value) ? value : null;
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function readOptionalNumberAsString(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+}
+
+function readTransactionRawOutput(
+  transaction: Transaction,
+): Record<string, unknown> | null {
+  const llmPayload = readOptionalRecord(transaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  return readOptionalRecord(llmNode?.rawOutput);
+}
+
+export function canSeedReviewPropagationFromTransaction(
+  account: { assetDomain: "cash" | "investment" },
+  transaction: Pick<Transaction, "transactionClass" | "needsReview" | "securityId" | "voidedAt">,
+) {
+  if (transaction.voidedAt || transaction.transactionClass === "unknown") {
+    return false;
+  }
+
+  if (!transaction.needsReview) {
+    return true;
+  }
+
+  return account.assetDomain === "investment" && Boolean(transaction.securityId);
+}
+
+export function buildReviewPropagationUserContext(sourceTransaction: Transaction) {
+  const rawOutput = readTransactionRawOutput(sourceTransaction);
+  const instrumentName = readOptionalString(rawOutput?.resolved_instrument_name);
+  const instrumentIsin = readOptionalString(rawOutput?.resolved_instrument_isin);
+  const instrumentTicker = readOptionalString(rawOutput?.resolved_instrument_ticker);
+  const instrumentExchange = readOptionalString(
+    rawOutput?.resolved_instrument_exchange,
+  );
+  const currentPrice =
+    readOptionalNumberAsString(rawOutput?.current_price) ??
+    readOptionalString(rawOutput?.current_price);
+  const currentPriceCurrency = readOptionalString(rawOutput?.current_price_currency);
+  const currentPriceTimestamp = readOptionalString(
+    rawOutput?.current_price_timestamp,
+  );
+  const currentPriceSource = readOptionalString(rawOutput?.current_price_source);
+  const currentPriceType = readOptionalString(rawOutput?.current_price_type);
+
+  return [
+    "A similar unresolved transaction from this same account was manually re-reviewed and should be used as supporting precedent when the evidence matches.",
+    `Source transaction description: ${sourceTransaction.descriptionRaw}.`,
+    `Source applied class: ${sourceTransaction.transactionClass}.`,
+    sourceTransaction.securityId
+      ? `Source mapped security id: ${sourceTransaction.securityId}.`
+      : null,
+    instrumentName ? `Resolved instrument name: ${instrumentName}.` : null,
+    instrumentIsin ? `Resolved instrument ISIN: ${instrumentIsin}.` : null,
+    instrumentTicker
+      ? `Resolved instrument ticker: ${instrumentTicker}${
+          instrumentExchange ? ` on ${instrumentExchange}` : ""
+        }.`
+      : null,
+    currentPrice
+      ? `Resolved current ${currentPriceType ?? "price"}: ${currentPrice}${
+          currentPriceCurrency ? ` ${currentPriceCurrency}` : ""
+        }${currentPriceTimestamp ? ` as of ${currentPriceTimestamp}` : ""}${
+          currentPriceSource ? ` from ${currentPriceSource}` : ""
+        }.`
+      : null,
+    sourceTransaction.reviewReason
+      ? `The source transaction may still need review for this remaining reason: ${sourceTransaction.reviewReason}.`
+      : null,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
 async function queueJob(
   sql: SqlClient,
   jobType: string,
@@ -517,10 +603,7 @@ async function processReviewPropagationJob(
     );
   }
 
-  if (
-    sourceTransaction.needsReview ||
-    sourceTransaction.transactionClass === "unknown"
-  ) {
+  if (!canSeedReviewPropagationFromTransaction(account, sourceTransaction)) {
     return {
       sourceTransactionId,
       accountId: account.id,
@@ -573,6 +656,9 @@ async function processReviewPropagationJob(
           reviewContext: {
             previousReviewReason: currentCandidate.reviewReason ?? null,
             previousUserContext: currentCandidate.manualNotes ?? null,
+            userProvidedContext: buildReviewPropagationUserContext(
+              sourceTransaction,
+            ),
             previousLlmPayload:
               currentCandidate.llmPayload &&
               typeof currentCandidate.llmPayload === "object"
@@ -582,7 +668,11 @@ async function processReviewPropagationJob(
         },
       );
 
-      if (decision.needsReview || decision.transactionClass === "unknown") {
+      const shouldPersistDecision =
+        decision.transactionClass !== "unknown" &&
+        (!decision.needsReview || account.assetDomain === "investment");
+
+      if (!shouldPersistDecision) {
         skippedCount += 1;
         continue;
       }
@@ -1163,8 +1253,7 @@ export async function reanalyzeTransactionReview(
     `;
     if (
       wasPendingReview &&
-      !afterTransaction.needsReview &&
-      afterTransaction.transactionClass !== "unknown"
+      canSeedReviewPropagationFromTransaction(account, afterTransaction)
     ) {
       const reviewPropagationPayload = {
         sourceTransactionId: afterTransaction.id,
