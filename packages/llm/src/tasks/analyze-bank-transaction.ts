@@ -70,6 +70,40 @@ export interface AnalyzeBankTransactionInput {
     explanation: string;
     source: string;
   };
+  portfolioState?: {
+    scope: "account";
+    asOfDate: string;
+    holdings: Array<{
+      securityId: string;
+      symbol: string;
+      securityName: string;
+      quantity: string;
+      currentPrice: string | null;
+      currentPriceCurrency: string | null;
+      currentValueEur: string | null;
+      quoteTimestamp: string | null;
+      quoteFreshness: "fresh" | "delayed" | "stale" | "missing";
+    }>;
+    matchedHolding: {
+      securityId: string;
+      symbol: string;
+      securityName: string;
+      quantity: string;
+      currentPrice: string | null;
+      currentPriceCurrency: string | null;
+      currentValueEur: string | null;
+      quoteTimestamp: string | null;
+      quoteFreshness: "fresh" | "delayed" | "stale" | "missing";
+    } | null;
+    priceSanityCheck: {
+      impliedUnitPrice: string | null;
+      impliedUnitPriceCurrency: string;
+      latestHoldingPrice: string | null;
+      latestHoldingPriceCurrency: string | null;
+      latestHoldingQuoteTimestamp: string | null;
+      priceDeltaPercent: string | null;
+    } | null;
+  };
 }
 
 export type TransactionAnalysisOutput = z.infer<
@@ -99,6 +133,12 @@ function buildSystemPrompt(assetDomain: "cash" | "investment") {
           "Use security_hint for the best normalized issuer or fund name visible in the description.",
           "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
           "Never invent security ids or ticker symbols.",
+          "Use the latest portfolio snapshot when provided to sanity-check whether the row can realistically be a buy, sell, or fee.",
+          "Broker commissions can mention a security name and quantity without being a real disposal.",
+          "If a positive row implies a per-share price that is far below the latest quote for a still-held security, classify it as fee instead of investment_trade_sell unless the row clearly states a real sale.",
+          "You are a financial instrument identification expert. When you receive a partial asset name or description, do not provide a single best-guess ISIN or ticker unless the identification is totally clear.",
+          "First decompose the instrument into issuer, benchmark index, and geographic region. Then identify the plausible vehicles, explicitly distinguishing ETFs from mutual funds.",
+          "For each plausible vehicle, call out the variables that change the ISIN, including dividend treatment, legal domicile, and share class. If the description is still ambiguous, explain exactly what information is missing instead of making assumptions.",
         ].join(" ")
       : "Never invent merchants, counterparties, or categories.",
   ].join(" ");
@@ -128,6 +168,7 @@ function buildUserPrompt(input: AnalyzeBankTransactionInput) {
       : "For cash accounts, do not use investment classes unless the transaction data explicitly supports them.",
     `Current raw payload: ${JSON.stringify(input.transaction.rawPayload)}.`,
     `Deterministic hint: ${JSON.stringify(input.deterministicHint)}.`,
+    `Portfolio state: ${JSON.stringify(input.portfolioState ?? null)}.`,
   ].join("\n");
 }
 

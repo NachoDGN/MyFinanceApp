@@ -37,6 +37,8 @@ type ResolvedTransactionPatch = {
   reviewReason?: string | null;
 };
 
+const MAX_HISTORICAL_PRICE_DRIFT_DAYS = 7;
+
 export type InvestmentRebuildArtifacts = {
   transactions: Transaction[];
   transactionPatches: ResolvedTransactionPatch[];
@@ -52,6 +54,52 @@ function normalizeSecurityText(value: string | null | undefined) {
     .trim()
     .replace(/\s+/g, " ")
     .toUpperCase();
+}
+
+function hasNonEmptyPayload(value: unknown): value is Record<string, unknown> {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length > 0
+  );
+}
+
+function isPlaceholderSecurityPrice(price: SecurityPrice) {
+  return price.sourceName === "twelve_data" && !hasNonEmptyPayload(price.rawJson);
+}
+
+function isTwelveDataDebugEnabled() {
+  return /^(1|true|yes)$/i.test(process.env.TWELVE_DATA_DEBUG ?? "");
+}
+
+function redactApiKey(url: URL) {
+  const copy = new URL(url);
+  if (copy.searchParams.has("apikey")) {
+    copy.searchParams.set("apikey", "***REDACTED***");
+  }
+  return copy.toString();
+}
+
+function logTwelveDataDebug(event: string, details: Record<string, unknown>) {
+  if (!isTwelveDataDebugEnabled()) return;
+  console.log(`[twelve-data] ${JSON.stringify({ event, ...details })}`);
+}
+
+function dayDistance(start: string, end: string) {
+  return Math.max(
+    0,
+    Math.floor(
+      (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) /
+        86400000,
+    ),
+  );
+}
+
+function shiftIsoDate(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function securityHintFromTransaction(transaction: Transaction) {
@@ -348,6 +396,13 @@ function isWeekendIso(value: string) {
   return day === 0 || day === 6;
 }
 
+function expectedLatestQuoteDate(referenceDate: string) {
+  const day = new Date(`${referenceDate}T00:00:00Z`).getUTCDay();
+  if (day === 6) return shiftIsoDate(referenceDate, -1);
+  if (day === 0) return shiftIsoDate(referenceDate, -2);
+  return referenceDate;
+}
+
 async function fetchSearchCandidates(query: string, apiKey: string) {
   const url = new URL("https://api.twelvedata.com/symbol_search");
   url.searchParams.set("symbol", query);
@@ -393,19 +448,38 @@ async function fetchHistoricalPrice(
   url.searchParams.set("outputsize", "1");
   url.searchParams.set("apikey", apiKey);
 
+  logTwelveDataDebug("historical.request", {
+    symbol: security.providerSymbol,
+    transactionDate,
+    url: redactApiKey(url),
+  });
   const response = await fetch(url);
-  if (!response.ok) {
+  const payload = (await response.json()) as
+    | {
+        values?: Array<{ datetime: string; close: string }>;
+        status?: string;
+        message?: string;
+        code?: number;
+      }
+    | string;
+  logTwelveDataDebug("historical.response", {
+    symbol: security.providerSymbol,
+    transactionDate,
+    status: response.status,
+    ok: response.ok,
+    body: payload,
+  });
+  if (!response.ok || typeof payload === "string") {
     return null;
   }
-
-  const payload = (await response.json()) as {
-    values?: Array<{ datetime: string; close: string }>;
-    status?: string;
-    message?: string;
-    code?: number;
-  };
   const value = payload.values?.[0];
   if (!value?.close || !value.datetime) {
+    return null;
+  }
+  if (
+    dayDistance(value.datetime.slice(0, 10), transactionDate) >
+    MAX_HISTORICAL_PRICE_DRIFT_DAYS
+  ) {
     return null;
   }
 
@@ -436,12 +510,23 @@ async function fetchLatestPrice(
     url.searchParams.set("eod", "true");
   }
 
+  logTwelveDataDebug("quote.request", {
+    symbol: security.providerSymbol,
+    referenceDate,
+    url: redactApiKey(url),
+  });
   const response = await fetch(url);
-  if (!response.ok) {
+  const payload = (await response.json()) as Record<string, unknown> | string;
+  logTwelveDataDebug("quote.response", {
+    symbol: security.providerSymbol,
+    referenceDate,
+    status: response.status,
+    ok: response.ok,
+    body: payload,
+  });
+  if (!response.ok || typeof payload === "string") {
     return null;
   }
-
-  const payload = (await response.json()) as Record<string, unknown>;
   const price = readPayloadString(payload, ["close", "price"]);
   if (!price) {
     return null;
@@ -744,11 +829,36 @@ function findStoredHistoricalPrice(
     [...dataset.securityPrices]
       .filter(
         (price) =>
-          price.securityId === securityId && price.priceDate <= transactionDate,
+          price.securityId === securityId &&
+          price.priceDate <= transactionDate &&
+          dayDistance(price.priceDate, transactionDate) <=
+            MAX_HISTORICAL_PRICE_DRIFT_DAYS,
       )
       .sort((left, right) =>
         `${right.priceDate}${right.createdAt}`.localeCompare(
           `${left.priceDate}${left.createdAt}`,
+        ),
+      )[0] ?? null
+  );
+}
+
+function findRecentStoredQuote(
+  dataset: DomainDataset,
+  securityId: string,
+  referenceDate: string,
+) {
+  const targetDate = expectedLatestQuoteDate(referenceDate);
+  return (
+    [...dataset.securityPrices]
+      .filter(
+        (price) =>
+          price.securityId === securityId &&
+          price.priceDate === targetDate &&
+          !isPlaceholderSecurityPrice(price),
+      )
+      .sort((left, right) =>
+        `${right.priceDate}${right.quoteTimestamp}`.localeCompare(
+          `${left.priceDate}${left.quoteTimestamp}`,
         ),
       )[0] ?? null
   );
@@ -844,21 +954,52 @@ export async function prepareInvestmentRebuild(
   const insertedSecurities: Security[] = [];
   const insertedAliases: SecurityAlias[] = [];
   const upsertedPrices: SecurityPrice[] = [];
+  const upsertedPriceIndexes = new Map<string, number>();
   const historicalPriceCache = new Map<string, SecurityPrice | null>();
   const latestPriceCache = new Map<string, SecurityPrice | null>();
-  const trackedPriceKeys = new Set(
-    workingDataset.securityPrices.map(
-      (price) => `${price.securityId}:${price.priceDate}:${price.sourceName}`,
-    ),
-  );
+
+  const sameRecordedPrice = (left: SecurityPrice, right: SecurityPrice) =>
+    left.quoteTimestamp === right.quoteTimestamp &&
+    left.price === right.price &&
+    left.currency === right.currency &&
+    left.isRealtime === right.isRealtime &&
+    left.isDelayed === right.isDelayed &&
+    left.marketState === right.marketState &&
+    JSON.stringify(left.rawJson) === JSON.stringify(right.rawJson);
 
   const recordPrice = (price: SecurityPrice | null) => {
     if (!price) return;
 
     const priceKey = `${price.securityId}:${price.priceDate}:${price.sourceName}`;
-    if (!trackedPriceKeys.has(priceKey)) {
-      upsertedPrices.push(price);
-      trackedPriceKeys.add(priceKey);
+    const existingStoredPrice =
+      workingDataset.securityPrices.find(
+        (row) =>
+          row.securityId === price.securityId &&
+          row.priceDate === price.priceDate &&
+          row.sourceName === price.sourceName,
+      ) ?? null;
+    const needsPersist =
+      !existingStoredPrice || !sameRecordedPrice(existingStoredPrice, price);
+    if (needsPersist) {
+      const existingUpsertIndex = upsertedPriceIndexes.get(priceKey);
+      if (existingUpsertIndex === undefined) {
+        upsertedPriceIndexes.set(priceKey, upsertedPrices.length);
+        upsertedPrices.push(price);
+      } else {
+        upsertedPrices[existingUpsertIndex] = price;
+      }
+    }
+    if (!existingStoredPrice || !sameRecordedPrice(existingStoredPrice, price)) {
+      logTwelveDataDebug("price.recorded", {
+        symbol:
+          workingDataset.securities.find(
+            (security) => security.id === price.securityId,
+          )?.providerSymbol ?? price.securityId,
+        priceDate: price.priceDate,
+        quoteTimestamp: price.quoteTimestamp,
+        price: price.price,
+        currency: price.currency,
+      });
     }
     workingDataset.securityPrices = [
       ...workingDataset.securityPrices.filter(
@@ -882,6 +1023,16 @@ export async function prepareInvestmentRebuild(
       return historicalPriceCache.get(cacheKey) ?? null;
     }
 
+    const storedPrice = findStoredHistoricalPrice(
+      workingDataset,
+      security.id,
+      transactionDate,
+    );
+    if (storedPrice) {
+      historicalPriceCache.set(cacheKey, storedPrice);
+      return storedPrice;
+    }
+
     if (apiKey) {
       const fetchedPrice = await fetchHistoricalPrice(
         security,
@@ -894,19 +1045,24 @@ export async function prepareInvestmentRebuild(
       }
     }
 
-    const storedPrice = findStoredHistoricalPrice(
-      workingDataset,
-      security.id,
-      transactionDate,
-    );
-    historicalPriceCache.set(cacheKey, storedPrice);
-    return storedPrice;
+    historicalPriceCache.set(cacheKey, null);
+    return null;
   };
 
   const loadLatestPrice = async (security: Security) => {
     const cacheKey = security.id;
     if (latestPriceCache.has(cacheKey)) {
       return latestPriceCache.get(cacheKey) ?? null;
+    }
+
+    const recentStoredPrice = findRecentStoredQuote(
+      workingDataset,
+      security.id,
+      referenceDate,
+    );
+    if (recentStoredPrice) {
+      latestPriceCache.set(cacheKey, recentStoredPrice);
+      return recentStoredPrice;
     }
 
     const price = apiKey
