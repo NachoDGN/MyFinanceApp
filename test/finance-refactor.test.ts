@@ -1624,6 +1624,62 @@ test("investment review includes portfolio state and can override commission-lik
     const baseCategories = createDataset().categories;
     const dataset = createDataset({
       accounts: [account],
+      auditEvents: [
+        {
+          id: "audit-interest-example",
+          actorType: "user",
+          actorId: "user-1",
+          actorName: "web-review-editor",
+          sourceChannel: "web",
+          commandName: "transactions.review_reanalyze",
+          objectType: "transaction",
+          objectId: "interest-example-tx",
+          beforeJson: {
+            accountId: account.id,
+            transactionDate: "2026-03-20",
+            postedDate: "2026-03-20",
+            amountOriginal: "0.14",
+            currencyOriginal: "EUR",
+            descriptionRaw: "PERIODO 19/02/2026 19/03/2026",
+            merchantNormalized: null,
+            counterpartyName: null,
+            securityId: null,
+            quantity: null,
+            unitPriceOriginal: null,
+            transactionClass: "unknown",
+            categoryCode: "uncategorized_investment",
+            classificationSource: "llm",
+            classificationStatus: "llm",
+            classificationConfidence: "0.51",
+            needsReview: true,
+            reviewReason: "Needs user confirmation.",
+            llmPayload: {
+              model: "gpt-4.1-mini",
+              explanation: "No deterministic classifier matched the imported row.",
+              reason: "The row might be interest, but the context is thin.",
+            },
+          },
+          afterJson: {
+            accountId: account.id,
+            transactionClass: "interest",
+            categoryCode: "uncategorized_investment",
+            merchantNormalized: "MyInvestor",
+            counterpartyName: "MyInvestor",
+            quantity: null,
+            unitPriceOriginal: null,
+            reviewReason: null,
+            manualNotes: "This is, in fact, earned interest.",
+            llmPayload: {
+              reviewContext: {
+                userProvidedContext: "This is, in fact, earned interest.",
+              },
+            },
+          },
+          createdAt: "2026-03-21T09:00:00Z",
+          notes:
+            "Re-ran LLM classification for a single transaction with manual review context.",
+        },
+      ],
       categories: [
         ...baseCategories,
         {
@@ -1719,6 +1775,26 @@ test("investment review includes portfolio state and can override commission-lik
     assert.match(capturedUserPrompt, /"quantity":"45\.00000000"/);
     assert.match(capturedUserPrompt, /"impliedUnitPrice":"0\.13"/);
     assert.match(capturedUserPrompt, /"latestHoldingPrice":"215\.40"/);
+    assert.match(
+      capturedUserPrompt,
+      /Examples from prior user corrections:/,
+    );
+    assert.match(
+      capturedUserPrompt,
+      /Example 1 transaction metadata: .*"descriptionRaw":"PERIODO 19\/02\/2026 19\/03\/2026"/,
+    );
+    assert.match(
+      capturedUserPrompt,
+      /Example 1 initial inference: .*"transactionClass":"unknown".*"model":"gpt-4\.1-mini"/,
+    );
+    assert.match(
+      capturedUserPrompt,
+      /Example 1 user feedback: This is, in fact, earned interest\./,
+    );
+    assert.match(
+      capturedUserPrompt,
+      /Example 1 corrected outcome: .*"transactionClass":"interest"/,
+    );
     assert.match(capturedUserPrompt, /Review trigger: manual_review_update/);
     assert.match(
       capturedUserPrompt,
@@ -1738,12 +1814,20 @@ test("investment review includes portfolio state and can override commission-lik
         completedAt?: string | null;
         durationMs?: number | null;
       };
+      reviewExamplesUsed?: Array<{
+        auditEventId?: string | null;
+      }>;
     };
     assert.equal(
       llmPayload.reviewContext?.userProvidedContext,
       "This is a broker commission for GOOG, not a stock sale.",
     );
     assert.equal(llmPayload.reviewContext?.trigger, "manual_review_update");
+    assert.equal(llmPayload.reviewExamplesUsed?.length, 1);
+    assert.equal(
+      llmPayload.reviewExamplesUsed?.[0]?.auditEventId,
+      "audit-interest-example",
+    );
     assert.equal(typeof llmPayload.timing?.requestedAt, "string");
     assert.equal(typeof llmPayload.timing?.completedAt, "string");
     assert.equal(typeof llmPayload.timing?.durationMs, "number");

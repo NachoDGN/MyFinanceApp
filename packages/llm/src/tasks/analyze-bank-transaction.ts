@@ -111,6 +111,42 @@ export interface AnalyzeBankTransactionInput {
     userProvidedContext?: string | null;
     previousLlmPayload?: unknown;
   };
+  reviewExamples?: Array<{
+    transaction: {
+      transactionDate: string | null;
+      postedDate: string | null;
+      amountOriginal: string | null;
+      currencyOriginal: string | null;
+      descriptionRaw: string | null;
+      merchantNormalized: string | null;
+      counterpartyName: string | null;
+      securityId: string | null;
+      quantity: string | null;
+      unitPriceOriginal: string | null;
+    };
+    initialInference: {
+      transactionClass: string | null;
+      categoryCode: string | null;
+      classificationSource: string | null;
+      classificationStatus: string | null;
+      classificationConfidence: string | null;
+      needsReview: boolean | null;
+      reviewReason: string | null;
+      model: string | null;
+      explanation: string | null;
+      reason: string | null;
+    };
+    userFeedback: string;
+    correctedOutcome: {
+      transactionClass: string | null;
+      categoryCode: string | null;
+      merchantNormalized: string | null;
+      counterpartyName: string | null;
+      quantity: string | null;
+      unitPriceOriginal: string | null;
+      reviewReason: string | null;
+    };
+  }>;
 }
 
 export type TransactionAnalysisOutput = z.infer<
@@ -152,6 +188,18 @@ function buildSystemPrompt(assetDomain: "cash" | "investment") {
 }
 
 function buildUserPrompt(input: AnalyzeBankTransactionInput) {
+  const reviewExamples =
+    input.reviewExamples && input.reviewExamples.length > 0
+      ? [
+          "Examples from prior user corrections:",
+          ...input.reviewExamples.flatMap((example, index) => [
+            `Example ${index + 1} transaction metadata: ${JSON.stringify(example.transaction)}.`,
+            `Example ${index + 1} initial inference: ${JSON.stringify(example.initialInference)}.`,
+            `Example ${index + 1} user feedback: ${example.userFeedback}.`,
+            `Example ${index + 1} corrected outcome: ${JSON.stringify(example.correctedOutcome)}.`,
+          ]),
+        ]
+      : [];
   const reviewContext = input.reviewContext
     ? [
         `Review trigger: ${input.reviewContext.trigger}.`,
@@ -186,6 +234,7 @@ function buildUserPrompt(input: AnalyzeBankTransactionInput) {
     `Current raw payload: ${JSON.stringify(input.transaction.rawPayload)}.`,
     `Deterministic hint: ${JSON.stringify(input.deterministicHint)}.`,
     `Portfolio state: ${JSON.stringify(input.portfolioState ?? null)}.`,
+    ...reviewExamples,
     ...reviewContext,
   ].join("\n");
 }

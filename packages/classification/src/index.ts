@@ -7,6 +7,7 @@ import {
 } from "@myfinance/llm";
 import type {
   Account,
+  AuditEvent,
   ClassificationRule,
   DomainDataset,
   Transaction,
@@ -362,6 +363,11 @@ type LlmClassification = {
   requestedAt: string;
   completedAt: string;
   durationMs: number;
+  reviewExamplesUsed: Array<{
+    auditEventId: string;
+    objectId: string;
+    createdAt: string;
+  }>;
 };
 
 export interface TransactionEnrichmentDecision {
@@ -393,9 +399,293 @@ export interface TransactionEnrichmentOptions {
   reviewContext?: TransactionReviewContextInput;
 }
 
+type HistoricalReviewExample = {
+  auditEventId: string;
+  objectId: string;
+  createdAt: string;
+  accountId: string | null;
+  institutionName: string | null;
+  transaction: {
+    transactionDate: string | null;
+    postedDate: string | null;
+    amountOriginal: string | null;
+    currencyOriginal: string | null;
+    descriptionRaw: string | null;
+    merchantNormalized: string | null;
+    counterpartyName: string | null;
+    securityId: string | null;
+    quantity: string | null;
+    unitPriceOriginal: string | null;
+  };
+  initialInference: {
+    transactionClass: string | null;
+    categoryCode: string | null;
+    classificationSource: string | null;
+    classificationStatus: string | null;
+    classificationConfidence: string | null;
+    needsReview: boolean | null;
+    reviewReason: string | null;
+    model: string | null;
+    explanation: string | null;
+    reason: string | null;
+  };
+  userFeedback: string;
+  correctedOutcome: {
+    transactionClass: string | null;
+    categoryCode: string | null;
+    merchantNormalized: string | null;
+    counterpartyName: string | null;
+    quantity: string | null;
+    unitPriceOriginal: string | null;
+    reviewReason: string | null;
+  };
+};
+
 function normalizeOptionalText(value: string | null | undefined) {
   const text = value?.trim() ?? "";
   return text || null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readOptionalBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readOptionalRecord(value: unknown) {
+  return isRecord(value) ? value : null;
+}
+
+function tokenizePromptText(value: string | null | undefined) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) {
+    return new Set<string>();
+  }
+
+  return new Set(
+    normalizeDescription(normalized)
+      .comparison.split(/[^A-Z0-9]+/)
+      .filter((token) => token.length >= 3),
+  );
+}
+
+function extractHistoricalReviewExample(
+  auditEvent: AuditEvent,
+): HistoricalReviewExample | null {
+  if (auditEvent.commandName !== "transactions.review_reanalyze") {
+    return null;
+  }
+
+  const before = readOptionalRecord(auditEvent.beforeJson);
+  const after = readOptionalRecord(auditEvent.afterJson);
+  if (!before || !after) {
+    return null;
+  }
+
+  const afterLlmPayload = readOptionalRecord(after.llmPayload);
+  const afterReviewContext = readOptionalRecord(afterLlmPayload?.reviewContext);
+  const userFeedback =
+    normalizeOptionalText(
+      typeof afterReviewContext?.userProvidedContext === "string"
+        ? afterReviewContext.userProvidedContext
+        : null,
+    ) ?? normalizeOptionalText(typeof after.manualNotes === "string" ? after.manualNotes : null);
+  if (!userFeedback) {
+    return null;
+  }
+
+  const beforeLlmPayload = readOptionalRecord(before.llmPayload);
+  const beforeLlm = readOptionalRecord(beforeLlmPayload?.llm);
+  const afterAccountId =
+    normalizeOptionalText(typeof after.accountId === "string" ? after.accountId : null) ??
+    normalizeOptionalText(typeof before.accountId === "string" ? before.accountId : null);
+
+  return {
+    auditEventId: auditEvent.id,
+    objectId: auditEvent.objectId,
+    createdAt: auditEvent.createdAt,
+    accountId: afterAccountId,
+    institutionName: normalizeOptionalText(
+      typeof after.counterpartyName === "string" ? after.counterpartyName : null,
+    ),
+    transaction: {
+      transactionDate: normalizeOptionalText(
+        typeof before.transactionDate === "string" ? before.transactionDate : null,
+      ),
+      postedDate: normalizeOptionalText(
+        typeof before.postedDate === "string" ? before.postedDate : null,
+      ),
+      amountOriginal: normalizeOptionalText(
+        typeof before.amountOriginal === "string" ? before.amountOriginal : null,
+      ),
+      currencyOriginal: normalizeOptionalText(
+        typeof before.currencyOriginal === "string" ? before.currencyOriginal : null,
+      ),
+      descriptionRaw: normalizeOptionalText(
+        typeof before.descriptionRaw === "string" ? before.descriptionRaw : null,
+      ),
+      merchantNormalized: normalizeOptionalText(
+        typeof before.merchantNormalized === "string"
+          ? before.merchantNormalized
+          : null,
+      ),
+      counterpartyName: normalizeOptionalText(
+        typeof before.counterpartyName === "string" ? before.counterpartyName : null,
+      ),
+      securityId: normalizeOptionalText(
+        typeof before.securityId === "string" ? before.securityId : null,
+      ),
+      quantity: normalizeOptionalText(
+        typeof before.quantity === "string" ? before.quantity : null,
+      ),
+      unitPriceOriginal: normalizeOptionalText(
+        typeof before.unitPriceOriginal === "string"
+          ? before.unitPriceOriginal
+          : null,
+      ),
+    },
+    initialInference: {
+      transactionClass: normalizeOptionalText(
+        typeof before.transactionClass === "string" ? before.transactionClass : null,
+      ),
+      categoryCode: normalizeOptionalText(
+        typeof before.categoryCode === "string" ? before.categoryCode : null,
+      ),
+      classificationSource: normalizeOptionalText(
+        typeof before.classificationSource === "string"
+          ? before.classificationSource
+          : null,
+      ),
+      classificationStatus: normalizeOptionalText(
+        typeof before.classificationStatus === "string"
+          ? before.classificationStatus
+          : null,
+      ),
+      classificationConfidence: normalizeOptionalText(
+        typeof before.classificationConfidence === "string"
+          ? before.classificationConfidence
+          : null,
+      ),
+      needsReview: readOptionalBoolean(before.needsReview),
+      reviewReason: normalizeOptionalText(
+        typeof before.reviewReason === "string" ? before.reviewReason : null,
+      ),
+      model:
+        normalizeOptionalText(
+          typeof beforeLlm?.model === "string" ? beforeLlm.model : null,
+        ) ??
+        normalizeOptionalText(
+          typeof beforeLlmPayload?.model === "string" ? beforeLlmPayload.model : null,
+        ),
+      explanation:
+        normalizeOptionalText(
+          typeof beforeLlm?.explanation === "string"
+            ? beforeLlm.explanation
+            : null,
+        ) ??
+        normalizeOptionalText(
+          typeof beforeLlmPayload?.explanation === "string"
+            ? beforeLlmPayload.explanation
+            : null,
+        ),
+      reason:
+        normalizeOptionalText(
+          typeof beforeLlm?.reason === "string" ? beforeLlm.reason : null,
+        ) ??
+        normalizeOptionalText(
+          typeof beforeLlmPayload?.reason === "string"
+            ? beforeLlmPayload.reason
+            : null,
+        ),
+    },
+    userFeedback,
+    correctedOutcome: {
+      transactionClass: normalizeOptionalText(
+        typeof after.transactionClass === "string" ? after.transactionClass : null,
+      ),
+      categoryCode: normalizeOptionalText(
+        typeof after.categoryCode === "string" ? after.categoryCode : null,
+      ),
+      merchantNormalized: normalizeOptionalText(
+        typeof after.merchantNormalized === "string"
+          ? after.merchantNormalized
+          : null,
+      ),
+      counterpartyName: normalizeOptionalText(
+        typeof after.counterpartyName === "string" ? after.counterpartyName : null,
+      ),
+      quantity: normalizeOptionalText(
+        typeof after.quantity === "string" ? after.quantity : null,
+      ),
+      unitPriceOriginal: normalizeOptionalText(
+        typeof after.unitPriceOriginal === "string"
+          ? after.unitPriceOriginal
+          : null,
+      ),
+      reviewReason: normalizeOptionalText(
+        typeof after.reviewReason === "string" ? after.reviewReason : null,
+      ),
+    },
+  };
+}
+
+function buildHistoricalReviewExamples(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  limit = 5,
+) {
+  const accountById = new Map(dataset.accounts.map((candidate) => [candidate.id, candidate]));
+  const targetTokens = tokenizePromptText(transaction.descriptionRaw);
+
+  return dataset.auditEvents
+    .map((auditEvent) => extractHistoricalReviewExample(auditEvent))
+    .filter((example): example is HistoricalReviewExample => Boolean(example))
+    .filter((example) => example.objectId !== transaction.id)
+    .filter((example) => {
+      if (!example.accountId) {
+        return false;
+      }
+      const exampleAccount = accountById.get(example.accountId);
+      return exampleAccount?.assetDomain === account.assetDomain;
+    })
+    .sort((left, right) => {
+      const leftAccount = left.accountId ? accountById.get(left.accountId) : null;
+      const rightAccount = right.accountId ? accountById.get(right.accountId) : null;
+
+      const scoreExample = (
+        example: HistoricalReviewExample,
+        exampleAccount: Account | undefined | null,
+      ) => {
+        let score = 0;
+        if (exampleAccount?.institutionName === account.institutionName) {
+          score += 20;
+        }
+        if (transaction.securityId && example.transaction.securityId === transaction.securityId) {
+          score += 30;
+        }
+        const exampleTokens = tokenizePromptText(example.transaction.descriptionRaw);
+        for (const token of targetTokens) {
+          if (exampleTokens.has(token)) {
+            score += 2;
+          }
+        }
+        return score;
+      };
+
+      const scoreDelta =
+        scoreExample(right, rightAccount) - scoreExample(left, leftAccount);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return (
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+      );
+    })
+    .slice(0, limit);
 }
 
 function resolveValidEconomicEntityOverride(
@@ -732,6 +1022,11 @@ async function requestLlmClassification(
     account.assetDomain === "investment"
       ? getInvestmentTransactionClassifierConfig()
       : getTransactionClassifierConfig();
+  const reviewExamples = buildHistoricalReviewExamples(
+    dataset,
+    account,
+    transaction,
+  );
   const requestedAt = new Date().toISOString();
   if (!isModelConfigured(model)) {
     const completedAt = new Date().toISOString();
@@ -753,6 +1048,11 @@ async function requestLlmClassification(
       completedAt,
       durationMs:
         new Date(completedAt).getTime() - new Date(requestedAt).getTime(),
+      reviewExamplesUsed: reviewExamples.map((example) => ({
+        auditEventId: example.auditEventId,
+        objectId: example.objectId,
+        createdAt: example.createdAt,
+      })),
     };
   }
 
@@ -798,6 +1098,12 @@ async function requestLlmClassification(
         transaction,
         deterministic,
       ),
+      reviewExamples: reviewExamples.map((example) => ({
+        transaction: example.transaction,
+        initialInference: example.initialInference,
+        userFeedback: example.userFeedback,
+        correctedOutcome: example.correctedOutcome,
+      })),
       reviewContext: {
         trigger: options?.trigger ?? "import_classification",
         previousReviewReason:
@@ -840,6 +1146,11 @@ async function requestLlmClassification(
       requestedAt,
       completedAt,
       durationMs,
+      reviewExamplesUsed: reviewExamples.map((example) => ({
+        auditEventId: example.auditEventId,
+        objectId: example.objectId,
+        createdAt: example.createdAt,
+      })),
     };
   }
 
@@ -867,6 +1178,11 @@ async function requestLlmClassification(
     requestedAt,
     completedAt,
     durationMs,
+    reviewExamplesUsed: reviewExamples.map((example) => ({
+      auditEventId: example.auditEventId,
+      objectId: example.objectId,
+      createdAt: example.createdAt,
+    })),
   };
 }
 
@@ -1024,6 +1340,7 @@ export async function enrichImportedTransaction(
         userProvidedContext:
           options?.reviewContext?.userProvidedContext ?? null,
       },
+      reviewExamplesUsed: llm.reviewExamplesUsed,
       timing: {
         requestedAt: llm.requestedAt,
         completedAt: llm.completedAt,
