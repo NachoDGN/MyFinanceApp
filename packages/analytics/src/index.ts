@@ -30,6 +30,21 @@ import { metricRegistry } from "./registry";
 
 export { metricRegistry } from "./registry";
 
+const investmentLedgerClasses = [
+  "investment_trade_buy",
+  "investment_trade_sell",
+  "transfer_internal",
+  "dividend",
+  "interest",
+  "fee",
+  "fx_conversion",
+  "unknown",
+] satisfies Transaction["transactionClass"][];
+
+const processedInvestmentLedgerClasses = investmentLedgerClasses.filter(
+  (transactionClass) => transactionClass !== "unknown",
+) as Transaction["transactionClass"][];
+
 function sumStrings(values: Array<string | null | undefined>) {
   return values
     .reduce((sum, value) => sum.plus(new Decimal(value ?? 0)), new Decimal(0))
@@ -982,16 +997,7 @@ export function buildInvestmentsReadModel(
     dataset,
     input.scope,
     summary.period,
-    [
-      "investment_trade_buy",
-      "investment_trade_sell",
-      "transfer_internal",
-      "dividend",
-      "interest",
-      "fee",
-      "fx_conversion",
-      "unknown",
-    ],
+    [...investmentLedgerClasses],
   );
   const ytdPeriod = resolvePeriodSelection({ preset: "ytd", referenceDate });
   const ytdInvestmentRows = scopedTransactions(
@@ -1019,10 +1025,24 @@ export function buildInvestmentsReadModel(
       );
     }),
   );
+  const processedRows = sortTransactionsNewestFirst(
+    filterTransactionsByScope(dataset, input.scope).filter((transaction) => {
+      const account = dataset.accounts.find(
+        (candidate) => candidate.id === transaction.accountId,
+      );
+      return (
+        account?.assetDomain === "investment" &&
+        transaction.transactionDate <= referenceDate &&
+        !transaction.needsReview &&
+        processedInvestmentLedgerClasses.includes(transaction.transactionClass)
+      );
+    }),
+  );
 
   return {
     holdings,
     investmentRows,
+    processedRows,
     metrics: {
       portfolioValue: buildMetricResult(
         dataset,

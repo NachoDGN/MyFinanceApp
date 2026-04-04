@@ -37,6 +37,8 @@ type ResolvedTransactionPatch = {
   reviewReason?: string | null;
 };
 
+const MAX_HISTORICAL_PRICE_DRIFT_DAYS = 7;
+
 export type InvestmentRebuildArtifacts = {
   transactions: Transaction[];
   transactionPatches: ResolvedTransactionPatch[];
@@ -52,6 +54,22 @@ function normalizeSecurityText(value: string | null | undefined) {
     .trim()
     .replace(/\s+/g, " ")
     .toUpperCase();
+}
+
+function dayDistance(start: string, end: string) {
+  return Math.max(
+    0,
+    Math.floor(
+      (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) /
+        86400000,
+    ),
+  );
+}
+
+function shiftIsoDate(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function securityHintFromTransaction(transaction: Transaction) {
@@ -348,6 +366,13 @@ function isWeekendIso(value: string) {
   return day === 0 || day === 6;
 }
 
+function expectedLatestQuoteDate(referenceDate: string) {
+  const day = new Date(`${referenceDate}T00:00:00Z`).getUTCDay();
+  if (day === 6) return shiftIsoDate(referenceDate, -1);
+  if (day === 0) return shiftIsoDate(referenceDate, -2);
+  return referenceDate;
+}
+
 async function fetchSearchCandidates(query: string, apiKey: string) {
   const url = new URL("https://api.twelvedata.com/symbol_search");
   url.searchParams.set("symbol", query);
@@ -406,6 +431,12 @@ async function fetchHistoricalPrice(
   };
   const value = payload.values?.[0];
   if (!value?.close || !value.datetime) {
+    return null;
+  }
+  if (
+    dayDistance(value.datetime.slice(0, 10), transactionDate) >
+    MAX_HISTORICAL_PRICE_DRIFT_DAYS
+  ) {
     return null;
   }
 
@@ -744,11 +775,34 @@ function findStoredHistoricalPrice(
     [...dataset.securityPrices]
       .filter(
         (price) =>
-          price.securityId === securityId && price.priceDate <= transactionDate,
+          price.securityId === securityId &&
+          price.priceDate <= transactionDate &&
+          dayDistance(price.priceDate, transactionDate) <=
+            MAX_HISTORICAL_PRICE_DRIFT_DAYS,
       )
       .sort((left, right) =>
         `${right.priceDate}${right.createdAt}`.localeCompare(
           `${left.priceDate}${left.createdAt}`,
+        ),
+      )[0] ?? null
+  );
+}
+
+function findRecentStoredQuote(
+  dataset: DomainDataset,
+  securityId: string,
+  referenceDate: string,
+) {
+  const targetDate = expectedLatestQuoteDate(referenceDate);
+  return (
+    [...dataset.securityPrices]
+      .filter(
+        (price) =>
+          price.securityId === securityId && price.priceDate === targetDate,
+      )
+      .sort((left, right) =>
+        `${right.priceDate}${right.quoteTimestamp}`.localeCompare(
+          `${left.priceDate}${left.quoteTimestamp}`,
         ),
       )[0] ?? null
   );
@@ -882,6 +936,16 @@ export async function prepareInvestmentRebuild(
       return historicalPriceCache.get(cacheKey) ?? null;
     }
 
+    const storedPrice = findStoredHistoricalPrice(
+      workingDataset,
+      security.id,
+      transactionDate,
+    );
+    if (storedPrice) {
+      historicalPriceCache.set(cacheKey, storedPrice);
+      return storedPrice;
+    }
+
     if (apiKey) {
       const fetchedPrice = await fetchHistoricalPrice(
         security,
@@ -894,19 +958,24 @@ export async function prepareInvestmentRebuild(
       }
     }
 
-    const storedPrice = findStoredHistoricalPrice(
-      workingDataset,
-      security.id,
-      transactionDate,
-    );
-    historicalPriceCache.set(cacheKey, storedPrice);
-    return storedPrice;
+    historicalPriceCache.set(cacheKey, null);
+    return null;
   };
 
   const loadLatestPrice = async (security: Security) => {
     const cacheKey = security.id;
     if (latestPriceCache.has(cacheKey)) {
       return latestPriceCache.get(cacheKey) ?? null;
+    }
+
+    const recentStoredPrice = findRecentStoredQuote(
+      workingDataset,
+      security.id,
+      referenceDate,
+    );
+    if (recentStoredPrice) {
+      latestPriceCache.set(cacheKey, recentStoredPrice);
+      return recentStoredPrice;
     }
 
     const price = apiKey

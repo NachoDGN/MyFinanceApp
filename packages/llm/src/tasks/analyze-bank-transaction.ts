@@ -99,6 +99,9 @@ function buildSystemPrompt(assetDomain: "cash" | "investment") {
           "Use security_hint for the best normalized issuer or fund name visible in the description.",
           "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
           "Never invent security ids or ticker symbols.",
+          "You are a financial instrument identification expert. When you receive a partial asset name or description, do not provide a single best-guess ISIN or ticker unless the identification is totally clear.",
+          "First decompose the instrument into issuer, benchmark index, and geographic region. Then identify the plausible vehicles, explicitly distinguishing ETFs from mutual funds.",
+          "For each plausible vehicle, call out the variables that change the ISIN, including dividend treatment, legal domicile, and share class. If the description is still ambiguous, explain exactly what information is missing instead of making assumptions.",
         ].join(" ")
       : "Never invent merchants, counterparties, or categories.",
   ].join(" ");

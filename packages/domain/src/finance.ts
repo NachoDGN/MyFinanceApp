@@ -11,6 +11,7 @@ import type {
 } from "./types";
 
 type PeriodPreset = PeriodSelection["preset"];
+const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
 
 function toDate(value: string) {
   return new Date(`${value}T00:00:00Z`);
@@ -481,11 +482,16 @@ function latestSecurityPrice(
   dataset: DomainDataset,
   securityId: string,
   asOfDate: string,
+  maxAgeDays?: number,
 ) {
   return (
     [...dataset.securityPrices]
       .filter(
-        (row) => row.securityId === securityId && row.priceDate <= asOfDate,
+        (row) =>
+          row.securityId === securityId &&
+          row.priceDate <= asOfDate &&
+          (maxAgeDays === undefined ||
+            dayDistance(row.priceDate, asOfDate) <= maxAgeDays),
       )
       .sort(
         (left, right) =>
@@ -508,12 +514,22 @@ export function buildHoldingRows(
       const security = dataset.securities.find(
         (row) => row.id === position.securityId,
       );
-      const price = latestSecurityPrice(dataset, position.securityId, asOfDate);
+      const latestKnownPrice = latestSecurityPrice(
+        dataset,
+        position.securityId,
+        asOfDate,
+      );
+      const price = latestSecurityPrice(
+        dataset,
+        position.securityId,
+        asOfDate,
+        MAX_CURRENT_QUOTE_AGE_DAYS,
+      );
       const priceFx = price
         ? resolveFxRate(dataset, price.currency, "EUR", asOfDate)
         : new Decimal(1);
-      const quoteAgeDays = price
-        ? dayDistance(price.priceDate.slice(0, 10), asOfDate)
+      const quoteAgeDays = latestKnownPrice
+        ? dayDistance(latestKnownPrice.priceDate.slice(0, 10), asOfDate)
         : null;
       const currentValueEur = price
         ? new Decimal(position.openQuantity)
@@ -545,14 +561,14 @@ export function buildHoldingRows(
               new Decimal(position.openCostBasisEur),
             )
           : null,
-        quoteFreshness: price
-          ? !price.isDelayed
+        quoteFreshness: latestKnownPrice
+          ? !latestKnownPrice.isDelayed
             ? "fresh"
             : quoteAgeDays !== null && quoteAgeDays > 5
               ? "stale"
               : "delayed"
           : "missing",
-        quoteTimestamp: price?.quoteTimestamp ?? null,
+        quoteTimestamp: latestKnownPrice?.quoteTimestamp ?? null,
         unrealizedComplete: position.unrealizedComplete,
       };
     });

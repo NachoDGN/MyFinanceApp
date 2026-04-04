@@ -13,7 +13,9 @@ import {
   SimpleTable,
 } from "../../components/primitives";
 import {
+  buildHref,
   formatCurrency,
+  formatDate,
   formatQuantity,
   formatPercent,
   getInvestmentsModel,
@@ -24,7 +26,20 @@ export default async function InvestmentsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const model = await getInvestmentsModel(searchParams);
+  const params = await searchParams;
+  const model = await getInvestmentsModel(params);
+  const pageParam = Array.isArray(params.page) ? params.page[0] : params.page;
+  const requestedPage = Number.parseInt(String(pageParam ?? "1"), 10);
+  const currentPage =
+    Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const pageSize = 10;
+  const totalProcessedRows = model.processedRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalProcessedRows / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const processedRows = model.processedRows.slice(
+    (safePage - 1) * pageSize,
+    safePage * pageSize,
+  );
   const eurToDisplayRate =
     model.currency === "EUR"
       ? new Decimal(1)
@@ -43,22 +58,25 @@ export default async function InvestmentsPage({
   const formatDisplayAmount = (amount: string | null | undefined) =>
     formatCurrency(toDisplayAmount(amount), model.currency);
 
-  const formatDisplayPrice = (
+  const formatNativePrice = (
     price: string | null | undefined,
     priceCurrency: string | null | undefined,
   ) => {
     if (!price || !priceCurrency) return "N/A";
-    const fxRate = resolveFxRate(
-      model.dataset,
-      priceCurrency,
-      model.currency,
-      model.referenceDate,
-    );
-    return formatCurrency(
-      new Decimal(price).mul(fxRate).toFixed(2),
-      model.currency,
-    );
+    return formatCurrency(price, priceCurrency);
   };
+
+  const buildInvestmentsPageHref = (page: number) =>
+    `${buildHref(
+      "/investments",
+      {
+        scopeParam: model.scopeParam,
+        currency: model.currency,
+        period: model.period.preset,
+        referenceDate: model.referenceDate,
+      },
+      {},
+    )}&page=${page}`;
 
   return (
     <AppShell
@@ -184,51 +202,112 @@ export default async function InvestmentsPage({
             )?.displayName ?? holding.accountId,
             formatQuantity(holding.quantity),
             formatDisplayAmount(holding.avgCostEur),
-            formatDisplayPrice(
-              holding.currentPrice,
-              holding.currentPriceCurrency,
-            ),
+            <div style={{ display: "grid", gap: 4 }}>
+              <span>
+                {formatNativePrice(
+                  holding.currentPrice,
+                  holding.currentPriceCurrency,
+                )}
+              </span>
+              {holding.quoteTimestamp ? (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Last quote {formatDate(holding.quoteTimestamp.slice(0, 10))}
+                </span>
+              ) : null}
+            </div>,
             formatDisplayAmount(holding.currentValueEur),
             `${formatDisplayAmount(holding.unrealizedPnlEur)} (${formatPercent(holding.unrealizedPnlPercent)})`,
             holding.quoteFreshness.toUpperCase(),
           ])}
         />
 
-        <SimpleTable
+        <SectionCard
+          title="Processed Investment Transactions"
+          subtitle={`${totalProcessedRows} resolved rows`}
           span="span-8"
-          headers={[
-            "Date",
-            "Description",
-            "Class",
-            "Qty",
-            "Security",
-            "Amount",
-            "Review",
-          ]}
-          rows={model.investmentRows.map((row) => [
-            row.transactionDate,
-            row.descriptionRaw,
-            row.transactionClass,
-            formatQuantity(row.quantity),
-            model.dataset.securities.find(
-              (security) => security.id === row.securityId,
-            )?.displaySymbol ?? "—",
-            formatDisplayAmount(row.amountBaseEur),
-            <ReviewStateCell
-              needsReview={row.needsReview}
-              reviewReason={row.reviewReason}
-              transactionClass={row.transactionClass}
-              classificationSource={row.classificationSource}
-              securitySymbol={
-                model.dataset.securities.find(
-                  (security) => security.id === row.securityId,
-                )?.displaySymbol ?? null
-              }
-              quantity={row.quantity}
-              llmPayload={row.llmPayload}
-            />,
-          ])}
-        />
+          actions={
+            totalPages > 1 ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {safePage > 1 ? (
+                  <a
+                    className="btn-ghost"
+                    href={buildInvestmentsPageHref(safePage - 1)}
+                  >
+                    Previous
+                  </a>
+                ) : null}
+                <span className="pill">
+                  Page {safePage} of {totalPages}
+                </span>
+                {safePage < totalPages ? (
+                  <a
+                    className="btn-ghost"
+                    href={buildInvestmentsPageHref(safePage + 1)}
+                  >
+                    Next
+                  </a>
+                ) : null}
+              </div>
+            ) : null
+          }
+        >
+          {processedRows.length === 0 ? (
+            <div className="table-empty-state">
+              No processed investment transactions are available for this scope.
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    {[
+                      "Date",
+                      "Description",
+                      "Class",
+                      "Qty",
+                      "Security",
+                      "Amount",
+                      "Review",
+                    ].map((header) => (
+                      <th key={header}>{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {processedRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.transactionDate}</td>
+                      <td>{row.descriptionRaw}</td>
+                      <td>{row.transactionClass}</td>
+                      <td>{formatQuantity(row.quantity)}</td>
+                      <td>
+                        {model.dataset.securities.find(
+                          (security) => security.id === row.securityId,
+                        )?.displaySymbol ?? "—"}
+                      </td>
+                      <td>{formatDisplayAmount(row.amountBaseEur)}</td>
+                      <td>
+                        <ReviewStateCell
+                          needsReview={row.needsReview}
+                          reviewReason={row.reviewReason}
+                          transactionClass={row.transactionClass}
+                          classificationSource={row.classificationSource}
+                          securitySymbol={
+                            model.dataset.securities.find(
+                              (security) => security.id === row.securityId,
+                            )?.displaySymbol ?? null
+                          }
+                          quantity={row.quantity}
+                          llmPayload={row.llmPayload}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
 
         <SectionCard
           title="Unresolved Investment Events"

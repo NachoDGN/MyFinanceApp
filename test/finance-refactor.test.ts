@@ -598,6 +598,131 @@ test("investment rebuild flags trades whose implied unit price is implausible", 
   }
 });
 
+test("investment rebuild rejects historical quotes that are far older than the requested trade date", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+
+    if (url.pathname.endsWith("/time_series")) {
+      return new Response(
+        JSON.stringify({
+          values: [
+            {
+              datetime: "2025-09-17",
+              close: "24.90",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-historical-drift",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "intc-missing-quantity",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-12",
+      postedDate: "2026-03-12",
+      amountOriginal: "-41.00",
+      amountBaseEur: "-37.72",
+      currencyOriginal: "USD",
+      descriptionRaw: "INTEL CORP",
+      descriptionClean: "INTEL CORP",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "investment_parser",
+      classificationSource: "investment_parser",
+      classificationConfidence: "0.96",
+      securityId: "security-intc-drift",
+      quantity: null,
+      unitPriceOriginal: null,
+      needsReview: true,
+      reviewReason: "Needs quantity derivation.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-intc-drift",
+          providerName: "twelve_data",
+          providerSymbol: "INTC",
+          canonicalSymbol: "INTC",
+          displaySymbol: "INTC",
+          name: "Intel Corporation",
+          exchangeName: "NASDAQ",
+          micCode: "XNGS",
+          assetType: "stock",
+          quoteCurrency: "USD",
+          country: "United States",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {},
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      fxRates: [
+        {
+          baseCurrency: "USD",
+          quoteCurrency: "EUR",
+          asOfDate: "2026-03-12",
+          asOfTimestamp: "2026-03-12T16:00:00Z",
+          rate: "0.92000000",
+          sourceName: "twelve_data",
+          rawJson: {},
+        },
+      ],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-12");
+    const patch = rebuilt.transactionPatches.find(
+      (candidate) => candidate.id === "intc-missing-quantity",
+    );
+
+    assert.equal(rebuilt.upsertedPrices.length, 0);
+    assert.match(
+      patch?.reviewReason ?? "",
+      /did not return a usable historical price/i,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
 test("investment rebuild requests end-of-day quotes on weekends", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
   const previousFetch = globalThis.fetch;
@@ -1432,6 +1557,93 @@ test("holding freshness is stale when the latest delayed quote is older than fiv
   assert.equal(holding?.quoteFreshness, "stale");
 });
 
+test("holding rows do not expose current pricing when the last quote is more than thirty days old", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-old-quote",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-old-quote",
+        providerName: "twelve_data",
+        providerSymbol: "INTC",
+        canonicalSymbol: "INTC",
+        displaySymbol: "INTC",
+        name: "Intel Corporation",
+        exchangeName: "NASDAQ",
+        exchangeMic: "XNGS",
+        securityType: "stock",
+        quoteCurrency: "USD",
+        countryCode: "US",
+        isin: null,
+        cusip: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-old-quote",
+        priceDate: "2026-01-15",
+        quoteTimestamp: "2026-01-15T15:00:00Z",
+        price: "24.90",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-01-15T15:00:00Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-04",
+        asOfTimestamp: "2026-04-04T15:00:00Z",
+        rate: "0.920000",
+        sourceName: "ecb",
+        rawJson: {},
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: "entity-1",
+        accountId: "brokerage-old-quote",
+        securityId: "security-old-quote",
+        openQuantity: "15.00",
+        openCostBasisEur: "450.00",
+        avgCostEur: "30.00",
+        realizedPnlEur: "0.00",
+        dividendsEur: "0.00",
+        interestEur: "0.00",
+        feesEur: "0.00",
+        lastTradeDate: "2026-01-15",
+        lastRebuiltAt: "2026-04-04T16:00:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-04",
+  );
+
+  assert.equal(holding?.currentPrice, null);
+  assert.equal(holding?.currentValueEur, null);
+  assert.equal(holding?.quoteFreshness, "stale");
+});
+
 test("investment rebuild derives open positions and brokerage cash from imported investment rows", () => {
   const investmentAccount = createAccount({
     id: "brokerage-1",
@@ -1631,5 +1843,51 @@ test("investments read model exposes unresolved investment items outside the sel
   assert.equal(
     model.unresolved[0]?.descriptionRaw,
     "VANGUARD US 500 STOCK INDEX EU",
+  );
+});
+
+test("investments read model keeps processed rows available outside the selected period", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-processed",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        id: "processed-buy",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-24",
+        postedDate: "2026-03-24",
+        amountOriginal: "-99.58",
+        amountBaseEur: "-99.58",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 2",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 2",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        needsReview: false,
+        quantity: "2.00000000",
+      }),
+    ],
+  });
+
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-03",
+    }),
+    referenceDate: "2026-04-03",
+  });
+
+  assert.equal(model.investmentRows.length, 0);
+  assert.equal(model.processedRows.length, 1);
+  assert.equal(
+    model.processedRows[0]?.descriptionRaw,
+    "ADVANCED MICRO DEVICES @ 2",
   );
 });
