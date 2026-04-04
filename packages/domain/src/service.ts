@@ -192,11 +192,17 @@ export class FinanceDomainService {
     };
   }
 
-  async listHoldings(scope: Scope): Promise<HoldingsResponse> {
+  async listHoldings(
+    scope: Scope,
+    referenceDate = todayIso(),
+  ): Promise<HoldingsResponse> {
     const dataset = await this.repository.getDataset();
-    const holdings = buildHoldingRows(dataset, scope);
+    const holdings = buildHoldingRows(dataset, scope, referenceDate);
     const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-    const brokerageCashEur = getLatestInvestmentCashBalances(dataset)
+    const brokerageCashEur = getLatestInvestmentCashBalances(
+      dataset,
+      referenceDate,
+    )
       .filter((row) => {
         const account = dataset.accounts.find(
           (candidate) => candidate.id === row.accountId,
@@ -213,11 +219,13 @@ export class FinanceDomainService {
       schemaVersion: "v1",
       scope,
       holdings,
-      quoteFreshness: holdings.every((row) => row.quoteFreshness === "delayed")
-        ? "delayed"
-        : holdings.some((row) => row.quoteFreshness === "fresh")
-          ? "fresh"
-          : "missing",
+      quoteFreshness: holdings.some((row) => row.quoteFreshness === "fresh")
+        ? "fresh"
+        : holdings.some((row) => row.quoteFreshness === "delayed")
+          ? "delayed"
+          : holdings.some((row) => row.quoteFreshness === "stale")
+            ? "stale"
+            : "missing",
       brokerageCashEur,
       generatedAt: new Date().toISOString(),
     };
