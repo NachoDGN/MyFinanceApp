@@ -342,6 +342,16 @@ export function filterTransactionsByScope(
   return dataset.transactions;
 }
 
+export function isTransactionResolvedForAnalytics(
+  transaction: Pick<Transaction, "needsReview" | "excludeFromAnalytics" | "voidedAt">,
+) {
+  return (
+    transaction.needsReview !== true &&
+    transaction.excludeFromAnalytics !== true &&
+    !transaction.voidedAt
+  );
+}
+
 export function filterTransactionsByPeriod(
   transactions: Transaction[],
   period: PeriodSelection,
@@ -684,8 +694,7 @@ export function rebuildInvestmentState(
     ...dataset.transactions
       .filter((transaction) => {
         if (transaction.transactionDate > referenceDate) return false;
-        if (transaction.excludeFromAnalytics || transaction.voidedAt)
-          return false;
+        if (!isTransactionResolvedForAnalytics(transaction)) return false;
         return investmentAccounts.has(transaction.accountId);
       })
       .map((transaction) => ({

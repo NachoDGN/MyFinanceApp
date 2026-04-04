@@ -9,6 +9,7 @@ import {
   enrichImportedTransaction,
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
+  rankSimilarAccountTransactions,
 } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
@@ -378,6 +379,285 @@ async function queueJob(
   `;
 }
 
+async function claimNextQueuedJob(sql: SqlClient, workerId: string) {
+  const startedAt = new Date().toISOString();
+  const claimed = await sql`
+    with next_job as (
+      select id
+      from public.jobs
+      where status = 'queued'
+        and available_at <= ${startedAt}
+      order by available_at asc, created_at asc
+      limit 1
+      for update skip locked
+    )
+    update public.jobs as job
+    set status = 'running',
+        started_at = ${startedAt},
+        locked_by = ${workerId}
+    from next_job
+    where job.id = next_job.id
+    returning job.*
+  `;
+
+  return claimed[0] ?? null;
+}
+
+async function refreshFinanceAnalyticsArtifacts(sql: SqlClient) {
+  await sql`select public.refresh_finance_analytics()`;
+}
+
+function replaceTransactionInDataset(
+  dataset: DomainDataset,
+  transaction: Transaction,
+) {
+  const index = dataset.transactions.findIndex(
+    (candidate) => candidate.id === transaction.id,
+  );
+  if (index === -1) {
+    return dataset;
+  }
+
+  const nextTransactions = [...dataset.transactions];
+  nextTransactions[index] = transaction;
+  return {
+    ...dataset,
+    transactions: nextTransactions,
+  };
+}
+
+async function completeJob(
+  sql: SqlClient,
+  jobId: string,
+  startedAt: string,
+  payloadJson: Record<string, unknown>,
+) {
+  await sql`
+    update public.jobs
+    set status = 'completed',
+        attempts = attempts + 1,
+        started_at = ${startedAt},
+        finished_at = ${new Date().toISOString()},
+        last_error = null,
+        locked_by = null,
+        payload_json = ${serializeJson(sql, payloadJson)}::jsonb
+    where id = ${jobId}
+  `;
+}
+
+async function failJob(
+  sql: SqlClient,
+  jobId: string,
+  startedAt: string,
+  error: unknown,
+) {
+  await sql`
+    update public.jobs
+    set status = 'failed',
+        attempts = attempts + 1,
+        started_at = ${startedAt},
+        finished_at = ${new Date().toISOString()},
+        last_error = ${
+          error instanceof Error ? error.message : "Unknown job failure"
+        },
+        locked_by = null
+    where id = ${jobId}
+  `;
+}
+
+async function processReviewPropagationJob(
+  sql: SqlClient,
+  userId: string,
+  payloadJson: Record<string, unknown>,
+  promptOverrides: PromptProfileOverrides,
+) {
+  const sourceTransactionId =
+    typeof payloadJson.sourceTransactionId === "string"
+      ? payloadJson.sourceTransactionId
+      : "";
+  if (!sourceTransactionId) {
+    throw new Error(
+      "Review propagation job is missing sourceTransactionId.",
+    );
+  }
+
+  let dataset = await loadDatasetForUser(sql, userId);
+  const sourceTransaction = dataset.transactions.find(
+    (candidate) => candidate.id === sourceTransactionId,
+  );
+  if (!sourceTransaction) {
+    throw new Error(
+      `Source transaction ${sourceTransactionId} was not found for review propagation.`,
+    );
+  }
+
+  const account = dataset.accounts.find(
+    (candidate) => candidate.id === sourceTransaction.accountId,
+  );
+  if (!account) {
+    throw new Error(
+      `Account ${sourceTransaction.accountId} was not found for review propagation.`,
+    );
+  }
+
+  if (
+    sourceTransaction.needsReview ||
+    sourceTransaction.transactionClass === "unknown"
+  ) {
+    return {
+      sourceTransactionId,
+      accountId: account.id,
+      candidateCount: 0,
+      attemptedCount: 0,
+      appliedCount: 0,
+      skippedCount: 0,
+      skippedReason: "source_transaction_not_resolved",
+    };
+  }
+
+  const candidateMatches = rankSimilarAccountTransactions(
+    dataset,
+    account,
+    sourceTransaction,
+    {
+      includeNeedsReview: true,
+      requireEarlierDate: false,
+      limit: Math.max(dataset.transactions.length, 1),
+      minScore: 6,
+    },
+  ).filter((match) => match.transaction.needsReview);
+
+  const appliedTransactionIds: string[] = [];
+  const failedTransactionIds: Array<{ transactionId: string; error: string }> =
+    [];
+  let attemptedCount = 0;
+  let appliedCount = 0;
+  let skippedCount = 0;
+
+  for (const match of candidateMatches) {
+    const currentCandidate =
+      dataset.transactions.find(
+        (candidate) => candidate.id === match.transaction.id,
+      ) ?? match.transaction;
+    if (!currentCandidate.needsReview || currentCandidate.voidedAt) {
+      skippedCount += 1;
+      continue;
+    }
+
+    attemptedCount += 1;
+    try {
+      const decision = await enrichImportedTransaction(
+        dataset,
+        account,
+        currentCandidate,
+        {
+          trigger: "review_propagation",
+          promptOverrides,
+          reviewContext: {
+            previousReviewReason: currentCandidate.reviewReason ?? null,
+            previousUserContext: currentCandidate.manualNotes ?? null,
+            previousLlmPayload:
+              currentCandidate.llmPayload &&
+              typeof currentCandidate.llmPayload === "object"
+                ? (currentCandidate.llmPayload as Record<string, unknown>)
+                : null,
+          },
+        },
+      );
+
+      if (decision.needsReview || decision.transactionClass === "unknown") {
+        skippedCount += 1;
+        continue;
+      }
+
+      const after = await sql`
+        update public.transactions
+        set transaction_class = ${decision.transactionClass},
+            category_code = ${decision.categoryCode ?? null},
+            merchant_normalized = ${decision.merchantNormalized ?? null},
+            counterparty_name = ${decision.counterpartyName ?? null},
+            economic_entity_id = ${decision.economicEntityId},
+            classification_status = ${decision.classificationStatus},
+            classification_source = ${decision.classificationSource},
+            classification_confidence = ${decision.classificationConfidence},
+            quantity = ${decision.quantity ?? null},
+            unit_price_original = ${decision.unitPriceOriginal ?? null},
+            needs_review = ${decision.needsReview},
+            review_reason = ${decision.reviewReason ?? null},
+            llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
+            updated_at = ${new Date().toISOString()}
+        where id = ${currentCandidate.id}
+          and user_id = ${userId}
+        returning *
+      `;
+      const afterTransaction = mapFromSql<Transaction>(after[0]);
+      const auditEvent = createAuditEvent(
+        "worker",
+        "job:review_propagation",
+        "transactions.review_propagate",
+        "transaction",
+        currentCandidate.id,
+        currentCandidate as unknown as Record<string, unknown>,
+        after[0],
+      );
+      await sql`
+        insert into public.audit_events ${sql({
+          actor_type: auditEvent.actorType,
+          actor_id: auditEvent.actorId,
+          actor_name: auditEvent.actorName,
+          source_channel: auditEvent.sourceChannel,
+          command_name: auditEvent.commandName,
+          object_type: auditEvent.objectType,
+          object_id: auditEvent.objectId,
+          before_json: auditEvent.beforeJson,
+          after_json: auditEvent.afterJson,
+          created_at: auditEvent.createdAt,
+          notes:
+            "Re-ran LLM classification for a similar unresolved transaction after a successful manual review.",
+        } as Record<string, unknown>)}
+      `;
+
+      dataset = replaceTransactionInDataset(dataset, afterTransaction);
+      appliedTransactionIds.push(afterTransaction.id);
+      appliedCount += 1;
+    } catch (candidateError) {
+      skippedCount += 1;
+      failedTransactionIds.push({
+        transactionId: currentCandidate.id,
+        error:
+          candidateError instanceof Error
+            ? candidateError.message
+            : "Review propagation failed.",
+      });
+    }
+  }
+
+  let rebuilt: Awaited<ReturnType<typeof applyInvestmentRebuild>> | null = null;
+  if (appliedCount > 0 && account.assetDomain === "investment") {
+    rebuilt = await applyInvestmentRebuild(sql, userId);
+  }
+  if (appliedCount > 0) {
+    await queueJob(sql, "metric_refresh", {
+      trigger: "review_propagation",
+      sourceTransactionId,
+      accountId: account.id,
+      appliedTransactionIds,
+    });
+  }
+
+  return {
+    sourceTransactionId,
+    accountId: account.id,
+    candidateCount: candidateMatches.length,
+    attemptedCount,
+    appliedCount,
+    skippedCount,
+    appliedTransactionIds,
+    failedTransactionIds,
+    rebuilt,
+  };
+}
+
 function parseJsonColumn<T>(value: unknown): T {
   if (typeof value === "string") {
     try {
@@ -745,6 +1025,7 @@ export async function reanalyzeTransactionReview(
       throw new Error("Review context cannot be empty.");
     }
     const promptOverrides = await loadPromptOverrides(sql, userId);
+    const wasPendingReview = beforeTransaction.needsReview;
 
     const decision = await enrichImportedTransaction(
       dataset,
@@ -791,6 +1072,11 @@ export async function reanalyzeTransactionReview(
     if (account.assetDomain === "investment") {
       await applyInvestmentRebuild(sql, userId);
     }
+    await queueJob(sql, "metric_refresh", {
+      trigger: "manual_review_update",
+      transactionId: input.transactionId,
+      accountId: beforeTransaction.accountId,
+    });
 
     const afterTransaction = mapFromSql<Transaction>(after[0]);
     const auditEvent = createAuditEvent(
@@ -817,6 +1103,17 @@ export async function reanalyzeTransactionReview(
         notes: "Re-ran LLM classification for a single transaction with manual review context.",
       } as Record<string, unknown>)}
     `;
+    if (
+      wasPendingReview &&
+      !afterTransaction.needsReview &&
+      afterTransaction.transactionClass !== "unknown"
+    ) {
+      await queueJob(sql, "review_propagation", {
+        sourceTransactionId: afterTransaction.id,
+        accountId: afterTransaction.accountId,
+        sourceAuditEventId: auditEvent.id,
+      });
+    }
 
     return {
       applied: true,
@@ -1254,7 +1551,11 @@ class SqlFinanceRepository implements FinanceRepository {
           (beforeTransaction.securityId !== afterTransaction.securityId ||
             beforeTransaction.transactionClass !==
               afterTransaction.transactionClass ||
-            beforeTransaction.needsReview !== afterTransaction.needsReview)
+            beforeTransaction.needsReview !== afterTransaction.needsReview ||
+            beforeTransaction.excludeFromAnalytics !==
+              afterTransaction.excludeFromAnalytics ||
+            beforeTransaction.economicEntityId !==
+              afterTransaction.economicEntityId)
         ) {
           const accountRows = await sql`
             select asset_domain from public.accounts
@@ -1269,6 +1570,11 @@ class SqlFinanceRepository implements FinanceRepository {
             });
           }
         }
+        await queueJob(sql, "metric_refresh", {
+          trigger: "transaction_update",
+          transactionId: afterTransaction.id,
+          accountId: afterTransaction.accountId,
+        });
 
         if (input.createRuleFromTransaction) {
           const persistedTransaction = mapFromSql<Transaction>(after[0]);
@@ -1302,37 +1608,6 @@ class SqlFinanceRepository implements FinanceRepository {
               })}::jsonb,
               ${persistedTransaction.id},
               true
-            )
-          `;
-        }
-      }
-
-      if (input.apply) {
-        const accountRows = await sql`
-          select asset_domain from public.accounts
-          where id = ${beforeRow.account_id}
-            and user_id = ${this.userId}
-          limit 1
-        `;
-        if (accountRows[0]?.asset_domain === "investment") {
-          await sql`
-            insert into public.jobs (
-              id,
-              job_type,
-              payload_json,
-              status,
-              attempts,
-              available_at
-            ) values (
-              ${randomUUID()},
-              ${"position_rebuild"},
-              ${serializeJson(sql, {
-                transactionId: input.transactionId,
-                trigger: "manual_transaction_update",
-              })}::jsonb,
-              ${"queued"},
-              0,
-              ${new Date().toISOString()}
             )
           `;
         }
@@ -1951,21 +2226,38 @@ class SqlFinanceRepository implements FinanceRepository {
       const queued = await sql`
         select * from public.jobs
         where status = 'queued'
+          and available_at <= ${new Date().toISOString()}
         order by available_at asc, created_at asc
       `;
       const processedJobs: JobRunResult["processedJobs"] = [];
       if (apply && queued.length > 0) {
-        const dataset = await loadDatasetForUser(sql, this.userId);
-        const promptOverrides = await loadPromptOverrides(sql, this.userId);
-        for (const job of queued) {
-          const startedAt = new Date().toISOString();
+        const workerId = `worker:${process.pid}:${randomUUID()}`;
+        let cachedPromptOverrides: PromptProfileOverrides | null = null;
+        const getPromptOverridesCached = async () => {
+          if (!cachedPromptOverrides) {
+            cachedPromptOverrides = await loadPromptOverrides(sql, this.userId);
+          }
+          return cachedPromptOverrides;
+        };
+
+        while (true) {
+          const job = await claimNextQueuedJob(sql, workerId);
+          if (!job) {
+            break;
+          }
+
+          const startedAt =
+            typeof job.started_at === "string"
+              ? job.started_at
+              : new Date().toISOString();
+          const payloadJson = parseJsonColumn<Record<string, unknown>>(
+            job.payload_json ?? {},
+          );
+
           try {
             if (job.job_type === "rule_parse") {
-              const payloadJson = parseJsonColumn<Record<string, unknown>>(
-                job.payload_json ?? {},
-              );
               const requestText =
-                payloadJson && typeof payloadJson.requestText === "string"
+                typeof payloadJson.requestText === "string"
                   ? payloadJson.requestText
                   : "";
               if (!requestText) {
@@ -1974,22 +2266,13 @@ class SqlFinanceRepository implements FinanceRepository {
 
               const parsedRule = await parseRuleDraftRequest(
                 requestText,
-                dataset,
-                promptOverrides,
+                await loadDatasetForUser(sql, this.userId),
+                await getPromptOverridesCached(),
               );
-              await sql`
-                update public.jobs
-                set status = 'completed',
-                    attempts = attempts + 1,
-                    started_at = ${startedAt},
-                    finished_at = ${new Date().toISOString()},
-                    last_error = null,
-                    payload_json = ${serializeJson(sql, {
-                      ...payloadJson,
-                      parsedRule,
-                    })}::jsonb
-                where id = ${job.id}
-              `;
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                parsedRule,
+              });
               processedJobs.push({
                 id: job.id,
                 jobType: "rule_parse",
@@ -1999,18 +2282,16 @@ class SqlFinanceRepository implements FinanceRepository {
             }
 
             if (job.job_type === "classification") {
-              const payloadJson = parseJsonColumn<Record<string, unknown>>(
-                job.payload_json ?? {},
-              );
               const importBatchId =
-                payloadJson && typeof payloadJson.importBatchId === "string"
+                typeof payloadJson.importBatchId === "string"
                   ? payloadJson.importBatchId
                   : "";
               if (!importBatchId) {
                 throw new Error("Classification job is missing importBatchId.");
               }
 
-              const latestDataset = await loadDatasetForUser(sql, this.userId);
+              let latestDataset = await loadDatasetForUser(sql, this.userId);
+              const promptOverrides = await getPromptOverridesCached();
               const rows = await sql`
                 select * from public.transactions
                 where user_id = ${this.userId}
@@ -2038,7 +2319,7 @@ class SqlFinanceRepository implements FinanceRepository {
                     transaction,
                     { promptOverrides },
                   );
-                  await sql`
+                  const after = await sql`
                     update public.transactions
                     set transaction_class = ${decision.transactionClass},
                         category_code = ${decision.categoryCode ?? null},
@@ -2056,10 +2337,15 @@ class SqlFinanceRepository implements FinanceRepository {
                         updated_at = ${new Date().toISOString()}
                     where id = ${transaction.id}
                       and user_id = ${this.userId}
+                    returning *
                   `;
+                  latestDataset = replaceTransactionInDataset(
+                    latestDataset,
+                    mapFromSql<Transaction>(after[0]),
+                  );
                 } catch (transactionError) {
                   failedTransactions += 1;
-                  await sql`
+                  const failedUpdate = await sql`
                     update public.transactions
                     set needs_review = true,
                         review_reason = ${
@@ -2086,7 +2372,12 @@ class SqlFinanceRepository implements FinanceRepository {
                         updated_at = ${new Date().toISOString()}
                     where id = ${transaction.id}
                       and user_id = ${this.userId}
+                    returning *
                   `;
+                  latestDataset = replaceTransactionInDataset(
+                    latestDataset,
+                    mapFromSql<Transaction>(failedUpdate[0]),
+                  );
                 }
               }
 
@@ -2096,20 +2387,11 @@ class SqlFinanceRepository implements FinanceRepository {
                 where id = ${importBatchId}
                   and user_id = ${this.userId}
               `;
-              await sql`
-                update public.jobs
-                set status = 'completed',
-                    attempts = attempts + 1,
-                    started_at = ${startedAt},
-                    finished_at = ${new Date().toISOString()},
-                    last_error = null,
-                    payload_json = ${serializeJson(sql, {
-                      ...payloadJson,
-                      processedTransactions: rows.length,
-                      failedTransactions,
-                    })}::jsonb
-                where id = ${job.id}
-              `;
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                processedTransactions: rows.length,
+                failedTransactions,
+              });
               processedJobs.push({
                 id: job.id,
                 jobType: "classification",
@@ -2119,24 +2401,11 @@ class SqlFinanceRepository implements FinanceRepository {
             }
 
             if (job.job_type === "position_rebuild") {
-              const payloadJson = parseJsonColumn<Record<string, unknown>>(
-                job.payload_json ?? {},
-              );
               const rebuilt = await applyInvestmentRebuild(sql, this.userId);
-
-              await sql`
-                update public.jobs
-                set status = 'completed',
-                    attempts = attempts + 1,
-                    started_at = ${startedAt},
-                    finished_at = ${new Date().toISOString()},
-                    last_error = null,
-                    payload_json = ${serializeJson(sql, {
-                      ...payloadJson,
-                      ...rebuilt,
-                    })}::jsonb
-                where id = ${job.id}
-              `;
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                ...rebuilt,
+              });
               processedJobs.push({
                 id: job.id,
                 jobType: "position_rebuild",
@@ -2145,34 +2414,47 @@ class SqlFinanceRepository implements FinanceRepository {
               continue;
             }
 
-            await sql`
-              update public.jobs
-              set status = 'completed',
-                  attempts = attempts + 1,
-                  started_at = ${startedAt},
-                  finished_at = ${new Date().toISOString()},
-                  last_error = null
-              where id = ${job.id}
-            `;
+            if (job.job_type === "metric_refresh") {
+              await refreshFinanceAnalyticsArtifacts(sql);
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                refreshedAt: new Date().toISOString(),
+              });
+              processedJobs.push({
+                id: job.id,
+                jobType: "metric_refresh",
+                status: "completed",
+              });
+              continue;
+            }
+
+            if (job.job_type === "review_propagation") {
+              const resultPayload = await processReviewPropagationJob(
+                sql,
+                this.userId,
+                payloadJson,
+                await getPromptOverridesCached(),
+              );
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                ...resultPayload,
+              });
+              processedJobs.push({
+                id: job.id,
+                jobType: "review_propagation",
+                status: "completed",
+              });
+              continue;
+            }
+
+            await completeJob(sql, job.id, startedAt, payloadJson);
             processedJobs.push({
               id: job.id,
               jobType: job.job_type,
               status: "completed",
             });
           } catch (error) {
-            await sql`
-              update public.jobs
-              set status = 'failed',
-                  attempts = attempts + 1,
-                  started_at = ${startedAt},
-                  finished_at = ${new Date().toISOString()},
-                  last_error = ${
-                    error instanceof Error
-                      ? error.message
-                      : "Unknown job failure"
-                  }
-              where id = ${job.id}
-            `;
+            await failJob(sql, job.id, startedAt, error);
             processedJobs.push({
               id: job.id,
               jobType: job.job_type,

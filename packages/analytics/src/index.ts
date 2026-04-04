@@ -11,16 +11,17 @@ import type {
   Transaction,
 } from "@myfinance/domain";
 import {
-  buildHoldingRows,
-  filterTransactionsByPeriod,
-  filterTransactionsByScope,
-  getLatestBalanceSnapshots,
-  getLatestInvestmentCashBalances,
-  getPreviousComparablePeriod,
-  getScopeLatestDate,
-  resolveFxRate,
-  resolvePeriodSelection,
-  resolveScopeEntityIds,
+    buildHoldingRows,
+    filterTransactionsByPeriod,
+    filterTransactionsByScope,
+    getLatestBalanceSnapshots,
+    getLatestInvestmentCashBalances,
+    getPreviousComparablePeriod,
+    isTransactionResolvedForAnalytics,
+    getScopeLatestDate,
+    resolveFxRate,
+    resolvePeriodSelection,
+    resolveScopeEntityIds,
   shiftIsoDate,
   startOfMonthIso,
   sumSnapshotField,
@@ -211,7 +212,7 @@ function flowMetric(
   const transactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, scope),
     period,
-  ).filter((row) => !row.excludeFromAnalytics);
+  ).filter((row) => isTransactionResolvedForAnalytics(row));
 
   if (kind === "income") {
     return transactions
@@ -637,9 +638,12 @@ export function buildDashboardSummary(
     filterTransactionsByScope(dataset, input.scope),
     period,
   );
+  const resolvedScopedTransactions = scopedTransactions.filter((transaction) =>
+    isTransactionResolvedForAnalytics(transaction),
+  );
   const spendingByCategory = [
     ...new Map(
-      scopedTransactions
+      resolvedScopedTransactions
         .filter((row) => row.transactionClass === "expense" && row.categoryCode)
         .map((row) => [
           row.categoryCode as string,
@@ -658,7 +662,7 @@ export function buildDashboardSummary(
   ]
     .map((row) => ({
       ...row,
-      amountEur: scopedTransactions
+      amountEur: resolvedScopedTransactions
         .filter(
           (transaction) =>
             transaction.categoryCode === row.categoryCode &&
@@ -887,9 +891,12 @@ export function buildSpendingReadModel(
     summary.period,
     ["expense", "fee", "refund"],
   );
+  const resolvedTransactions = transactions.filter((transaction) =>
+    isTransactionResolvedForAnalytics(transaction),
+  );
   const spendMetric = findMetric(summary, "spending_mtd_total");
   const merchantRows = aggregateAmountRows(
-    transactions,
+    resolvedTransactions,
     (transaction) =>
       transaction.merchantNormalized ?? transaction.descriptionClean,
     (transaction) =>
@@ -940,16 +947,19 @@ export function buildIncomeReadModel(
     summary.period,
     ["income", "dividend", "interest"],
   );
+  const resolvedTransactions = transactions.filter((transaction) =>
+    isTransactionResolvedForAnalytics(transaction),
+  );
   const incomeMetric = findMetric(summary, "income_mtd_total");
   const sourceRows = aggregateAmountRows(
-    transactions,
+    resolvedTransactions,
     (transaction) =>
       transaction.counterpartyName ??
       transaction.merchantNormalized ??
       transaction.descriptionClean,
     (transaction) => new Decimal(transaction.amountBaseEur),
   );
-  const investmentIncomeRows = transactions.filter((transaction) =>
+  const investmentIncomeRows = resolvedTransactions.filter((transaction) =>
     ["dividend", "interest"].includes(transaction.transactionClass),
   );
   const topSourceShare =
@@ -1005,7 +1015,7 @@ export function buildInvestmentsReadModel(
     input.scope,
     ytdPeriod,
     ["dividend", "interest", "transfer_internal"],
-  );
+  ).filter((transaction) => isTransactionResolvedForAnalytics(transaction));
   const accountAllocation = aggregateAmountRows(
     holdings.holdings,
     (holding) =>

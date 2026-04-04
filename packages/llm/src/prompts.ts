@@ -70,6 +70,7 @@ const transactionPromptPlaceholders = [
   "raw_payload",
   "deterministic_hint",
   "portfolio_state",
+  "similar_account_history",
   "review_examples_section",
   "review_context_section",
 ] as const;
@@ -137,6 +138,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Use null instead of guessing unsupported values.",
           "Keep the explanation to one short sentence.",
           "Never invent merchants, counterparties, or categories.",
+          "When similar same-account history is provided, use it as supporting precedent rather than a hard rule.",
         ].join(" "),
         requiredPlaceholders: [],
       },
@@ -165,6 +167,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Current raw payload: {{raw_payload}}.",
           "Deterministic hint: {{deterministic_hint}}.",
           "Portfolio state: {{portfolio_state}}.",
+          "Similar same-account resolved history: {{similar_account_history}}.",
           "{{review_examples_section}}",
           "{{review_context_section}}",
         ].join("\n"),
@@ -232,6 +235,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
           "Never invent security ids or ticker symbols.",
           "Use the latest portfolio snapshot when provided to sanity-check whether the row can realistically be a buy, sell, or fee.",
+          "When similar same-account history is provided, use it as supporting precedent rather than a hard rule.",
           "Broker commissions can mention a security name and quantity without being a real disposal.",
           "If a positive row implies a per-share price that is far below the latest quote for a still-held security, classify it as fee instead of investment_trade_sell unless the row clearly states a real sale.",
           "You are a financial instrument identification expert. When you receive a partial asset name or description, do not provide a single best-guess ISIN or ticker unless the identification is totally clear.",
@@ -265,6 +269,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Current raw payload: {{raw_payload}}.",
           "Deterministic hint: {{deterministic_hint}}.",
           "Portfolio state: {{portfolio_state}}.",
+          "Similar same-account resolved history: {{similar_account_history}}.",
           "{{review_examples_section}}",
           "{{review_context_section}}",
         ].join("\n"),
@@ -653,6 +658,7 @@ export function buildPromptProfilePreview(
           raw_payload: "{{raw_payload}}",
           deterministic_hint: "{{deterministic_hint}}",
           portfolio_state: "{{portfolio_state}}",
+          similar_account_history: "{{similar_account_history}}",
         },
         [
           {
@@ -694,6 +700,7 @@ export function buildPromptProfilePreview(
           raw_payload: "{{raw_payload}}",
           deterministic_hint: "{{deterministic_hint}}",
           portfolio_state: "{{portfolio_state}}",
+          similar_account_history: "{{similar_account_history}}",
         },
         [
           {
@@ -767,6 +774,7 @@ export function renderTransactionAnalyzerPrompt(
     rawPayload: string;
     deterministicHint: string;
     portfolioState: string;
+    similarAccountHistory: string;
     reviewExamples: TransactionPromptExample[];
     reviewContext: TransactionPromptReviewContext | null;
     promptOverrides?: Record<string, unknown> | null;
@@ -797,6 +805,7 @@ export function renderTransactionAnalyzerPrompt(
       raw_payload: input.rawPayload,
       deterministic_hint: input.deterministicHint,
       portfolio_state: input.portfolioState,
+      similar_account_history: input.similarAccountHistory,
     },
     input.reviewExamples,
     input.reviewContext,

@@ -167,6 +167,19 @@ test("month-to-date metrics use a dynamic comparison window and ignore internal 
         descriptionClean: "GROCERIES",
       }),
       createTransaction({
+        id: "unresolved-spend-apr",
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-40.00",
+        amountBaseEur: "-40.00",
+        transactionClass: "expense",
+        categoryCode: "groceries",
+        descriptionRaw: "Unresolved groceries",
+        descriptionClean: "UNRESOLVED GROCERIES",
+        needsReview: true,
+        reviewReason: "Needs confirmation.",
+      }),
+      createTransaction({
         id: "transfer-apr",
         transactionDate: "2026-04-03",
         postedDate: "2026-04-03",
@@ -1597,6 +1610,14 @@ test("investment review includes portfolio state and can override commission-lik
       displayName: "Brokerage",
       defaultCurrency: "EUR",
     });
+    const otherAccount = createAccount({
+      id: "broker-other",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Other Broker",
+      displayName: "Other Brokerage",
+      defaultCurrency: "EUR",
+    });
     const transaction = createTransaction({
       id: "goog-commission-row",
       accountId: account.id,
@@ -1623,7 +1644,7 @@ test("investment review includes portfolio state and can override commission-lik
     });
     const baseCategories = createDataset().categories;
     const dataset = createDataset({
-      accounts: [account],
+      accounts: [account, otherAccount],
       auditEvents: [
         {
           id: "audit-interest-example",
@@ -1693,7 +1714,78 @@ test("investment review includes portfolio state and can override commission-lik
           metadataJson: {},
         },
       ],
-      transactions: [transaction],
+      transactions: [
+        transaction,
+        createTransaction({
+          id: "goog-similar-history",
+          accountId: account.id,
+          accountEntityId: account.entityId,
+          economicEntityId: account.entityId,
+          transactionDate: "2026-03-05",
+          postedDate: "2026-03-05",
+          amountOriginal: "-1040.00",
+          amountBaseEur: "-1040.00",
+          currencyOriginal: "EUR",
+          descriptionRaw: "ALPHABET INC CL C @ 5",
+          descriptionClean: "ALPHABET INC CL C @ 5",
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          classificationStatus: "investment_parser",
+          classificationSource: "investment_parser",
+          classificationConfidence: "0.96",
+          needsReview: false,
+          reviewReason: null,
+          securityId: "security-goog",
+          quantity: "5.00000000",
+          unitPriceOriginal: "208.00000000",
+        }),
+        createTransaction({
+          id: "goog-pending-history",
+          accountId: account.id,
+          accountEntityId: account.entityId,
+          economicEntityId: account.entityId,
+          transactionDate: "2026-03-08",
+          postedDate: "2026-03-08",
+          amountOriginal: "-999.00",
+          amountBaseEur: "-999.00",
+          currencyOriginal: "EUR",
+          descriptionRaw: "ALPHABET INC CL C PENDING REVIEW",
+          descriptionClean: "ALPHABET INC CL C PENDING REVIEW",
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          classificationStatus: "llm",
+          classificationSource: "llm",
+          classificationConfidence: "0.52",
+          needsReview: true,
+          reviewReason: "Still ambiguous.",
+          securityId: "security-goog",
+          quantity: "5.00000000",
+          unitPriceOriginal: "199.80000000",
+        }),
+        createTransaction({
+          id: "other-account-goog",
+          accountId: otherAccount.id,
+          accountEntityId: otherAccount.entityId,
+          economicEntityId: otherAccount.entityId,
+          transactionDate: "2026-03-06",
+          postedDate: "2026-03-06",
+          amountOriginal: "-1200.00",
+          amountBaseEur: "-1200.00",
+          currencyOriginal: "EUR",
+          descriptionRaw: "ALPHABET INC CL C FROM OTHER ACCOUNT",
+          descriptionClean: "ALPHABET INC CL C FROM OTHER ACCOUNT",
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          classificationStatus: "investment_parser",
+          classificationSource: "investment_parser",
+          classificationConfidence: "0.96",
+          needsReview: false,
+          reviewReason: null,
+          securityId: "security-goog",
+          quantity: "6.00000000",
+          unitPriceOriginal: "200.00000000",
+        }),
+      ],
       securities: [
         {
           id: "security-goog",
@@ -1771,6 +1863,19 @@ test("investment review includes portfolio state and can override commission-lik
     assert.equal(decision.quantity, null);
     assert.equal(decision.unitPriceOriginal, null);
     assert.match(capturedUserPrompt, /Portfolio state:/);
+    assert.match(capturedUserPrompt, /Similar same-account resolved history:/);
+    assert.match(
+      capturedUserPrompt,
+      /"descriptionRaw":"ALPHABET INC CL C @ 5"/,
+    );
+    assert.doesNotMatch(
+      capturedUserPrompt,
+      /ALPHABET INC CL C PENDING REVIEW/,
+    );
+    assert.doesNotMatch(
+      capturedUserPrompt,
+      /ALPHABET INC CL C FROM OTHER ACCOUNT/,
+    );
     assert.match(capturedUserPrompt, /"symbol":"GOOG"/);
     assert.match(capturedUserPrompt, /"quantity":"45\.00000000"/);
     assert.match(capturedUserPrompt, /"impliedUnitPrice":"0\.13"/);
@@ -2625,4 +2730,118 @@ test("investments read model keeps processed rows available outside the selected
     model.processedRows[0]?.descriptionRaw,
     "ADVANCED MICRO DEVICES @ 2",
   );
+});
+
+test("unresolved investment rows do not contribute to rebuilt positions or YTD investment KPIs", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-unresolved-kpi",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    categories: [
+      ...createDataset().categories,
+      {
+        code: "dividend",
+        displayName: "Dividend",
+        parentCode: null,
+        scopeKind: "investment",
+        directionKind: "income",
+        sortOrder: 41,
+        active: true,
+        metadataJson: {},
+      },
+      {
+        code: "stock_buy",
+        displayName: "Stock Buy",
+        parentCode: null,
+        scopeKind: "investment",
+        directionKind: "investment",
+        sortOrder: 42,
+        active: true,
+        metadataJson: {},
+      },
+    ],
+    securities: [
+      {
+        id: "security-amd",
+        providerName: "manual",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "unresolved-dividend",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-24",
+        postedDate: "2026-03-24",
+        amountOriginal: "18.50",
+        amountBaseEur: "18.50",
+        descriptionRaw: "Dividend from Vanguard",
+        descriptionClean: "DIVIDEND FROM VANGUARD",
+        transactionClass: "dividend",
+        categoryCode: "dividend",
+        needsReview: true,
+        reviewReason: "Needs user confirmation.",
+      }),
+      createTransaction({
+        id: "unresolved-buy",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-25",
+        postedDate: "2026-03-25",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-100.00",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 1",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 1",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        needsReview: true,
+        reviewReason: "Low-confidence investment classification.",
+        securityId: "security-amd",
+        quantity: "1.00000000",
+        unitPriceOriginal: "100.00000000",
+      }),
+    ],
+  });
+
+  const rebuilt = rebuildInvestmentState(dataset, "2026-04-03");
+  const model = buildInvestmentsReadModel(
+    {
+      ...dataset,
+      investmentPositions: rebuilt.positions,
+      dailyPortfolioSnapshots: rebuilt.snapshots,
+    },
+    {
+      scope: { kind: "consolidated" },
+      displayCurrency: "EUR",
+      period: resolvePeriodSelection({
+        preset: "mtd",
+        referenceDate: "2026-04-03",
+      }),
+      referenceDate: "2026-04-03",
+    },
+  );
+
+  assert.equal(rebuilt.positions.length, 0);
+  assert.equal(model.dividendsYtd, "0.00");
+  assert.equal(model.unresolved.length, 2);
 });

@@ -105,6 +105,22 @@ export interface AnalyzeBankTransactionInput {
       priceDeltaPercent: string | null;
     } | null;
   };
+  similarAccountTransactions?: Array<{
+    transactionDate: string;
+    postedDate: string | null;
+    amountOriginal: string;
+    currencyOriginal: string;
+    descriptionRaw: string;
+    transactionClass: string;
+    categoryCode: string | null;
+    merchantNormalized: string | null;
+    counterpartyName: string | null;
+    securityId: string | null;
+    quantity: string | null;
+    unitPriceOriginal: string | null;
+    reviewReason: string | null;
+    similarityScore: string;
+  }>;
   reviewContext?: {
     trigger: string;
     previousReviewReason?: string | null;
@@ -191,6 +207,9 @@ export async function analyzeBankTransaction(
       rawPayload: JSON.stringify(input.transaction.rawPayload),
       deterministicHint: JSON.stringify(input.deterministicHint),
       portfolioState: JSON.stringify(input.portfolioState ?? null),
+      similarAccountHistory: JSON.stringify(
+        input.similarAccountTransactions ?? [],
+      ),
       reviewExamples:
         input.reviewExamples?.map((example) => ({
           transaction: JSON.stringify(example.transaction),
