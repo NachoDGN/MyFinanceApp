@@ -396,7 +396,10 @@ export interface TransactionReviewContextInput {
 }
 
 export interface TransactionEnrichmentOptions {
-  trigger?: "import_classification" | "manual_review_update";
+  trigger?:
+    | "import_classification"
+    | "manual_review_update"
+    | "review_propagation";
   reviewContext?: TransactionReviewContextInput;
   promptOverrides?: PromptProfileOverrides;
 }
@@ -442,6 +445,11 @@ type HistoricalReviewExample = {
     reviewReason: string | null;
   };
 };
+
+export interface SimilarAccountTransactionMatch {
+  transaction: Transaction;
+  score: number;
+}
 
 function normalizeOptionalText(value: string | null | undefined) {
   const text = value?.trim() ?? "";
@@ -685,6 +693,98 @@ function buildHistoricalReviewExamples(
 
       return (
         new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+      );
+    })
+    .slice(0, limit);
+}
+
+function scoreSimilarAccountTransaction(
+  target: Transaction,
+  candidate: Transaction,
+) {
+  const targetTokens = tokenizePromptText(target.descriptionRaw);
+  const candidateTokens = tokenizePromptText(candidate.descriptionRaw);
+  const overlappingTokenCount = [...targetTokens].filter((token) =>
+    candidateTokens.has(token),
+  ).length;
+  const unionCount = new Set([...targetTokens, ...candidateTokens]).size;
+  const targetMagnitude = Math.abs(Number(target.amountOriginal));
+  const candidateMagnitude = Math.abs(Number(candidate.amountOriginal));
+  const sameDirection =
+    Math.sign(Number(target.amountOriginal)) ===
+    Math.sign(Number(candidate.amountOriginal));
+
+  let score = overlappingTokenCount * 2;
+  if (unionCount > 0) {
+    score += (overlappingTokenCount / unionCount) * 10;
+  }
+  if (target.securityId && candidate.securityId === target.securityId) {
+    score += 20;
+  }
+  if (
+    target.transactionClass !== "unknown" &&
+    candidate.transactionClass === target.transactionClass
+  ) {
+    score += 4;
+  }
+  if (target.categoryCode && candidate.categoryCode === target.categoryCode) {
+    score += 3;
+  }
+  if (sameDirection) {
+    score += 2;
+  }
+  if (targetMagnitude > 0 && candidateMagnitude > 0) {
+    const amountRatio =
+      Math.min(targetMagnitude, candidateMagnitude) /
+      Math.max(targetMagnitude, candidateMagnitude);
+    if (amountRatio >= 0.8) {
+      score += 3;
+    } else if (amountRatio >= 0.5) {
+      score += 1;
+    }
+  }
+
+  return score;
+}
+
+export function rankSimilarAccountTransactions(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  options: {
+    limit?: number;
+    minScore?: number;
+    includeNeedsReview?: boolean;
+    requireEarlierDate?: boolean;
+  } = {},
+): SimilarAccountTransactionMatch[] {
+  const limit = options.limit ?? 5;
+  const minScore = options.minScore ?? 6;
+
+  return dataset.transactions
+    .filter((candidate) => candidate.id !== transaction.id)
+    .filter((candidate) => candidate.accountId === account.id)
+    .filter((candidate) => !candidate.voidedAt)
+    .filter((candidate) =>
+      options.includeNeedsReview ? true : candidate.needsReview !== true,
+    )
+    .filter((candidate) =>
+      options.requireEarlierDate
+        ? candidate.transactionDate <= transaction.transactionDate
+        : true,
+    )
+    .map((candidate) => ({
+      transaction: candidate,
+      score: scoreSimilarAccountTransaction(transaction, candidate),
+    }))
+    .filter((match) => match.score >= minScore)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return (
+        new Date(right.transaction.createdAt).getTime() -
+        new Date(left.transaction.createdAt).getTime()
       );
     })
     .slice(0, limit);
@@ -1029,6 +1129,17 @@ async function requestLlmClassification(
     account,
     transaction,
   );
+  const similarAccountTransactions = rankSimilarAccountTransactions(
+    dataset,
+    account,
+    transaction,
+    {
+      limit: 5,
+      minScore: 6,
+      includeNeedsReview: false,
+      requireEarlierDate: true,
+    },
+  );
   const requestedAt = new Date().toISOString();
   if (!isModelConfigured(model)) {
     const completedAt = new Date().toISOString();
@@ -1100,6 +1211,22 @@ async function requestLlmClassification(
         transaction,
         deterministic,
       ),
+      similarAccountTransactions: similarAccountTransactions.map((match) => ({
+        transactionDate: match.transaction.transactionDate,
+        postedDate: match.transaction.postedDate ?? null,
+        amountOriginal: match.transaction.amountOriginal,
+        currencyOriginal: match.transaction.currencyOriginal,
+        descriptionRaw: match.transaction.descriptionRaw,
+        transactionClass: match.transaction.transactionClass,
+        categoryCode: match.transaction.categoryCode ?? null,
+        merchantNormalized: match.transaction.merchantNormalized ?? null,
+        counterpartyName: match.transaction.counterpartyName ?? null,
+        securityId: match.transaction.securityId ?? null,
+        quantity: match.transaction.quantity ?? null,
+        unitPriceOriginal: match.transaction.unitPriceOriginal ?? null,
+        reviewReason: match.transaction.reviewReason ?? null,
+        similarityScore: match.score.toFixed(2),
+      })),
       reviewExamples: reviewExamples.map((example) => ({
         transaction: example.transaction,
         initialInference: example.initialInference,

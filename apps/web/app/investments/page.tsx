@@ -7,7 +7,6 @@ import {
   DistributionList,
   InvestmentAllocationCard,
   InvestmentMetricCard,
-  ReviewQueueList,
   SectionCard,
   SimpleTable,
 } from "../../components/primitives";
@@ -351,19 +350,56 @@ export default async function InvestmentsPage({
           subtitle="Review queue"
           span="span-4"
         >
-          <ReviewQueueList
-            rows={model.unresolved.map((row) => ({
-              label: row.descriptionRaw,
-              amountEur: toDisplayAmount(row.amountBaseEur) ?? "0.00",
-              reviewReason: row.reviewReason,
-              securitySymbol:
-                model.dataset.securities.find(
-                  (security) => security.id === row.securityId,
-                )?.displaySymbol ?? null,
-              transactionClass: row.transactionClass,
-            }))}
-            currency={model.currency}
-          />
+          {model.unresolved.length === 0 ? (
+            <div className="table-empty-state">
+              No unresolved investment transactions are waiting for review.
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    {["Date", "Description", "Security", "Amount", "Review"].map(
+                      (header) => (
+                        <th key={header}>{header}</th>
+                      ),
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {model.unresolved.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.transactionDate}</td>
+                      <td>{row.descriptionRaw}</td>
+                      <td>
+                        {model.dataset.securities.find(
+                          (security) => security.id === row.securityId,
+                        )?.displaySymbol ?? "—"}
+                      </td>
+                      <td>{formatDisplayAmount(row.amountBaseEur)}</td>
+                      <td>
+                        <ReviewEditorCell
+                          transactionId={row.id}
+                          needsReview={row.needsReview}
+                          reviewReason={row.reviewReason}
+                          manualNotes={row.manualNotes}
+                          transactionClass={row.transactionClass}
+                          classificationSource={row.classificationSource}
+                          securitySymbol={
+                            model.dataset.securities.find(
+                              (security) => security.id === row.securityId,
+                            )?.displaySymbol ?? null
+                          }
+                          quantity={row.quantity}
+                          llmPayload={row.llmPayload}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </SectionCard>
       </div>
     </AppShell>
