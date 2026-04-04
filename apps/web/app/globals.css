@@ -510,6 +510,8 @@ textarea {
   transform: translate(-50%, -50%);
   display: grid;
   gap: 6px;
+  width: min(64%, 12rem);
+  padding-inline: 0.25rem;
   justify-items: center;
   text-align: center;
 }
@@ -523,13 +525,15 @@ textarea {
 }
 
 .investment-allocation-center strong {
-  font-size: clamp(28px, 2.6vw, 38px);
-  line-height: 1;
+  max-width: 100%;
+  font-size: clamp(24px, 2.4vw, 36px);
+  line-height: 0.95;
   letter-spacing: -0.04em;
+  text-wrap: balance;
 }
 
 .investment-allocation-caption {
-  max-width: 10rem;
+  max-width: 100%;
   color: var(--color-text-muted);
   font-size: 13px;
   line-height: 1.45;
@@ -636,12 +640,17 @@ textarea {
   place-items: center;
   text-align: center;
   gap: 4px;
+  width: min(60%, 16rem);
+  padding-inline: 0.5rem;
 }
 
 .allocation-donut-center strong {
-  font-size: 28px;
+  max-width: 100%;
+  font-size: clamp(24px, 2.3vw, 28px);
   font-weight: 700;
+  line-height: 0.96;
   letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 
 .allocation-legend {

@@ -14,6 +14,7 @@ import {
 } from "../../components/primitives";
 import {
   formatCurrency,
+  formatQuantity,
   formatPercent,
   getInvestmentsModel,
 } from "../../lib/queries";
@@ -27,7 +28,12 @@ export default async function InvestmentsPage({
   const eurToDisplayRate =
     model.currency === "EUR"
       ? new Decimal(1)
-      : resolveFxRate(model.dataset, "EUR", model.currency, model.referenceDate);
+      : resolveFxRate(
+          model.dataset,
+          "EUR",
+          model.currency,
+          model.referenceDate,
+        );
 
   const toDisplayAmount = (amount: string | null | undefined) => {
     if (amount === null || amount === undefined) return null;
@@ -176,7 +182,7 @@ export default async function InvestmentsPage({
             model.dataset.accounts.find(
               (account) => account.id === holding.accountId,
             )?.displayName ?? holding.accountId,
-            holding.quantity,
+            formatQuantity(holding.quantity),
             formatDisplayAmount(holding.avgCostEur),
             formatDisplayPrice(
               holding.currentPrice,
@@ -203,7 +209,7 @@ export default async function InvestmentsPage({
             row.transactionDate,
             row.descriptionRaw,
             row.transactionClass,
-            row.quantity ?? "—",
+            formatQuantity(row.quantity),
             model.dataset.securities.find(
               (security) => security.id === row.securityId,
             )?.displaySymbol ?? "—",

@@ -12,7 +12,7 @@ import {
   SimpleTable,
   TimelinePanel,
 } from "./primitives";
-import { formatCurrency, formatPercent } from "../lib/queries";
+import { formatCurrency, formatPercent, formatQuantity } from "../lib/queries";
 
 export function DashboardView({
   pathname,
@@ -25,7 +25,9 @@ export function DashboardView({
   state: { scopeParam: string; currency: string; period: string };
   model: DashboardModel;
 }) {
-  const metricMap = new Map(model.summary.metrics.map((metric) => [metric.metricId, metric]));
+  const metricMap = new Map(
+    model.summary.metrics.map((metric) => [metric.metricId, metric]),
+  );
   const cashMetric = metricMap.get("cash_total_current");
   const incomeMetric = metricMap.get("income_mtd_total");
   const spendingMetric = metricMap.get("spending_mtd_total");
@@ -49,16 +51,18 @@ export function DashboardView({
     },
     {
       label: "Uncategorized amount",
-      value: formatCurrency(model.summary.quality.unclassifiedAmountMtdEur, model.currency),
+      value: formatCurrency(
+        model.summary.quality.unclassifiedAmountMtdEur,
+        model.currency,
+      ),
       meta: "Current month uncategorized exposure",
     },
     {
       label: "Stale accounts",
       value: String(model.summary.quality.staleAccountsCount),
-      meta:
-        model.summary.quality.staleAccounts[0]
-          ? `${model.summary.quality.staleAccounts[0].accountName} needs a refresh`
-          : "Imports are current",
+      meta: model.summary.quality.staleAccounts[0]
+        ? `${model.summary.quality.staleAccounts[0].accountName} needs a refresh`
+        : "Imports are current",
     },
     {
       label: "Quote freshness",
@@ -81,16 +85,25 @@ export function DashboardView({
             <div className="account-type">
               <span className="label-sm dark-label">Personal Accounts</span>
               <div className="account-value">
-                {formatCurrency(model.summaryBreakdown.personal?.valueDisplay, model.currency)}
+                {formatCurrency(
+                  model.summaryBreakdown.personal?.valueDisplay,
+                  model.currency,
+                )}
               </div>
             </div>
             <div className="account-type">
               <span className="label-sm dark-label">Company Assets</span>
               <div className="account-value">
-                {formatCurrency(model.summaryBreakdown.companies.valueDisplay, model.currency)}
+                {formatCurrency(
+                  model.summaryBreakdown.companies.valueDisplay,
+                  model.currency,
+                )}
               </div>
             </div>
-            <a className="btn-pill" href={`/transactions?currency=${model.currency}`}>
+            <a
+              className="btn-pill"
+              href={`/transactions?currency=${model.currency}`}
+            >
               Review Ledger
             </a>
           </div>
@@ -101,7 +114,9 @@ export function DashboardView({
           value={formatCurrency(cashMetric?.valueDisplay, model.currency)}
           delta={`${cashMetric?.deltaPercent ?? "0.00"}%`}
           subtitle={`${formatCurrency(cashMetric?.deltaDisplay, model.currency)} vs month-end`}
-          direction={Number(cashMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"}
+          direction={
+            Number(cashMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
+          }
           chartValues={chartFrom("incomeEur")}
         />
         <MetricCard
@@ -109,7 +124,9 @@ export function DashboardView({
           value={formatCurrency(incomeMetric?.valueDisplay, model.currency)}
           delta={`${incomeMetric?.deltaPercent ?? "0.00"}%`}
           subtitle={`${formatCurrency(incomeMetric?.deltaDisplay, model.currency)} from prior pace`}
-          direction={Number(incomeMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"}
+          direction={
+            Number(incomeMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
+          }
           chartValues={chartFrom("incomeEur")}
         />
         <MetricCard
@@ -117,7 +134,9 @@ export function DashboardView({
           value={formatCurrency(spendingMetric?.valueDisplay, model.currency)}
           delta={`${spendingMetric?.deltaPercent ?? "0.00"}%`}
           subtitle={`${formatCurrency(spendingMetric?.deltaDisplay, model.currency)} from prior pace`}
-          direction={Number(spendingMetric?.deltaDisplay ?? "0") <= 0 ? "down" : "up"}
+          direction={
+            Number(spendingMetric?.deltaDisplay ?? "0") <= 0 ? "down" : "up"
+          }
           chartValues={chartFrom("spendingEur")}
         />
         <MetricCard
@@ -125,7 +144,9 @@ export function DashboardView({
           value={formatCurrency(netMetric?.valueDisplay, model.currency)}
           delta={`${netMetric?.deltaPercent ?? "0.00"}%`}
           subtitle={`${formatCurrency(netMetric?.deltaDisplay, model.currency)} from prior pace`}
-          direction={Number(netMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"}
+          direction={
+            Number(netMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
+          }
           chartValues={chartFrom("operatingNetEur")}
         />
         <MetricCard
@@ -133,7 +154,9 @@ export function DashboardView({
           value={formatCurrency(portfolioMetric?.valueDisplay, model.currency)}
           delta={`${portfolioMetric?.deltaPercent ?? "0.00"}%`}
           subtitle={`${formatCurrency(portfolioMetric?.deltaDisplay, model.currency)} vs month-end`}
-          direction={Number(portfolioMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"}
+          direction={
+            Number(portfolioMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
+          }
           chartValues={chartFrom("incomeEur")}
         />
         <MetricCard
@@ -141,15 +164,23 @@ export function DashboardView({
           value={formatCurrency(unrealizedMetric?.valueDisplay, model.currency)}
           delta={`${unrealizedMetric?.deltaPercent ?? "0.00"}%`}
           subtitle={`${formatCurrency(unrealizedMetric?.deltaDisplay, model.currency)} vs month-end`}
-          direction={Number(unrealizedMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"}
+          direction={
+            Number(unrealizedMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
+          }
           chartValues={chartFrom("operatingNetEur")}
         />
         <MetricCard
           label="Pending Review"
           value={String(model.summary.quality.pendingReviewCount)}
-          delta={model.summary.quality.pendingReviewCount > 0 ? "Needs work" : "Clear"}
+          delta={
+            model.summary.quality.pendingReviewCount > 0
+              ? "Needs work"
+              : "Clear"
+          }
           subtitle={`${formatCurrency(model.summary.quality.unclassifiedAmountMtdEur, model.currency)} uncategorized`}
-          direction={model.summary.quality.pendingReviewCount > 0 ? "down" : "up"}
+          direction={
+            model.summary.quality.pendingReviewCount > 0 ? "down" : "up"
+          }
           chartValues={chartValues.map((row) => Number(row.spendingEur) / 10)}
         />
 
@@ -166,41 +197,59 @@ export function DashboardView({
             </div>
           }
           currency={model.currency}
-          transactions={model.summary.recentLargeTransactions.slice(0, 4).map((row) => ({
-            id: row.id,
-            transactionDate: row.transactionDate,
-            descriptionRaw: row.descriptionRaw,
-            amountDisplay: formatCurrency(row.amountBaseEur, model.currency),
-            positive: Number(row.amountBaseEur) > 0,
-          }))}
+          transactions={model.summary.recentLargeTransactions
+            .slice(0, 4)
+            .map((row) => ({
+              id: row.id,
+              transactionDate: row.transactionDate,
+              descriptionRaw: row.descriptionRaw,
+              amountDisplay: formatCurrency(row.amountBaseEur, model.currency),
+              positive: Number(row.amountBaseEur) > 0,
+            }))}
         />
 
         <div className="sidebar-panel">
           <CategoryListCard
             title="Current-Month Spending Categories"
-            rows={model.summary.spendingByCategory.slice(0, 4).map((row, index) => ({
-              label: row.label,
-              value: formatCurrency(row.amountEur, model.currency),
-              icon: ["💻", "🏠", "🍔", "🚗"][index] ?? "•",
-            }))}
+            rows={model.summary.spendingByCategory
+              .slice(0, 4)
+              .map((row, index) => ({
+                label: row.label,
+                value: formatCurrency(row.amountEur, model.currency),
+                icon: ["💻", "🏠", "🍔", "🚗"][index] ?? "•",
+              }))}
             ctaHref={`/spending?scope=${model.scopeParam}&currency=${model.currency}&period=${state.period}`}
             ctaLabel="Full Analysis"
           />
           <HighlightCard
             title="Insight"
-            body={model.summary.insights[0]?.body ?? "Structured insights are ready."}
-            metric={formatCurrency(unrealizedMetric?.valueDisplay, model.currency)}
+            body={
+              model.summary.insights[0]?.body ??
+              "Structured insights are ready."
+            }
+            metric={formatCurrency(
+              unrealizedMetric?.valueDisplay,
+              model.currency,
+            )}
             footer="Current unrealized gain"
           />
         </div>
 
         <QualityBanner rows={qualityRows} />
 
-        <SectionCard title="12-Month Operating Cash Flow" subtitle="History" span="span-12">
+        <SectionCard
+          title="12-Month Operating Cash Flow"
+          subtitle="History"
+          span="span-12"
+        >
           <MultiSeriesChart rows={model.summary.monthlySeries} />
         </SectionCard>
 
-        <SectionCard title="Current-Month Spending by Category" subtitle="Breakdown" span="span-6">
+        <SectionCard
+          title="Current-Month Spending by Category"
+          subtitle="Breakdown"
+          span="span-6"
+        >
           <DistributionList
             rows={model.summary.spendingByCategory.map((row) => ({
               label: row.label,
@@ -210,16 +259,30 @@ export function DashboardView({
           />
         </SectionCard>
 
-        <SectionCard title="Portfolio Allocation by Security" subtitle="Current holdings" span="span-6">
-          <DistributionList rows={model.summary.portfolioAllocation} currency={model.currency} />
+        <SectionCard
+          title="Portfolio Allocation by Security"
+          subtitle="Current holdings"
+          span="span-6"
+        >
+          <DistributionList
+            rows={model.summary.portfolioAllocation}
+            currency={model.currency}
+          />
         </SectionCard>
 
         <SimpleTable
           span="span-8"
-          headers={["Security", "Qty", "Avg Cost", "Current Value", "Unrealized", "Freshness"]}
+          headers={[
+            "Security",
+            "Qty",
+            "Avg Cost",
+            "Current Value",
+            "Unrealized",
+            "Freshness",
+          ]}
           rows={model.summary.topHoldings.map((holding) => [
             holding.symbol,
-            holding.quantity,
+            formatQuantity(holding.quantity),
             formatCurrency(holding.avgCostEur, "EUR"),
             formatCurrency(holding.currentValueEur, model.currency),
             `${formatCurrency(holding.unrealizedPnlEur, model.currency)} (${formatPercent(
@@ -229,7 +292,11 @@ export function DashboardView({
           ])}
         />
 
-        <SectionCard title="Insights" subtitle="Deterministic evidence" span="span-4">
+        <SectionCard
+          title="Insights"
+          subtitle="Deterministic evidence"
+          span="span-4"
+        >
           <InsightCards insights={model.summary.insights} />
         </SectionCard>
       </div>

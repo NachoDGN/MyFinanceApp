@@ -303,6 +303,51 @@ function securityConflictsWithHint(hint: string, security: Security) {
   return false;
 }
 
+function readPayloadField<T>(
+  payload: Record<string, unknown>,
+  keys: string[],
+): T | null {
+  for (const key of keys) {
+    if (key in payload) {
+      return payload[key] as T;
+    }
+  }
+  return null;
+}
+
+function readPayloadString(payload: Record<string, unknown>, keys: string[]) {
+  const value = readPayloadField<unknown>(payload, keys);
+  if (typeof value === "string" && value.trim() !== "") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function readPayloadBoolean(payload: Record<string, unknown>, keys: string[]) {
+  const value = readPayloadField<unknown>(payload, keys);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return null;
+}
+
+function readPayloadTimestamp(
+  payload: Record<string, unknown>,
+  keys: string[],
+) {
+  const value = readPayloadField<unknown>(payload, keys);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return null;
+}
+
+function isWeekendIso(value: string) {
+  const day = new Date(`${value}T00:00:00Z`).getUTCDay();
+  return day === 0 || day === 6;
+}
+
 async function fetchSearchCandidates(query: string, apiKey: string) {
   const url = new URL("https://api.twelvedata.com/symbol_search");
   url.searchParams.set("symbol", query);
@@ -379,10 +424,17 @@ async function fetchHistoricalPrice(
   } satisfies SecurityPrice;
 }
 
-async function fetchLatestPrice(security: Security, apiKey: string) {
+async function fetchLatestPrice(
+  security: Security,
+  apiKey: string,
+  referenceDate: string,
+) {
   const url = new URL("https://api.twelvedata.com/quote");
   url.searchParams.set("symbol", security.providerSymbol);
   url.searchParams.set("apikey", apiKey);
+  if (isWeekendIso(referenceDate)) {
+    url.searchParams.set("eod", "true");
+  }
 
   const response = await fetch(url);
   if (!response.ok) {
@@ -390,31 +442,33 @@ async function fetchLatestPrice(security: Security, apiKey: string) {
   }
 
   const payload = (await response.json()) as Record<string, unknown>;
-  if (typeof payload.close !== "string" && typeof payload.price !== "string") {
+  const price = readPayloadString(payload, ["close", "price"]);
+  if (!price) {
     return null;
   }
 
   const priceDate =
-    typeof payload.datetime === "string" && payload.datetime.length >= 10
-      ? payload.datetime.slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
+    readPayloadString(payload, ["datetime"])?.slice(0, 10) ?? referenceDate;
+  const isMarketOpen =
+    readPayloadBoolean(payload, ["is_market_open", "isMarketOpen"]) ?? false;
+  const currency =
+    readPayloadString(payload, ["currency"]) ?? security.quoteCurrency;
 
   return {
     securityId: security.id,
     priceDate,
     quoteTimestamp:
-      typeof payload.last_quote_at === "number"
-        ? new Date(payload.last_quote_at * 1000).toISOString()
-        : new Date().toISOString(),
-    price: String(payload.close ?? payload.price ?? "0.00"),
-    currency:
-      typeof payload.currency === "string"
-        ? payload.currency
-        : security.quoteCurrency,
+      readPayloadTimestamp(payload, [
+        "last_quote_at",
+        "lastQuoteAt",
+        "timestamp",
+      ]) ?? `${priceDate}T16:00:00Z`,
+    price,
+    currency,
     sourceName: "twelve_data",
-    isRealtime: Boolean(payload.is_market_open),
-    isDelayed: !Boolean(payload.is_market_open),
-    marketState: payload.is_market_open ? "open" : "closed",
+    isRealtime: isMarketOpen,
+    isDelayed: !isMarketOpen,
+    marketState: isMarketOpen ? "open" : "closed",
     rawJson: payload,
     createdAt: new Date().toISOString(),
   } satisfies SecurityPrice;
@@ -686,16 +740,18 @@ function findStoredHistoricalPrice(
   securityId: string,
   transactionDate: string,
 ) {
-  return [...dataset.securityPrices]
-    .filter(
-      (price) =>
-        price.securityId === securityId && price.priceDate <= transactionDate,
-    )
-    .sort((left, right) =>
-      `${right.priceDate}${right.createdAt}`.localeCompare(
-        `${left.priceDate}${left.createdAt}`,
-      ),
-    )[0] ?? null;
+  return (
+    [...dataset.securityPrices]
+      .filter(
+        (price) =>
+          price.securityId === securityId && price.priceDate <= transactionDate,
+      )
+      .sort((left, right) =>
+        `${right.priceDate}${right.createdAt}`.localeCompare(
+          `${left.priceDate}${left.createdAt}`,
+        ),
+      )[0] ?? null
+  );
 }
 
 function shouldClearReview(
@@ -853,7 +909,9 @@ export async function prepareInvestmentRebuild(
       return latestPriceCache.get(cacheKey) ?? null;
     }
 
-    const price = apiKey ? await fetchLatestPrice(security, apiKey) : null;
+    const price = apiKey
+      ? await fetchLatestPrice(security, apiKey, referenceDate)
+      : null;
     latestPriceCache.set(cacheKey, price);
     return price;
   };
@@ -1147,7 +1205,9 @@ export async function prepareInvestmentRebuild(
 
     if (
       transaction.needsReview &&
-      /diverges from available market data/i.test(transaction.reviewReason ?? "")
+      /diverges from available market data/i.test(
+        transaction.reviewReason ?? "",
+      )
     ) {
       transaction.needsReview = false;
       transaction.reviewReason = null;

@@ -1,3 +1,5 @@
+import { Decimal } from "decimal.js";
+
 import {
   buildDashboardReadModel,
   buildDashboardSummary,
@@ -9,8 +11,7 @@ import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
 import { createFinanceRepository } from "@myfinance/db";
 import {
   FinanceDomainService,
-  filterTransactionsByScope,
-  getDatasetLatestDate,
+  getScopeLatestDate,
   resolvePeriodSelection,
   type Scope,
   type Transaction,
@@ -38,20 +39,16 @@ export async function resolveAppState(searchParams: RawSearchParams) {
   const scopeParam = normalizeParam(params, "scope") ?? "consolidated";
   const currency = normalizeParam(params, "currency") === "USD" ? "USD" : "EUR";
   const periodParam = normalizeParam(params, "period") ?? "mtd";
-  const entityBySlug = new Map(dataset.entities.map((entity) => [entity.slug, entity.id]));
+  const entityBySlug = new Map(
+    dataset.entities.map((entity) => [entity.slug, entity.id]),
+  );
   const scope: Scope = scopeParam.startsWith("account:")
     ? { kind: "account", accountId: scopeParam.replace("account:", "") }
     : scopeParam === "consolidated"
       ? { kind: "consolidated" }
       : { kind: "entity", entityId: entityBySlug.get(scopeParam) };
-  const latestScopedTransactionDate = filterTransactionsByScope(dataset, scope)
-    .map((row) => row.transactionDate)
-    .sort()
-    .at(-1);
   const referenceDate =
-    normalizeParam(params, "asOf") ??
-    latestScopedTransactionDate ??
-    getDatasetLatestDate(dataset);
+    normalizeParam(params, "asOf") ?? getScopeLatestDate(dataset, scope);
   const period = resolvePeriodSelection({
     preset: periodParam,
     start: normalizeParam(params, "start"),
@@ -61,7 +58,10 @@ export async function resolveAppState(searchParams: RawSearchParams) {
 
   const scopeOptions = [
     { value: "consolidated", label: "Consolidated" },
-    ...dataset.entities.map((entity) => ({ value: entity.slug, label: entity.displayName })),
+    ...dataset.entities.map((entity) => ({
+      value: entity.slug,
+      label: entity.displayName,
+    })),
     ...dataset.accounts.map((account) => ({
       value: `account:${account.id}`,
       label: `${account.displayName} (Account)`,
@@ -119,7 +119,10 @@ export function buildHref(
   return `${pathname}?${query.toString()}`;
 }
 
-export function formatCurrency(amount: string | null | undefined, currency: string) {
+export function formatCurrency(
+  amount: string | null | undefined,
+  currency: string,
+) {
   if (amount === null || amount === undefined) return "N/A";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -131,6 +134,19 @@ export function formatCurrency(amount: string | null | undefined, currency: stri
 export function formatPercent(value: string | null | undefined) {
   if (value === null || value === undefined) return "N/A";
   return `${Number(value).toFixed(2)}%`;
+}
+
+export function formatQuantity(value: string | null | undefined) {
+  if (value === null || value === undefined || value.trim() === "") return "—";
+
+  try {
+    const quantity = new Decimal(value);
+    return quantity.isInteger()
+      ? quantity.toFixed(0)
+      : quantity.toFixed(8).replace(/\.?0+$/, "");
+  } catch {
+    return value;
+  }
 }
 
 export function formatDate(value: string) {
@@ -158,7 +174,9 @@ export async function getDashboardModel(searchParams: RawSearchParams) {
 }
 
 export type DashboardModel = Awaited<ReturnType<typeof getDashboardModel>>;
-export type TransactionsModel = Awaited<ReturnType<typeof getTransactionsModel>>;
+export type TransactionsModel = Awaited<
+  ReturnType<typeof getTransactionsModel>
+>;
 export type AccountsModel = Awaited<ReturnType<typeof getAccountsModel>>;
 export type ImportsModel = Awaited<ReturnType<typeof getImportsModel>>;
 export type TemplatesModel = Awaited<ReturnType<typeof getTemplatesModel>>;
@@ -269,7 +287,10 @@ export async function getSettingsModel(searchParams: RawSearchParams) {
 
 export function transactionBadge(transaction: Transaction) {
   if (transaction.needsReview) return "warning";
-  if (transaction.transactionClass === "income" || transaction.transactionClass === "dividend") {
+  if (
+    transaction.transactionClass === "income" ||
+    transaction.transactionClass === "dividend"
+  ) {
     return "positive";
   }
   return "neutral";

@@ -19,6 +19,7 @@ import {
   createTemplateConfig,
   getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
+  getScopeLatestDate,
   rebuildInvestmentState,
   resolvePeriodSelection,
 } from "../packages/domain/src/index.ts";
@@ -149,6 +150,106 @@ test("month-to-date metrics use a dynamic comparison window and ignore internal 
   assert.equal(spending.valueBaseEur, "100.00");
   assert.equal(spending.comparisonValueBaseEur, "80.00");
   assert.equal(operatingNet.valueBaseEur, "900.00");
+});
+
+test("scope latest date prefers newer market and FX data over the latest transaction date", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-latest-date",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        id: "older-trade",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-24",
+        postedDate: "2026-03-24",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-92.00",
+        currencyOriginal: "USD",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-amd-latest-date",
+        quantity: "1.00000000",
+      }),
+    ],
+    securities: [
+      {
+        id: "security-amd-latest-date",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-03-24T08:00:00Z",
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-amd-latest-date",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T20:00:00Z",
+        price: "110.00",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-04-03T20:00:00Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T20:00:00Z",
+        rate: "0.92000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: "entity-1",
+        accountId: investmentAccount.id,
+        securityId: "security-amd-latest-date",
+        openQuantity: "1.00000000",
+        openCostBasisEur: "92.00000000",
+        avgCostEur: "92.00000000",
+        realizedPnlEur: "0.00000000",
+        dividendsEur: "0.00000000",
+        interestEur: "0.00000000",
+        feesEur: "0.00000000",
+        lastTradeDate: "2026-03-24",
+        lastRebuiltAt: "2026-04-03T20:00:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  assert.equal(
+    getScopeLatestDate(dataset, { kind: "consolidated" }),
+    "2026-04-03",
+  );
 });
 
 test("saved classification rules win before fallback logic or LLM classification", async () => {
@@ -487,6 +588,150 @@ test("investment rebuild flags trades whose implied unit price is implausible", 
       patch?.reviewReason ?? "",
       /diverges from available market data/i,
     );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test("investment rebuild requests end-of-day quotes on weekends", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const requestedUrls: string[] = [];
+
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    requestedUrls.push(requestUrl);
+    const url = new URL(requestUrl);
+
+    if (url.pathname.endsWith("/time_series")) {
+      return new Response(
+        JSON.stringify({
+          values: [
+            {
+              datetime: "2026-04-01",
+              close: "100.00",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    if (url.pathname.endsWith("/quote")) {
+      return new Response(
+        JSON.stringify({
+          close: "110.00",
+          currency: "USD",
+          datetime: "2026-04-03",
+          is_market_open: "false",
+          last_quote_at: 1775232000,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const investmentAccount = createAccount({
+      id: "brokerage-weekend",
+      accountType: "brokerage_account",
+      assetDomain: "investment",
+      defaultCurrency: "USD",
+    });
+    const dataset = createDataset({
+      accounts: [investmentAccount],
+      transactions: [
+        createTransaction({
+          id: "weekend-buy",
+          accountId: investmentAccount.id,
+          accountEntityId: investmentAccount.entityId,
+          economicEntityId: investmentAccount.entityId,
+          transactionDate: "2026-04-01",
+          postedDate: "2026-04-01",
+          amountOriginal: "-100.00",
+          amountBaseEur: "-92.00",
+          currencyOriginal: "USD",
+          descriptionRaw: "AMD @ 1",
+          descriptionClean: "AMD @ 1",
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          classificationStatus: "investment_parser",
+          classificationSource: "investment_parser",
+          classificationConfidence: "0.96",
+          securityId: "security-amd-weekend",
+          quantity: "1.00000000",
+          unitPriceOriginal: "100.00",
+        }),
+      ],
+      securities: [
+        {
+          id: "security-amd-weekend",
+          providerName: "twelve_data",
+          providerSymbol: "AMD",
+          canonicalSymbol: "AMD",
+          displaySymbol: "AMD",
+          name: "Advanced Micro Devices Inc",
+          exchangeName: "NASDAQ",
+          micCode: "XNAS",
+          assetType: "stock",
+          quoteCurrency: "USD",
+          country: "US",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {},
+          lastPriceRefreshAt: null,
+          createdAt: "2026-04-01T08:00:00Z",
+        },
+      ],
+      fxRates: [
+        {
+          baseCurrency: "USD",
+          quoteCurrency: "EUR",
+          asOfDate: "2026-04-03",
+          asOfTimestamp: "2026-04-03T20:00:00Z",
+          rate: "0.92000000",
+          sourceName: "twelve_data",
+          rawJson: {},
+        },
+      ],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-04-04");
+    const latestPrice = rebuilt.upsertedPrices.find(
+      (price) =>
+        price.securityId === "security-amd-weekend" &&
+        price.priceDate === "2026-04-03",
+    );
+    const quoteRequest = requestedUrls.find((url) => url.includes("/quote"));
+
+    assert.ok(quoteRequest);
+    assert.equal(new URL(quoteRequest).searchParams.get("eod"), "true");
+    assert.equal(latestPrice?.price, "110.00");
+    assert.equal(latestPrice?.isDelayed, true);
+    assert.equal(latestPrice?.isRealtime, false);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) {
@@ -1383,5 +1628,8 @@ test("investments read model exposes unresolved investment items outside the sel
 
   assert.equal(model.investmentRows.length, 0);
   assert.equal(model.unresolved.length, 1);
-  assert.equal(model.unresolved[0]?.descriptionRaw, "VANGUARD US 500 STOCK INDEX EU");
+  assert.equal(
+    model.unresolved[0]?.descriptionRaw,
+    "VANGUARD US 500 STOCK INDEX EU",
+  );
 });

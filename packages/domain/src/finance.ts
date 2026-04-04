@@ -60,7 +60,9 @@ function isIsoDate(value: string | undefined): value is string {
 }
 
 function dayCountInclusive(start: string, end: string) {
-  return Math.floor((toDate(end).getTime() - toDate(start).getTime()) / 86400000) + 1;
+  return (
+    Math.floor((toDate(end).getTime() - toDate(start).getTime()) / 86400000) + 1
+  );
 }
 
 function dayDistance(start: string, end: string) {
@@ -76,7 +78,9 @@ export function resolvePeriodSelection(input: {
   end?: string;
   referenceDate?: string;
 }): PeriodSelection {
-  const referenceDate = isIsoDate(input.referenceDate) ? input.referenceDate : todayIso();
+  const referenceDate = isIsoDate(input.referenceDate)
+    ? input.referenceDate
+    : todayIso();
   const preset = input.preset ?? "mtd";
 
   if (preset === "custom" && isIsoDate(input.start) && isIsoDate(input.end)) {
@@ -118,30 +122,41 @@ export function resolvePeriodSelection(input: {
   };
 }
 
-export function getPreviousComparablePeriod(period: PeriodSelection): PeriodSelection {
+export function getPreviousComparablePeriod(
+  period: PeriodSelection,
+): PeriodSelection {
   if (period.preset === "mtd") {
     const currentMonthStart = toDate(period.start);
-    const previousMonthStart = new Date(Date.UTC(
-      currentMonthStart.getUTCFullYear(),
-      currentMonthStart.getUTCMonth() - 1,
-      1,
-    ));
-    const previousMonthEnd = new Date(Date.UTC(
-      currentMonthStart.getUTCFullYear(),
-      currentMonthStart.getUTCMonth(),
-      0,
-    ));
+    const previousMonthStart = new Date(
+      Date.UTC(
+        currentMonthStart.getUTCFullYear(),
+        currentMonthStart.getUTCMonth() - 1,
+        1,
+      ),
+    );
+    const previousMonthEnd = new Date(
+      Date.UTC(
+        currentMonthStart.getUTCFullYear(),
+        currentMonthStart.getUTCMonth(),
+        0,
+      ),
+    );
     const currentDayNumber = Number(period.end.slice(8, 10));
-    const previousEndDay = Math.min(currentDayNumber, previousMonthEnd.getUTCDate());
+    const previousEndDay = Math.min(
+      currentDayNumber,
+      previousMonthEnd.getUTCDate(),
+    );
 
     return {
       start: toIsoDate(previousMonthStart),
       end: toIsoDate(
-        new Date(Date.UTC(
-          previousMonthStart.getUTCFullYear(),
-          previousMonthStart.getUTCMonth(),
-          previousEndDay,
-        )),
+        new Date(
+          Date.UTC(
+            previousMonthStart.getUTCFullYear(),
+            previousMonthStart.getUTCMonth(),
+            previousEndDay,
+          ),
+        ),
       ),
       preset: "mtd",
     };
@@ -155,7 +170,10 @@ export function getPreviousComparablePeriod(period: PeriodSelection): PeriodSele
   };
 }
 
-export function getDatasetLatestDate(dataset: DomainDataset, fallback = todayIso()) {
+export function getDatasetLatestDate(
+  dataset: DomainDataset,
+  fallback = todayIso(),
+) {
   const latest = [
     ...dataset.transactions.map((row) => row.transactionDate),
     ...dataset.importBatches.flatMap((row) => [
@@ -175,7 +193,88 @@ export function getDatasetLatestDate(dataset: DomainDataset, fallback = todayIso
   return latest || fallback;
 }
 
-export function resolveScopeEntityIds(dataset: DomainDataset, scope: Scope): string[] {
+export function getScopeLatestDate(
+  dataset: DomainDataset,
+  scope: Scope,
+  fallback = todayIso(),
+) {
+  const scopedTransactions = filterTransactionsByScope(dataset, scope);
+  const scopedAccountIds = new Set(
+    scope.kind === "consolidated"
+      ? dataset.accounts.map((account) => account.id)
+      : scope.kind === "entity" && scope.entityId
+        ? dataset.accounts
+            .filter((account) => account.entityId === scope.entityId)
+            .map((account) => account.id)
+        : scope.kind === "account" && scope.accountId
+          ? [scope.accountId]
+          : [],
+  );
+  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
+  const scopedSecurityIds = new Set([
+    ...dataset.investmentPositions
+      .filter(
+        (position) =>
+          entityIds.has(position.entityId) &&
+          (scope.kind !== "account" || position.accountId === scope.accountId),
+      )
+      .map((position) => position.securityId),
+    ...dataset.holdingAdjustments
+      .filter(
+        (adjustment) =>
+          entityIds.has(adjustment.entityId) &&
+          (scope.kind !== "account" ||
+            adjustment.accountId === scope.accountId),
+      )
+      .map((adjustment) => adjustment.securityId),
+    ...scopedTransactions
+      .map((transaction) => transaction.securityId)
+      .filter((securityId): securityId is string => Boolean(securityId)),
+  ]);
+
+  const latest = [
+    ...scopedTransactions.map((row) => row.transactionDate),
+    ...dataset.importBatches
+      .filter((row) => scopedAccountIds.has(row.accountId))
+      .flatMap((row) => [row.detectedDateRange?.end ?? ""]),
+    ...dataset.accountBalanceSnapshots
+      .filter((row) => scopedAccountIds.has(row.accountId))
+      .map((row) => row.asOfDate),
+    ...dataset.securityPrices
+      .filter((row) => scopedSecurityIds.has(row.securityId))
+      .map((row) => row.priceDate),
+    ...dataset.fxRates.map((row) => row.asOfDate),
+    ...dataset.holdingAdjustments
+      .filter(
+        (row) =>
+          entityIds.has(row.entityId) &&
+          (scope.kind !== "account" || row.accountId === scope.accountId),
+      )
+      .map((row) => row.effectiveDate),
+    ...dataset.dailyPortfolioSnapshots
+      .filter(
+        (row) =>
+          entityIds.has(row.entityId) &&
+          (scope.kind !== "account" ||
+            row.accountId === scope.accountId ||
+            row.accountId === null),
+      )
+      .map((row) => row.snapshotDate),
+    ...dataset.monthlyCashFlowRollups
+      .filter((row) => entityIds.has(row.entityId))
+      .map((row) => row.month),
+  ]
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+
+  return latest || fallback;
+}
+
+export function resolveScopeEntityIds(
+  dataset: DomainDataset,
+  scope: Scope,
+): string[] {
   if (scope.kind === "consolidated") {
     return dataset.entities.map((entity) => entity.id);
   }
@@ -192,17 +291,24 @@ export function resolveScopeEntityIds(dataset: DomainDataset, scope: Scope): str
   return [];
 }
 
-export function filterTransactionsByScope(dataset: DomainDataset, scope: Scope): Transaction[] {
+export function filterTransactionsByScope(
+  dataset: DomainDataset,
+  scope: Scope,
+): Transaction[] {
   if (scope.kind === "consolidated") {
     return dataset.transactions;
   }
 
   if (scope.kind === "entity" && scope.entityId) {
-    return dataset.transactions.filter((row) => row.economicEntityId === scope.entityId);
+    return dataset.transactions.filter(
+      (row) => row.economicEntityId === scope.entityId,
+    );
   }
 
   if (scope.kind === "account" && scope.accountId) {
-    return dataset.transactions.filter((row) => row.accountId === scope.accountId);
+    return dataset.transactions.filter(
+      (row) => row.accountId === scope.accountId,
+    );
   }
 
   return dataset.transactions;
@@ -213,7 +319,8 @@ export function filterTransactionsByPeriod(
   period: PeriodSelection,
 ) {
   return transactions.filter(
-    (row) => row.transactionDate >= period.start && row.transactionDate <= period.end,
+    (row) =>
+      row.transactionDate >= period.start && row.transactionDate <= period.end,
   );
 }
 
@@ -292,7 +399,8 @@ function parseImportedBalance(
 
   const balanceOriginal = new Decimal(String(balanceOriginalValue)).toFixed(8);
   const balanceCurrency =
-    typeof importPayload?.balanceCurrency === "string" && importPayload.balanceCurrency.trim()
+    typeof importPayload?.balanceCurrency === "string" &&
+    importPayload.balanceCurrency.trim()
       ? importPayload.balanceCurrency.trim()
       : accountCurrency;
 
@@ -306,33 +414,53 @@ export function getLatestInvestmentCashBalances(
   dataset: DomainDataset,
   asOfDate = todayIso(),
 ) {
-  const seededSnapshots = getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, asOfDate);
-  const snapshotsByAccount = new Map(seededSnapshots.map((snapshot) => [snapshot.accountId, snapshot]));
+  const seededSnapshots = getLatestBalanceSnapshots(
+    dataset.accountBalanceSnapshots,
+    asOfDate,
+  );
+  const snapshotsByAccount = new Map(
+    seededSnapshots.map((snapshot) => [snapshot.accountId, snapshot]),
+  );
 
   for (const account of dataset.accounts) {
-    if (account.assetDomain !== "investment" || snapshotsByAccount.has(account.id)) {
+    if (
+      account.assetDomain !== "investment" ||
+      snapshotsByAccount.has(account.id)
+    ) {
       continue;
     }
 
     const latestTransaction = [...dataset.transactions]
-      .filter((transaction) => transaction.accountId === account.id && transaction.transactionDate <= asOfDate)
-      .sort(
-        (left, right) =>
-          `${right.transactionDate}${right.createdAt}`.localeCompare(`${left.transactionDate}${left.createdAt}`),
+      .filter(
+        (transaction) =>
+          transaction.accountId === account.id &&
+          transaction.transactionDate <= asOfDate,
       )
-      .find((transaction) => parseImportedBalance(transaction, account.defaultCurrency));
+      .sort((left, right) =>
+        `${right.transactionDate}${right.createdAt}`.localeCompare(
+          `${left.transactionDate}${left.createdAt}`,
+        ),
+      )
+      .find((transaction) =>
+        parseImportedBalance(transaction, account.defaultCurrency),
+      );
 
     if (!latestTransaction) {
       continue;
     }
 
-    const parsedBalance = parseImportedBalance(latestTransaction, account.defaultCurrency);
+    const parsedBalance = parseImportedBalance(
+      latestTransaction,
+      account.defaultCurrency,
+    );
     if (!parsedBalance) {
       continue;
     }
 
     const balanceBaseEur = new Decimal(parsedBalance.balanceOriginal)
-      .mul(resolveFxRate(dataset, parsedBalance.balanceCurrency, "EUR", asOfDate))
+      .mul(
+        resolveFxRate(dataset, parsedBalance.balanceCurrency, "EUR", asOfDate),
+      )
       .toFixed(8);
 
     snapshotsByAccount.set(account.id, {
@@ -354,13 +482,17 @@ function latestSecurityPrice(
   securityId: string,
   asOfDate: string,
 ) {
-  return [...dataset.securityPrices]
-    .filter((row) => row.securityId === securityId && row.priceDate <= asOfDate)
-    .sort(
-      (left, right) =>
-        right.priceDate.localeCompare(left.priceDate) ||
-        right.quoteTimestamp.localeCompare(left.quoteTimestamp),
-    )[0] ?? null;
+  return (
+    [...dataset.securityPrices]
+      .filter(
+        (row) => row.securityId === securityId && row.priceDate <= asOfDate,
+      )
+      .sort(
+        (left, right) =>
+          right.priceDate.localeCompare(left.priceDate) ||
+          right.quoteTimestamp.localeCompare(left.quoteTimestamp),
+      )[0] ?? null
+  );
 }
 
 export function buildHoldingRows(
@@ -373,17 +505,26 @@ export function buildHoldingRows(
   return dataset.investmentPositions
     .filter((position) => entityIds.has(position.entityId))
     .map((position) => {
-      const security = dataset.securities.find((row) => row.id === position.securityId);
+      const security = dataset.securities.find(
+        (row) => row.id === position.securityId,
+      );
       const price = latestSecurityPrice(dataset, position.securityId, asOfDate);
       const priceFx = price
         ? resolveFxRate(dataset, price.currency, "EUR", asOfDate)
         : new Decimal(1);
-      const quoteAgeDays = price ? dayDistance(price.priceDate.slice(0, 10), asOfDate) : null;
+      const quoteAgeDays = price
+        ? dayDistance(price.priceDate.slice(0, 10), asOfDate)
+        : null;
       const currentValueEur = price
-        ? new Decimal(position.openQuantity).mul(price.price).mul(priceFx).toFixed(2)
+        ? new Decimal(position.openQuantity)
+            .mul(price.price)
+            .mul(priceFx)
+            .toFixed(2)
         : null;
       const unrealizedPnlEur = currentValueEur
-        ? new Decimal(currentValueEur).minus(position.openCostBasisEur).toFixed(2)
+        ? new Decimal(currentValueEur)
+            .minus(position.openCostBasisEur)
+            .toFixed(2)
         : null;
 
       return {
@@ -399,7 +540,10 @@ export function buildHoldingRows(
         currentValueEur,
         unrealizedPnlEur,
         unrealizedPnlPercent: unrealizedPnlEur
-          ? safeDividePercent(new Decimal(unrealizedPnlEur), new Decimal(position.openCostBasisEur))
+          ? safeDividePercent(
+              new Decimal(unrealizedPnlEur),
+              new Decimal(position.openCostBasisEur),
+            )
           : null,
         quoteFreshness: price
           ? !price.isDelayed
@@ -418,7 +562,9 @@ export function sumSnapshotField(
   snapshots: DailyPortfolioSnapshot[],
   field: "totalPortfolioValueEur" | "cashBalanceEur" | "unrealizedPnlEur",
 ) {
-  return snapshots.reduce((sum, row) => sum.plus(row[field] ?? 0), new Decimal(0)).toFixed(2);
+  return snapshots
+    .reduce((sum, row) => sum.plus(row[field] ?? 0), new Decimal(0))
+    .toFixed(2);
 }
 
 type MutableInvestmentPosition = {
@@ -458,7 +604,11 @@ export function rebuildInvestmentState(
   );
   const positions = new Map<string, MutableInvestmentPosition>();
 
-  const ensurePosition = (entityId: string, accountId: string, securityId: string) => {
+  const ensurePosition = (
+    entityId: string,
+    accountId: string,
+    securityId: string,
+  ) => {
     const key = getPositionMapKey(entityId, accountId, securityId);
     const existing = positions.get(key);
     if (existing) {
@@ -487,7 +637,8 @@ export function rebuildInvestmentState(
     ...dataset.transactions
       .filter((transaction) => {
         if (transaction.transactionDate > referenceDate) return false;
-        if (transaction.excludeFromAnalytics || transaction.voidedAt) return false;
+        if (transaction.excludeFromAnalytics || transaction.voidedAt)
+          return false;
         return investmentAccounts.has(transaction.accountId);
       })
       .map((transaction) => ({
@@ -513,7 +664,9 @@ export function rebuildInvestmentState(
         adjustment.securityId,
       );
       position.openQuantity = position.openQuantity.plus(adjustment.shareDelta);
-      position.openCostBasisEur = position.openCostBasisEur.plus(adjustment.costBasisDeltaEur ?? 0);
+      position.openCostBasisEur = position.openCostBasisEur.plus(
+        adjustment.costBasisDeltaEur ?? 0,
+      );
       position.lastTradeDate = adjustment.effectiveDate;
       continue;
     }
@@ -535,7 +688,9 @@ export function rebuildInvestmentState(
       case "investment_trade_buy": {
         if (quantity.lte(0)) break;
         position.openQuantity = position.openQuantity.plus(quantity);
-        position.openCostBasisEur = position.openCostBasisEur.plus(amountEur.abs());
+        position.openCostBasisEur = position.openCostBasisEur.plus(
+          amountEur.abs(),
+        );
         position.lastTradeDate = transaction.transactionDate;
         break;
       }
@@ -546,7 +701,9 @@ export function rebuildInvestmentState(
           ? new Decimal(0)
           : position.openCostBasisEur.div(position.openQuantity);
         const removedCostBasis = currentAverageCost.mul(sellQuantity);
-        const proportionalProceeds = amountEur.abs().mul(sellQuantity.div(quantity));
+        const proportionalProceeds = amountEur
+          .abs()
+          .mul(sellQuantity.div(quantity));
 
         position.openQuantity = position.openQuantity.minus(sellQuantity);
         position.openCostBasisEur = Decimal.max(
@@ -599,7 +756,11 @@ export function rebuildInvestmentState(
     ...dataset,
     investmentPositions: materializedPositions,
   } satisfies DomainDataset;
-  const holdingRows = buildHoldingRows(holdingsDataset, { kind: "consolidated" }, referenceDate);
+  const holdingRows = buildHoldingRows(
+    holdingsDataset,
+    { kind: "consolidated" },
+    referenceDate,
+  );
   const holdingsByAccount = new Map<string, HoldingRow[]>();
   for (const row of holdingRows) {
     const existing = holdingsByAccount.get(row.accountId) ?? [];
@@ -607,22 +768,35 @@ export function rebuildInvestmentState(
     holdingsByAccount.set(row.accountId, existing);
   }
   const cashSnapshotsByAccount = new Map(
-    getLatestInvestmentCashBalances(dataset, referenceDate).map((snapshot) => [snapshot.accountId, snapshot]),
+    getLatestInvestmentCashBalances(dataset, referenceDate).map((snapshot) => [
+      snapshot.accountId,
+      snapshot,
+    ]),
   );
 
   const snapshots = [...investmentAccounts.values()].map((account) => {
     const accountHoldings = holdingsByAccount.get(account.id) ?? [];
     const marketValueEur = accountHoldings
-      .reduce((sum, holding) => sum.plus(holding.currentValueEur ?? 0), new Decimal(0))
+      .reduce(
+        (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
+        new Decimal(0),
+      )
       .toFixed(8);
     const costBasisEur = materializedPositions
       .filter((position) => position.accountId === account.id)
-      .reduce((sum, position) => sum.plus(position.openCostBasisEur), new Decimal(0))
+      .reduce(
+        (sum, position) => sum.plus(position.openCostBasisEur),
+        new Decimal(0),
+      )
       .toFixed(8);
     const unrealizedPnlEur = accountHoldings
-      .reduce((sum, holding) => sum.plus(holding.unrealizedPnlEur ?? 0), new Decimal(0))
+      .reduce(
+        (sum, holding) => sum.plus(holding.unrealizedPnlEur ?? 0),
+        new Decimal(0),
+      )
       .toFixed(8);
-    const cashBalanceEur = cashSnapshotsByAccount.get(account.id)?.balanceBaseEur ?? "0.00000000";
+    const cashBalanceEur =
+      cashSnapshotsByAccount.get(account.id)?.balanceBaseEur ?? "0.00000000";
 
     return {
       snapshotDate: referenceDate,
@@ -634,7 +808,9 @@ export function rebuildInvestmentState(
       costBasisEur,
       unrealizedPnlEur,
       cashBalanceEur,
-      totalPortfolioValueEur: new Decimal(marketValueEur).plus(cashBalanceEur).toFixed(8),
+      totalPortfolioValueEur: new Decimal(marketValueEur)
+        .plus(cashBalanceEur)
+        .toFixed(8),
       generatedAt: new Date().toISOString(),
     };
   });
