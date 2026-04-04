@@ -8,10 +8,10 @@ import {
   InvestmentAllocationCard,
   InvestmentMetricCard,
   ReviewQueueList,
-  ReviewStateCell,
   SectionCard,
   SimpleTable,
 } from "../../components/primitives";
+import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
   buildHref,
   formatCurrency,
@@ -322,9 +322,11 @@ export default async function InvestmentsPage({
                       </td>
                       <td>{formatDisplayAmount(row.amountBaseEur)}</td>
                       <td>
-                        <ReviewStateCell
+                        <ReviewEditorCell
+                          transactionId={row.id}
                           needsReview={row.needsReview}
                           reviewReason={row.reviewReason}
+                          manualNotes={row.manualNotes}
                           transactionClass={row.transactionClass}
                           classificationSource={row.classificationSource}
                           securitySymbol={

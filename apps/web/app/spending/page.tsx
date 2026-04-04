@@ -3,10 +3,10 @@ import {
   DistributionList,
   MetricCard,
   MultiSeriesChart,
-  ReviewStateCell,
   SectionCard,
   SimpleTable,
 } from "../../components/primitives";
+import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { formatCurrency, getSpendingModel } from "../../lib/queries";
 
 export default async function SpendingPage({
@@ -100,9 +100,15 @@ export default async function SpendingPage({
             row.merchantNormalized ?? "—",
             formatCurrency(row.amountBaseEur, model.currency),
             row.categoryCode ?? "—",
-            <ReviewStateCell
+            <ReviewEditorCell
+              transactionId={row.id}
               needsReview={row.needsReview}
               reviewReason={row.reviewReason}
+              manualNotes={row.manualNotes}
+              transactionClass={row.transactionClass}
+              classificationSource={row.classificationSource}
+              quantity={row.quantity}
+              llmPayload={row.llmPayload}
             />,
           ])}
         />

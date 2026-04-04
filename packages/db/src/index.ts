@@ -372,6 +372,299 @@ async function loadDatasetForUser(
   };
 }
 
+async function applyInvestmentRebuild(sql: SqlClient, userId: string) {
+  const latestDataset = await loadDatasetForUser(sql, userId);
+  const referenceDate = getDatasetLatestDate(latestDataset);
+  const rebuilt = await prepareInvestmentRebuild(latestDataset, referenceDate);
+
+  for (const security of rebuilt.insertedSecurities) {
+    await sql`
+      insert into public.securities ${sql({
+        id: security.id,
+        provider_name: security.providerName,
+        provider_symbol: security.providerSymbol,
+        canonical_symbol: security.canonicalSymbol,
+        display_symbol: security.displaySymbol,
+        name: security.name,
+        exchange_name: security.exchangeName,
+        mic_code: security.micCode,
+        asset_type: security.assetType,
+        quote_currency: security.quoteCurrency,
+        country: security.country,
+        isin: security.isin,
+        figi: security.figi,
+        active: security.active,
+        metadata_json: serializeJson(sql, security.metadataJson),
+        last_price_refresh_at: security.lastPriceRefreshAt,
+        created_at: security.createdAt,
+      } as Record<string, unknown>)}
+      on conflict (provider_name, provider_symbol) do nothing
+    `;
+  }
+
+  for (const alias of rebuilt.insertedAliases) {
+    await sql`
+      insert into public.security_aliases ${sql({
+        id: alias.id,
+        security_id: alias.securityId,
+        alias_text_normalized: alias.aliasTextNormalized,
+        alias_source: alias.aliasSource,
+        template_id: alias.templateId,
+        confidence: alias.confidence,
+        created_at: alias.createdAt,
+      } as Record<string, unknown>)}
+      on conflict (security_id, alias_text_normalized) do nothing
+    `;
+  }
+
+  for (const price of rebuilt.upsertedPrices) {
+    await sql`
+      insert into public.security_prices ${sql({
+        security_id: price.securityId,
+        price_date: price.priceDate,
+        quote_timestamp: price.quoteTimestamp,
+        price: price.price,
+        currency: price.currency,
+        source_name: price.sourceName,
+        is_realtime: price.isRealtime,
+        is_delayed: price.isDelayed,
+        market_state: price.marketState,
+        raw_json: serializeJson(sql, price.rawJson),
+        created_at: price.createdAt,
+      } as Record<string, unknown>)}
+      on conflict (security_id, price_date, source_name)
+      do update set
+        quote_timestamp = excluded.quote_timestamp,
+        price = excluded.price,
+        currency = excluded.currency,
+        is_realtime = excluded.is_realtime,
+        is_delayed = excluded.is_delayed,
+        market_state = excluded.market_state,
+        raw_json = excluded.raw_json,
+        created_at = excluded.created_at
+    `;
+  }
+
+  for (const patch of rebuilt.transactionPatches) {
+    const updatePayload: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (patch.transactionClass !== undefined) {
+      updatePayload.transaction_class = patch.transactionClass;
+    }
+    if (patch.categoryCode !== undefined) {
+      updatePayload.category_code = patch.categoryCode;
+    }
+    if (patch.classificationStatus !== undefined) {
+      updatePayload.classification_status = patch.classificationStatus;
+    }
+    if (patch.classificationSource !== undefined) {
+      updatePayload.classification_source = patch.classificationSource;
+    }
+    if (patch.classificationConfidence !== undefined) {
+      updatePayload.classification_confidence = patch.classificationConfidence;
+    }
+    if (patch.securityId !== undefined) {
+      updatePayload.security_id = patch.securityId;
+    }
+    if (patch.quantity !== undefined) {
+      updatePayload.quantity = patch.quantity;
+    }
+    if (patch.unitPriceOriginal !== undefined) {
+      updatePayload.unit_price_original = patch.unitPriceOriginal;
+    }
+    if (patch.needsReview !== undefined) {
+      updatePayload.needs_review = patch.needsReview;
+    }
+    if (patch.reviewReason !== undefined) {
+      updatePayload.review_reason = patch.reviewReason;
+    }
+    await sql`
+      update public.transactions
+      set ${sql(updatePayload)}
+      where id = ${patch.id}
+        and user_id = ${userId}
+    `;
+  }
+
+  await sql`
+    delete from public.daily_portfolio_snapshots
+    where user_id = ${userId}
+  `;
+  await sql`
+    delete from public.investment_positions
+    where user_id = ${userId}
+  `;
+
+  for (const position of rebuilt.positions) {
+    await sql`
+      insert into public.investment_positions ${sql({
+        user_id: position.userId,
+        entity_id: position.entityId,
+        account_id: position.accountId,
+        security_id: position.securityId,
+        open_quantity: position.openQuantity,
+        open_cost_basis_eur: position.openCostBasisEur,
+        avg_cost_eur: position.avgCostEur,
+        realized_pnl_eur: position.realizedPnlEur,
+        dividends_eur: position.dividendsEur,
+        interest_eur: position.interestEur,
+        fees_eur: position.feesEur,
+        last_trade_date: position.lastTradeDate,
+        last_rebuilt_at: position.lastRebuiltAt,
+        provenance_json: serializeJson(sql, position.provenanceJson),
+        unrealized_complete: position.unrealizedComplete,
+      } as Record<string, unknown>)}
+    `;
+  }
+
+  for (const snapshot of rebuilt.snapshots) {
+    await sql`
+      insert into public.daily_portfolio_snapshots ${sql({
+        snapshot_date: snapshot.snapshotDate,
+        user_id: snapshot.userId,
+        entity_id: snapshot.entityId,
+        account_id: snapshot.accountId,
+        security_id: snapshot.securityId,
+        market_value_eur: snapshot.marketValueEur,
+        cost_basis_eur: snapshot.costBasisEur,
+        unrealized_pnl_eur: snapshot.unrealizedPnlEur,
+        cash_balance_eur: snapshot.cashBalanceEur,
+        total_portfolio_value_eur: snapshot.totalPortfolioValueEur,
+        generated_at: snapshot.generatedAt,
+      } as Record<string, unknown>)}
+    `;
+  }
+
+  return {
+    referenceDate,
+    rebuiltPositions: rebuilt.positions.length,
+    rebuiltSnapshots: rebuilt.snapshots.length,
+    updatedTransactions: rebuilt.transactionPatches.length,
+    insertedSecurities: rebuilt.insertedSecurities.length,
+    upsertedPrices: rebuilt.upsertedPrices.length,
+  };
+}
+
+export interface ReanalyzeTransactionReviewInput {
+  transactionId: string;
+  reviewContext: string;
+  actorName: string;
+  sourceChannel: AuditEvent["sourceChannel"];
+}
+
+export async function reanalyzeTransactionReview(
+  input: ReanalyzeTransactionReviewInput,
+) {
+  const userId = getDbRuntimeConfig().seededUserId;
+
+  return withSeededUserContext(async (sql) => {
+    const before = await sql`
+      select * from public.transactions
+      where id = ${input.transactionId}
+        and user_id = ${userId}
+      limit 1
+    `;
+    const beforeRow = before[0];
+    if (!beforeRow) {
+      throw new Error(`Transaction ${input.transactionId} not found.`);
+    }
+
+    const beforeTransaction = mapFromSql<Transaction>(beforeRow);
+    const dataset = await loadDatasetForUser(sql, userId);
+    const account = dataset.accounts.find(
+      (candidate) => candidate.id === beforeTransaction.accountId,
+    );
+    if (!account) {
+      throw new Error(
+        `Account ${beforeTransaction.accountId} not found for review reanalysis.`,
+      );
+    }
+
+    const normalizedReviewContext = input.reviewContext.trim();
+    if (!normalizedReviewContext) {
+      throw new Error("Review context cannot be empty.");
+    }
+
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      beforeTransaction,
+      {
+        trigger: "manual_review_update",
+        reviewContext: {
+          userProvidedContext: normalizedReviewContext,
+          previousReviewReason: beforeTransaction.reviewReason ?? null,
+          previousUserContext: beforeTransaction.manualNotes ?? null,
+          previousLlmPayload:
+            beforeTransaction.llmPayload &&
+            typeof beforeTransaction.llmPayload === "object"
+              ? (beforeTransaction.llmPayload as Record<string, unknown>)
+              : null,
+        },
+      },
+    );
+
+    const after = await sql`
+      update public.transactions
+      set transaction_class = ${decision.transactionClass},
+          category_code = ${decision.categoryCode ?? null},
+          merchant_normalized = ${decision.merchantNormalized ?? null},
+          counterparty_name = ${decision.counterpartyName ?? null},
+          economic_entity_id = ${decision.economicEntityId},
+          classification_status = ${decision.classificationStatus},
+          classification_source = ${decision.classificationSource},
+          classification_confidence = ${decision.classificationConfidence},
+          quantity = ${decision.quantity ?? null},
+          unit_price_original = ${decision.unitPriceOriginal ?? null},
+          needs_review = ${decision.needsReview},
+          review_reason = ${decision.reviewReason ?? null},
+          manual_notes = ${normalizedReviewContext},
+          llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
+          updated_at = ${new Date().toISOString()}
+      where id = ${input.transactionId}
+        and user_id = ${userId}
+      returning *
+    `;
+
+    if (account.assetDomain === "investment") {
+      await applyInvestmentRebuild(sql, userId);
+    }
+
+    const afterTransaction = mapFromSql<Transaction>(after[0]);
+    const auditEvent = createAuditEvent(
+      input.sourceChannel,
+      input.actorName,
+      "transactions.review_reanalyze",
+      "transaction",
+      input.transactionId,
+      beforeRow,
+      after[0],
+    );
+    await sql`
+      insert into public.audit_events ${sql({
+        actor_type: auditEvent.actorType,
+        actor_id: auditEvent.actorId,
+        actor_name: auditEvent.actorName,
+        source_channel: auditEvent.sourceChannel,
+        command_name: auditEvent.commandName,
+        object_type: auditEvent.objectType,
+        object_id: auditEvent.objectId,
+        before_json: auditEvent.beforeJson,
+        after_json: auditEvent.afterJson,
+        created_at: auditEvent.createdAt,
+        notes: "Re-ran LLM classification for a single transaction with manual review context.",
+      } as Record<string, unknown>)}
+    `;
+
+    return {
+      applied: true,
+      transaction: afterTransaction,
+      auditEvent,
+    };
+  });
+}
+
 class SqlFinanceRepository implements FinanceRepository {
   private userId = getDbRuntimeConfig().seededUserId;
 
@@ -1665,173 +1958,7 @@ class SqlFinanceRepository implements FinanceRepository {
               const payloadJson = parseJsonColumn<Record<string, unknown>>(
                 job.payload_json ?? {},
               );
-              const latestDataset = await loadDatasetForUser(sql, this.userId);
-              const referenceDate = getDatasetLatestDate(latestDataset);
-              const rebuilt = await prepareInvestmentRebuild(
-                latestDataset,
-                referenceDate,
-              );
-
-              for (const security of rebuilt.insertedSecurities) {
-                await sql`
-                  insert into public.securities ${sql({
-                    id: security.id,
-                    provider_name: security.providerName,
-                    provider_symbol: security.providerSymbol,
-                    canonical_symbol: security.canonicalSymbol,
-                    display_symbol: security.displaySymbol,
-                    name: security.name,
-                    exchange_name: security.exchangeName,
-                    mic_code: security.micCode,
-                    asset_type: security.assetType,
-                    quote_currency: security.quoteCurrency,
-                    country: security.country,
-                    isin: security.isin,
-                    figi: security.figi,
-                    active: security.active,
-                    metadata_json: serializeJson(sql, security.metadataJson),
-                    last_price_refresh_at: security.lastPriceRefreshAt,
-                    created_at: security.createdAt,
-                  } as Record<string, unknown>)}
-                  on conflict (provider_name, provider_symbol) do nothing
-                `;
-              }
-
-              for (const alias of rebuilt.insertedAliases) {
-                await sql`
-                  insert into public.security_aliases ${sql({
-                    id: alias.id,
-                    security_id: alias.securityId,
-                    alias_text_normalized: alias.aliasTextNormalized,
-                    alias_source: alias.aliasSource,
-                    template_id: alias.templateId,
-                    confidence: alias.confidence,
-                    created_at: alias.createdAt,
-                  } as Record<string, unknown>)}
-                  on conflict (security_id, alias_text_normalized) do nothing
-                `;
-              }
-
-              for (const price of rebuilt.upsertedPrices) {
-                await sql`
-                  insert into public.security_prices ${sql({
-                    security_id: price.securityId,
-                    price_date: price.priceDate,
-                    quote_timestamp: price.quoteTimestamp,
-                    price: price.price,
-                    currency: price.currency,
-                    source_name: price.sourceName,
-                    is_realtime: price.isRealtime,
-                    is_delayed: price.isDelayed,
-                    market_state: price.marketState,
-                    raw_json: serializeJson(sql, price.rawJson),
-                    created_at: price.createdAt,
-                  } as Record<string, unknown>)}
-                  on conflict (security_id, price_date, source_name)
-                  do update set
-                    quote_timestamp = excluded.quote_timestamp,
-                    price = excluded.price,
-                    currency = excluded.currency,
-                    is_realtime = excluded.is_realtime,
-                    is_delayed = excluded.is_delayed,
-                    market_state = excluded.market_state,
-                    raw_json = excluded.raw_json,
-                    created_at = excluded.created_at
-                `;
-              }
-
-              for (const patch of rebuilt.transactionPatches) {
-                const updatePayload: Record<string, unknown> = {
-                  updated_at: new Date().toISOString(),
-                };
-                if (patch.transactionClass !== undefined) {
-                  updatePayload.transaction_class = patch.transactionClass;
-                }
-                if (patch.categoryCode !== undefined) {
-                  updatePayload.category_code = patch.categoryCode;
-                }
-                if (patch.classificationStatus !== undefined) {
-                  updatePayload.classification_status =
-                    patch.classificationStatus;
-                }
-                if (patch.classificationSource !== undefined) {
-                  updatePayload.classification_source =
-                    patch.classificationSource;
-                }
-                if (patch.classificationConfidence !== undefined) {
-                  updatePayload.classification_confidence =
-                    patch.classificationConfidence;
-                }
-                if (patch.securityId !== undefined)
-                  updatePayload.security_id = patch.securityId;
-                if (patch.quantity !== undefined)
-                  updatePayload.quantity = patch.quantity;
-                if (patch.unitPriceOriginal !== undefined) {
-                  updatePayload.unit_price_original = patch.unitPriceOriginal;
-                }
-                if (patch.needsReview !== undefined)
-                  updatePayload.needs_review = patch.needsReview;
-                if (patch.reviewReason !== undefined)
-                  updatePayload.review_reason = patch.reviewReason;
-                await sql`
-                  update public.transactions
-                  set ${sql(updatePayload)}
-                  where id = ${patch.id}
-                    and user_id = ${this.userId}
-                `;
-              }
-
-              await sql`
-                delete from public.daily_portfolio_snapshots
-                where user_id = ${this.userId}
-              `;
-              await sql`
-                delete from public.investment_positions
-                where user_id = ${this.userId}
-              `;
-
-              for (const position of rebuilt.positions) {
-                await sql`
-                  insert into public.investment_positions ${sql({
-                    user_id: position.userId,
-                    entity_id: position.entityId,
-                    account_id: position.accountId,
-                    security_id: position.securityId,
-                    open_quantity: position.openQuantity,
-                    open_cost_basis_eur: position.openCostBasisEur,
-                    avg_cost_eur: position.avgCostEur,
-                    realized_pnl_eur: position.realizedPnlEur,
-                    dividends_eur: position.dividendsEur,
-                    interest_eur: position.interestEur,
-                    fees_eur: position.feesEur,
-                    last_trade_date: position.lastTradeDate,
-                    last_rebuilt_at: position.lastRebuiltAt,
-                    provenance_json: serializeJson(
-                      sql,
-                      position.provenanceJson,
-                    ),
-                    unrealized_complete: position.unrealizedComplete,
-                  } as Record<string, unknown>)}
-                `;
-              }
-
-              for (const snapshot of rebuilt.snapshots) {
-                await sql`
-                  insert into public.daily_portfolio_snapshots ${sql({
-                    snapshot_date: snapshot.snapshotDate,
-                    user_id: snapshot.userId,
-                    entity_id: snapshot.entityId,
-                    account_id: snapshot.accountId,
-                    security_id: snapshot.securityId,
-                    market_value_eur: snapshot.marketValueEur,
-                    cost_basis_eur: snapshot.costBasisEur,
-                    unrealized_pnl_eur: snapshot.unrealizedPnlEur,
-                    cash_balance_eur: snapshot.cashBalanceEur,
-                    total_portfolio_value_eur: snapshot.totalPortfolioValueEur,
-                    generated_at: snapshot.generatedAt,
-                  } as Record<string, unknown>)}
-                `;
-              }
+              const rebuilt = await applyInvestmentRebuild(sql, this.userId);
 
               await sql`
                 update public.jobs
@@ -1842,12 +1969,7 @@ class SqlFinanceRepository implements FinanceRepository {
                     last_error = null,
                     payload_json = ${serializeJson(sql, {
                       ...payloadJson,
-                      referenceDate,
-                      rebuiltPositions: rebuilt.positions.length,
-                      rebuiltSnapshots: rebuilt.snapshots.length,
-                      updatedTransactions: rebuilt.transactionPatches.length,
-                      insertedSecurities: rebuilt.insertedSecurities.length,
-                      upsertedPrices: rebuilt.upsertedPrices.length,
+                      ...rebuilt,
                     })}::jsonb
                 where id = ${job.id}
               `;

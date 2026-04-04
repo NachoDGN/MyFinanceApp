@@ -741,6 +741,30 @@ function normalizeQuantityValue(quantity: string | null | undefined) {
   return value.eq(0) ? null : value.toFixed(8);
 }
 
+function normalizeTradeQuantity(
+  transactionClass: Transaction["transactionClass"],
+  quantity: string | null | undefined,
+) {
+  const normalizedQuantity = normalizeQuantityValue(quantity);
+  if (!normalizedQuantity) {
+    return null;
+  }
+
+  const absoluteQuantity = new Decimal(normalizedQuantity).abs();
+  if (absoluteQuantity.eq(0)) {
+    return null;
+  }
+
+  if (transactionClass === "investment_trade_sell") {
+    return absoluteQuantity.negated().toFixed(8);
+  }
+  if (transactionClass === "investment_trade_buy") {
+    return absoluteQuantity.toFixed(8);
+  }
+
+  return null;
+}
+
 function inferImpliedUnitPrice(
   dataset: DomainDataset,
   transaction: Transaction,
@@ -757,7 +781,7 @@ function inferImpliedUnitPrice(
     transaction,
     quoteCurrency,
   );
-  const quantityDecimal = new Decimal(normalizedQuantity);
+  const quantityDecimal = new Decimal(normalizedQuantity).abs();
   if (quantityDecimal.eq(0)) {
     return null;
   }
@@ -1171,6 +1195,16 @@ export async function prepareInvestmentRebuild(
         quantity ??
         inferQuantityFromPrice(workingDataset, transaction, historicalPrice);
       unitPriceOriginal = unitPriceOriginal ?? historicalPrice.price;
+    }
+
+    if (
+      transaction.transactionClass === "investment_trade_buy" ||
+      transaction.transactionClass === "investment_trade_sell"
+    ) {
+      quantity = normalizeTradeQuantity(transaction.transactionClass, quantity);
+    } else {
+      quantity = null;
+      unitPriceOriginal = null;
     }
 
     const marketPriceReviewReason =

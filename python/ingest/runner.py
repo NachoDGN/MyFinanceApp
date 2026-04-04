@@ -40,6 +40,7 @@ TRANSITIONAL_OPENXML_REL_NAMESPACE = (
 )
 SUSPICIOUS_TEXT_MARKERS = ["√", "Ã", "Â", "�"]
 DATE_TEXT_PATTERN = re.compile(r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$")
+EXCEL_DATE_TOKEN_PATTERN = re.compile(r"(yyyy|yy|mm|m|dd|d)", re.IGNORECASE)
 
 
 @dataclass
@@ -302,6 +303,108 @@ def load_raw_preview_frame(
     return frame.iloc[:, :RAW_PREVIEW_COLUMN_LIMIT].fillna("")
 
 
+def excel_cell_to_display_value(cell: Any) -> Any:
+    value = cell.value
+    if value is None:
+        return None
+    if cell.is_date and isinstance(value, (datetime, date)):
+        return format_excel_date_display_value(value, cell.number_format)
+    return value
+
+
+def format_excel_date_display_value(
+    value: datetime | date,
+    number_format: str | None,
+) -> str:
+    date_value = value.date() if isinstance(value, datetime) else value
+    format_text = str(number_format or "").split(";", 1)[0]
+    format_text = format_text.replace("\\-", "-").replace("\\/", "/").strip()
+    format_text = re.sub(r'"[^"]*"', "", format_text)
+
+    if not format_text or any(marker in format_text.lower() for marker in ("[$", "[", "]", "h", "s")):
+        return date_value.isoformat()
+
+    rendered_parts: list[str] = []
+    index = 0
+    matched_token = False
+    while index < len(format_text):
+        match = EXCEL_DATE_TOKEN_PATTERN.match(format_text, index)
+        if match:
+            token = match.group(1).lower()
+            rendered_parts.append(format_excel_date_token(date_value, token))
+            index = match.end()
+            matched_token = True
+            continue
+
+        character = format_text[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character in {"/", "-", "."}:
+            rendered_parts.append("/")
+            index += 1
+            continue
+        return date_value.isoformat()
+
+    rendered = "".join(rendered_parts).strip("/")
+    return rendered if matched_token and rendered else date_value.isoformat()
+
+
+def format_excel_date_token(value: date, token: str) -> str:
+    if token == "yyyy":
+        return f"{value.year:04d}"
+    if token == "yy":
+        return f"{value.year % 100:02d}"
+    if token == "mm":
+        return f"{value.month:02d}"
+    if token == "m":
+        return str(value.month)
+    if token == "dd":
+        return f"{value.day:02d}"
+    if token == "d":
+        return str(value.day)
+    return value.isoformat()
+
+
+def load_xlsx_display_frame(
+    file_path: Path,
+    *,
+    sheet_name: str | None = None,
+) -> pd.DataFrame:
+    rows: list[list[Any]] = []
+
+    with compatible_excel_path(file_path) as compatible_path:
+        workbook = load_workbook(compatible_path, read_only=True, data_only=True)
+        try:
+            worksheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
+            for row in worksheet.iter_rows():
+                rows.append([excel_cell_to_display_value(cell) for cell in row])
+        finally:
+            workbook.close()
+
+    width = max((len(row) for row in rows), default=0)
+    padded_rows = [row + [None] * (width - len(row)) for row in rows]
+    return pd.DataFrame(padded_rows, dtype=object)
+
+
+def apply_header_row(
+    frame: pd.DataFrame,
+    *,
+    header_row_index: int,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+
+    header_zero_index = max(header_row_index - 1, 0)
+    if header_zero_index >= len(frame.index):
+        raise ValueError("Header row index is outside the worksheet bounds.")
+
+    headers = frame.iloc[header_zero_index].tolist()
+    data = frame.iloc[header_zero_index + 1 :].reset_index(drop=True)
+    data.columns = headers
+    return data
+
+
 def build_workbook_preview(file_path: Path) -> dict[str, Any]:
     file_kind = infer_file_kind(file_path)
     if file_kind == "csv":
@@ -444,14 +547,10 @@ def build_table_preview(
             dtype=object,
         )
     elif file_kind == "xlsx":
-        with compatible_excel_path(file_path) as compatible_path:
-            frame = pd.read_excel(
-                compatible_path,
-                sheet_name=sheet_name or 0,
-                skiprows=rows_to_skip_before_header,
-                header=header_zero_index,
-                dtype=object,
-            )
+        frame = apply_header_row(
+            load_xlsx_display_frame(file_path, sheet_name=sheet_name),
+            header_row_index=header_row_index,
+        )
     else:
         raise ValueError(f"Unsupported file kind: {file_kind}")
 
@@ -607,6 +706,7 @@ def parse_date_value(
     *,
     format_hint: str | None,
     dayfirst: bool,
+    reference_date: date,
 ) -> str | None:
     if value is None:
         return None
@@ -623,14 +723,140 @@ def parse_date_value(
     if not text:
         return None
 
+    strict_candidates = build_strict_date_candidates(text)
+    preferred_candidate = choose_date_candidate(
+        strict_candidates,
+        dayfirst=dayfirst,
+        reference_date=reference_date,
+    )
+    if preferred_candidate is not None:
+        return preferred_candidate.isoformat()
+
     parsed = pd.NaT
     if format_hint:
         parsed = pd.to_datetime(text, format=format_hint, errors="coerce")
     if pd.isna(parsed):
         parsed = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
+    if not pd.isna(parsed):
+        alternate = pd.to_datetime(text, dayfirst=not dayfirst, errors="coerce")
+        if (
+            not pd.isna(alternate)
+            and parsed.date() > reference_date
+            and alternate.date() <= reference_date
+        ):
+            parsed = alternate
     if pd.isna(parsed):
         raise ValueError(f"Invalid date value: {text}")
     return parsed.date().isoformat()
+
+
+def parse_reference_date(value: Any) -> date:
+    text = normalize_text(value)
+    if text:
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            pass
+    return date.today()
+
+
+def build_strict_date_candidates(value: str) -> dict[bool, date]:
+    if not DATE_TEXT_PATTERN.fullmatch(value):
+        return {}
+
+    separator = "/" if "/" in value else "-"
+    parts = value.split(separator)
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return {}
+
+    first, second, third = parts
+    candidates: dict[bool, date] = {}
+
+    if len(third) in (2, 4) and len(first) <= 2 and len(second) <= 2:
+        year = normalize_candidate_year(third)
+        dayfirst_candidate = make_date_candidate(year, int(second), int(first))
+        monthfirst_candidate = make_date_candidate(year, int(first), int(second))
+    elif len(first) == 4 and len(second) <= 2 and len(third) <= 2:
+        year = int(first)
+        dayfirst_candidate = make_date_candidate(year, int(third), int(second))
+        monthfirst_candidate = make_date_candidate(year, int(second), int(third))
+    else:
+        return {}
+
+    if dayfirst_candidate is not None:
+        candidates[True] = dayfirst_candidate
+    if monthfirst_candidate is not None:
+        candidates[False] = monthfirst_candidate
+    return candidates
+
+
+def make_date_candidate(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def normalize_candidate_year(value: str) -> int:
+    if len(value) == 2:
+        return 2000 + int(value)
+    return int(value)
+
+
+def choose_date_candidate(
+    candidates: dict[bool, date],
+    *,
+    dayfirst: bool,
+    reference_date: date,
+) -> date | None:
+    preferred = candidates.get(dayfirst)
+    alternate = candidates.get(not dayfirst)
+    if preferred is None:
+        return alternate
+    if alternate is None or alternate == preferred:
+        return preferred
+    if preferred > reference_date and alternate <= reference_date:
+        return alternate
+    return preferred
+
+
+def infer_effective_dayfirst(
+    transaction_date_series: pd.Series,
+    posted_date_series: pd.Series | None,
+    default_dayfirst: bool,
+    reference_date: date,
+) -> bool:
+    scores = {True: 0, False: 0}
+
+    for series in (transaction_date_series, posted_date_series):
+        if series is None:
+            continue
+        for value in series.tolist():
+            text = normalize_text(value)
+            if not text:
+                continue
+
+            candidates = build_strict_date_candidates(text)
+            dayfirst_candidate = candidates.get(True)
+            monthfirst_candidate = candidates.get(False)
+
+            if (
+                dayfirst_candidate is not None
+                and monthfirst_candidate is not None
+                and dayfirst_candidate != monthfirst_candidate
+            ):
+                dayfirst_future = dayfirst_candidate > reference_date
+                monthfirst_future = monthfirst_candidate > reference_date
+                if dayfirst_future != monthfirst_future:
+                    scores[False if dayfirst_future else True] += 2
+            elif dayfirst_candidate is not None and monthfirst_candidate is None:
+                scores[True] += 3
+            elif monthfirst_candidate is not None and dayfirst_candidate is None:
+                scores[False] += 3
+
+    if scores[True] == scores[False]:
+        return default_dayfirst
+    return scores[True] > scores[False]
 
 
 def to_serializable(value: Any) -> Any:
@@ -666,14 +892,13 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
             dtype=object,
         )
     elif file_kind == "xlsx":
-        with compatible_excel_path(file_path) as compatible_path:
-            frame = pd.read_excel(
-                compatible_path,
-                sheet_name=template.get("sheet_name") or 0,
-                skiprows=skip_before_header,
-                header=header_zero_index,
-                dtype=object,
-            )
+        frame = apply_header_row(
+            load_xlsx_display_frame(
+                file_path,
+                sheet_name=template.get("sheet_name") or None,
+            ),
+            header_row_index=header_row_index,
+        )
     else:
         raise ValueError(f"Unsupported file kind: {file_kind}")
 
@@ -803,7 +1028,12 @@ def resolve_amount_series(
     )
 
 
-def canonicalize_frame(frame: pd.DataFrame, template: dict[str, Any]) -> CanonicalizationResult:
+def canonicalize_frame(
+    frame: pd.DataFrame,
+    template: dict[str, Any],
+    *,
+    reference_date: str | None = None,
+) -> CanonicalizationResult:
     column_map = template.get("column_map_json", {}) or {}
     sign_logic = template.get("sign_logic_json", {}) or {}
     normalization_rules = template.get("normalization_rules_json", {}) or {}
@@ -812,6 +1042,7 @@ def canonicalize_frame(frame: pd.DataFrame, template: dict[str, Any]) -> Canonic
     decimal_hint = template.get("decimal_separator") or None
     thousands_hint = template.get("thousands_separator") or None
     dayfirst = bool(normalization_rules.get("date_day_first", True))
+    reference_date_value = parse_reference_date(reference_date)
 
     detected_rows = 0
     normalized_rows: list[dict[str, Any]] = []
@@ -850,6 +1081,12 @@ def canonicalize_frame(frame: pd.DataFrame, template: dict[str, Any]) -> Canonic
     unit_price_series = resolve_series(frame, column_map.get("unit_price_original"))
     fees_series = resolve_series(frame, column_map.get("fees_original"))
     fx_rate_series = resolve_series(frame, column_map.get("fx_rate"))
+    effective_dayfirst = infer_effective_dayfirst(
+        transaction_date_series,
+        posted_date_series,
+        dayfirst,
+        reference_date_value,
+    )
 
     for index, (_, row) in enumerate(frame.iterrows()):
         raw_row = {str(column): to_serializable(value) for column, value in row.to_dict().items()}
@@ -863,7 +1100,8 @@ def canonicalize_frame(frame: pd.DataFrame, template: dict[str, Any]) -> Canonic
             transaction_date = parse_date_value(
                 transaction_date_series.iloc[index],
                 format_hint=date_format,
-                dayfirst=dayfirst,
+                dayfirst=effective_dayfirst,
+                reference_date=reference_date_value,
             )
             if not transaction_date:
                 raise ValueError("Missing transaction date.")
@@ -871,7 +1109,8 @@ def canonicalize_frame(frame: pd.DataFrame, template: dict[str, Any]) -> Canonic
             posted_date = parse_date_value(
                 posted_date_series.iloc[index] if posted_date_series is not None else None,
                 format_hint=date_format,
-                dayfirst=dayfirst,
+                dayfirst=effective_dayfirst,
+                reference_date=reference_date_value,
             )
             amount = parse_decimal_value(
                 amount_series.iloc[index],
@@ -1045,6 +1284,7 @@ def main() -> int:
     parser.add_argument("--start-column-index", type=int, default=0)
     parser.add_argument("--delimiter")
     parser.add_argument("--encoding")
+    parser.add_argument("--reference-date")
     args = parser.parse_args()
 
     file_path = Path(args.file_path)
@@ -1081,7 +1321,11 @@ def main() -> int:
 
     template = normalize_template_payload(json.loads(args.template_json))
     frame = load_dataframe(file_path, template)
-    canonical = canonicalize_frame(frame, template)
+    canonical = canonicalize_frame(
+        frame,
+        template,
+        reference_date=args.reference_date,
+    )
     result = build_result(
         args.mode,
         args.account_id,

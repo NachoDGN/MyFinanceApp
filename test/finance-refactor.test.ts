@@ -17,6 +17,7 @@ import {
   buildHoldingRows,
   buildImportedTransactions,
   createTemplateConfig,
+  getDatasetLatestDate,
   getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
   getScopeLatestDate,
@@ -65,6 +66,79 @@ test("import building deduplicates by fingerprint and keeps the dataset user id"
   assert.equal(result.inserted.length, 1);
   assert.equal(result.inserted[0]?.userId, dataset.profile.id);
   assert.equal(result.inserted[0]?.descriptionClean, "COFFEE");
+});
+
+test("import building deduplicates rounded investment rows against precise existing trades", () => {
+  const input = {
+    accountId: "broker-1",
+    templateId: "template-1",
+    originalFilename: "upload.csv",
+    filePath: "/tmp/upload.csv",
+  } as const;
+  const investmentAccount = createAccount({
+    id: "broker-1",
+    displayName: "Broker",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-amd",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        active: true,
+        metadataJson: {},
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "existing-investment-trade",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-03-04",
+        postedDate: "2026-03-05",
+        amountOriginal: "-215.46000000",
+        amountBaseEur: "-215.46000000",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 1",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 1",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "uncategorized_investment",
+        rawPayload: {
+          _import: {
+            transaction_type_raw: "buy",
+          },
+        },
+        securityId: "security-amd",
+        quantity: "1.00000000",
+        unitPriceOriginal: "215.46000000",
+      }),
+    ],
+  });
+
+  const result = buildImportedTransactions(dataset, input, "batch-1", [
+    {
+      transaction_date: "2026-03-04",
+      posted_date: "2026-03-05",
+      description_raw: "ADVANCED MICRO DEVICES @ 1",
+      amount_original_signed: "-215.00",
+      currency_original: "EUR",
+      transaction_type_raw: "buy",
+      security_symbol: "AMD",
+      quantity: "1",
+      unit_price_original: "215",
+    },
+  ]);
+
+  assert.equal(result.duplicateCount, 1);
+  assert.equal(result.inserted.length, 0);
 });
 
 test("month-to-date metrics use a dynamic comparison window and ignore internal transfers", () => {
@@ -295,6 +369,72 @@ test("saved classification rules win before fallback logic or LLM classification
   }
 });
 
+test("latest date helpers cap future imports at the provided fallback date", () => {
+  const account = createAccount({
+    id: "broker-future-dates",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "future-import-row",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        securityId: "security-amd-latest-date",
+        transactionDate: "2026-12-03",
+        postedDate: "2026-12-03",
+      }),
+    ],
+    securityPrices: [
+      {
+        securityId: "security-amd-latest-date",
+        priceDate: "2026-04-02",
+        quoteTimestamp: "2026-04-02T20:00:00Z",
+        price: "110.00",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: { close: "110.00" },
+        createdAt: "2026-04-02T20:00:00Z",
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: account.entityId,
+        accountId: account.id,
+        securityId: "security-amd-latest-date",
+        openQuantity: "1.00000000",
+        openCostBasisEur: "92.00000000",
+        avgCostEur: "92.00000000",
+        realizedPnlEur: "0.00000000",
+        dividendsEur: "0.00000000",
+        interestEur: "0.00000000",
+        feesEur: "0.00000000",
+        lastTradeDate: "2026-04-02",
+        lastRebuiltAt: "2026-04-02T20:00:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  assert.equal(getDatasetLatestDate(dataset, "2026-04-04"), "2026-04-02");
+  assert.equal(
+    getScopeLatestDate(
+      dataset,
+      { kind: "account", accountId: account.id },
+      "2026-04-04",
+    ),
+    "2026-04-02",
+  );
+});
+
 test("investment review uses the dedicated model override when configured", () => {
   const previous = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
   process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
@@ -328,6 +468,23 @@ test("investment parser recognizes named fund purchases even without explicit qu
 
   assert.equal(parsed.transactionClass, "investment_trade_buy");
   assert.equal(parsed.securityHint, "VANGUARD US 500 STOCK INDEX EU");
+});
+
+test("investment parser stores sell quantities as negative values", () => {
+  const parsed = parseInvestmentEvent(
+    createTransaction({
+      accountId: "broker-1",
+      amountOriginal: "240.00",
+      amountBaseEur: "240.00",
+      descriptionRaw: "ADVANCED MICRO DEVICES @ 8",
+      descriptionClean: "ADVANCED MICRO DEVICES @ 8",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+    }),
+  );
+
+  assert.equal(parsed.transactionClass, "investment_trade_sell");
+  assert.equal(parsed.quantity, "-8.00000000");
 });
 
 test("investment parser recognizes periodic brokerage credits as interest", () => {
@@ -976,6 +1133,70 @@ test("investment rebuild uses stored historical prices for price sanity checks",
   }
 });
 
+test("investment rebuild clears quantity and unit price for non-trade rows", async () => {
+  const account = createAccount({
+    id: "broker-fee-cleanup",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+    institutionName: "Broker",
+    displayName: "Brokerage",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "commission-row",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-16",
+        postedDate: "2026-03-16",
+        amountOriginal: "1.89",
+        amountBaseEur: "1.89",
+        descriptionRaw: "ALPHABET INC CL C @ 15 COMMISSION",
+        descriptionClean: "ALPHABET INC CL C @ 15 COMMISSION",
+        transactionClass: "fee",
+        categoryCode: "broker_fee",
+        classificationStatus: "investment_parser",
+        classificationSource: "investment_parser",
+        classificationConfidence: "0.96",
+        securityId: "security-goog-fee",
+        quantity: "15.00000000",
+        unitPriceOriginal: "0.13000000",
+        needsReview: false,
+        reviewReason: null,
+      }),
+    ],
+    securities: [
+      {
+        id: "security-goog-fee",
+        providerName: "manual",
+        providerSymbol: "GOOG",
+        canonicalSymbol: "GOOG",
+        displaySymbol: "GOOG",
+        name: "Alphabet Inc.",
+        exchangeName: "NASDAQ",
+        micCode: "XNGS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  });
+
+  const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-16");
+  const patch = rebuilt.transactionPatches[0];
+
+  assert.equal(patch?.quantity, null);
+  assert.equal(patch?.unitPriceOriginal, null);
+});
+
 test("investment rebuild clears stale review flags for deterministic interest rows", async () => {
   const account = createAccount({
     id: "broker-interest",
@@ -1210,12 +1431,117 @@ test("successful confident LLM classifications clear fallback review state", asy
       dataset,
       account,
       transaction,
+      {
+        trigger: "manual_review_update",
+        reviewContext: {
+          previousReviewReason: transaction.reviewReason ?? null,
+          previousUserContext: "Previous manual note.",
+          previousLlmPayload: {
+            analysisStatus: "done",
+            model: "gpt-4.1-mini",
+          },
+          userProvidedContext:
+            "This is a broker commission for GOOG, not a stock sale.",
+        },
+      },
     );
+    const llmPayload = decision.llmPayload as {
+      reviewContext?: {
+        userProvidedContext?: string;
+        trigger?: string;
+      };
+      timing?: {
+        requestedAt?: string;
+        completedAt?: string;
+        durationMs?: number;
+      };
+    };
 
     assert.equal(decision.classificationSource, "llm");
     assert.equal(decision.transactionClass, "transfer_internal");
     assert.equal(decision.needsReview, false);
     assert.equal(decision.reviewReason, null);
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("invalid LLM economic entity overrides are ignored", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = "test-key";
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "investment_trade_buy",
+          category_code: "stock_buy",
+          merchant_normalized: "Vanguard",
+          counterparty_name: "Vanguard Japan Stock EUR INS",
+          economic_entity_override: "Vanguard Japan Stock EUR INS",
+          security_hint: "Vanguard Japan Stock EUR INS",
+          confidence: 0.91,
+          explanation: "This is a clearly named Vanguard investment purchase.",
+          reason:
+            "The description names a Vanguard fund, but it does not contain a valid entity override.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+  try {
+    const account = createAccount({
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "MyInvestor",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "vanguard-invalid-entity-override",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      descriptionRaw: "VANGUARD JAPAN STOCK EUR INS @",
+      descriptionClean: "VANGUARD JAPAN STOCK EUR INS @",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+    );
+
+    assert.equal(decision.classificationSource, "llm");
+    assert.equal(decision.transactionClass, "investment_trade_buy");
+    assert.equal(decision.economicEntityId, account.entityId);
+    assert.equal(
+      decision.llmPayload.llm &&
+        typeof decision.llmPayload.llm === "object" &&
+        "economicEntityId" in decision.llmPayload.llm
+        ? (decision.llmPayload.llm as { economicEntityId: string | null })
+            .economicEntityId
+        : null,
+      null,
+    );
   } finally {
     if (previousKey === undefined) {
       delete process.env.OPENAI_API_KEY;
@@ -1290,6 +1616,7 @@ test("investment review includes portfolio state and can override commission-lik
       classificationConfidence: "0.00",
       needsReview: true,
       reviewReason: "Needs LLM enrichment.",
+      manualNotes: "Previous manual note.",
       securityId: "security-goog",
       quantity: null,
       unitPriceOriginal: null,
@@ -1372,6 +1699,13 @@ test("investment review includes portfolio state and can override commission-lik
       dataset,
       account,
       transaction,
+      {
+        trigger: "manual_review_update",
+        reviewContext: {
+          userProvidedContext:
+            "This is a broker commission for GOOG, not a stock sale.",
+        },
+      },
     );
 
     assert.equal(decision.classificationSource, "llm");
@@ -1385,6 +1719,34 @@ test("investment review includes portfolio state and can override commission-lik
     assert.match(capturedUserPrompt, /"quantity":"45\.00000000"/);
     assert.match(capturedUserPrompt, /"impliedUnitPrice":"0\.13"/);
     assert.match(capturedUserPrompt, /"latestHoldingPrice":"215\.40"/);
+    assert.match(capturedUserPrompt, /Review trigger: manual_review_update/);
+    assert.match(
+      capturedUserPrompt,
+      /Previous user review context: Previous manual note\./,
+    );
+    assert.match(
+      capturedUserPrompt,
+      /New user review context: This is a broker commission for GOOG, not a stock sale\./,
+    );
+    const llmPayload = decision.llmPayload as {
+      reviewContext?: {
+        userProvidedContext?: string | null;
+        trigger?: string | null;
+      };
+      timing?: {
+        requestedAt?: string | null;
+        completedAt?: string | null;
+        durationMs?: number | null;
+      };
+    };
+    assert.equal(
+      llmPayload.reviewContext?.userProvidedContext,
+      "This is a broker commission for GOOG, not a stock sale.",
+    );
+    assert.equal(llmPayload.reviewContext?.trigger, "manual_review_update");
+    assert.equal(typeof llmPayload.timing?.requestedAt, "string");
+    assert.equal(typeof llmPayload.timing?.completedAt, "string");
+    assert.equal(typeof llmPayload.timing?.durationMs, "number");
   } finally {
     if (previousKey === undefined) {
       delete process.env.OPENAI_API_KEY;
@@ -1978,7 +2340,7 @@ test("investment rebuild derives open positions and brokerage cash from imported
         transactionClass: "investment_trade_sell",
         categoryCode: "uncategorized_investment",
         securityId: "security-1",
-        quantity: "1.00000000",
+        quantity: "-1.00000000",
         unitPriceOriginal: "120.00",
         rawPayload: {
           Import: {

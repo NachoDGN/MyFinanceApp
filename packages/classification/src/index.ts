@@ -256,24 +256,30 @@ export function parseInvestmentEvent(transaction: Transaction): {
     const gross = Math.abs(Number(transaction.amountOriginal));
     const unitPriceOriginal =
       quantity === "0" ? undefined : (gross / Number(quantity)).toFixed(2);
+    const transactionClass =
+      Number(transaction.amountOriginal) < 0
+        ? "investment_trade_buy"
+        : "investment_trade_sell";
     return {
-      transactionClass:
-        Number(transaction.amountOriginal) < 0
-          ? "investment_trade_buy"
-          : "investment_trade_sell",
-      quantity: quantity === "0" ? undefined : quantity,
+      transactionClass,
+      quantity:
+        quantity === "0"
+          ? undefined
+          : normalizeTradeQuantity(transactionClass, quantity) ?? undefined,
       securityHint,
       unitPriceOriginal,
     };
   }
 
   if (buyMatch) {
+    const transactionClass =
+      buyMatch[1] === "BUY"
+        ? "investment_trade_buy"
+        : "investment_trade_sell";
     return {
-      transactionClass:
-        buyMatch[1] === "BUY"
-          ? "investment_trade_buy"
-          : "investment_trade_sell",
-      quantity: buyMatch[2],
+      transactionClass,
+      quantity:
+        normalizeTradeQuantity(transactionClass, buyMatch[2]) ?? undefined,
       securityHint: buyMatch[3],
     };
   }
@@ -353,6 +359,9 @@ type LlmClassification = {
   reason: string | null;
   error: string | null;
   rawOutput: Record<string, unknown> | null;
+  requestedAt: string;
+  completedAt: string;
+  durationMs: number;
 };
 
 export interface TransactionEnrichmentDecision {
@@ -372,9 +381,35 @@ export interface TransactionEnrichmentDecision {
   llmPayload: Record<string, unknown>;
 }
 
+export interface TransactionReviewContextInput {
+  userProvidedContext?: string | null;
+  previousReviewReason?: string | null;
+  previousUserContext?: string | null;
+  previousLlmPayload?: Record<string, unknown> | null;
+}
+
+export interface TransactionEnrichmentOptions {
+  trigger?: "import_classification" | "manual_review_update";
+  reviewContext?: TransactionReviewContextInput;
+}
+
 function normalizeOptionalText(value: string | null | undefined) {
   const text = value?.trim() ?? "";
   return text || null;
+}
+
+function resolveValidEconomicEntityOverride(
+  dataset: DomainDataset,
+  value: string | null | undefined,
+) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  return dataset.entities.some((entity) => entity.id === normalized)
+    ? normalized
+    : null;
 }
 
 function isTradeTransactionClass(
@@ -384,6 +419,28 @@ function isTradeTransactionClass(
     transactionClass === "investment_trade_buy" ||
     transactionClass === "investment_trade_sell"
   );
+}
+
+function normalizeTradeQuantity(
+  transactionClass: string,
+  quantity: string | null | undefined,
+) {
+  const normalized = normalizeOptionalText(quantity);
+  if (!normalized || !isTradeTransactionClass(transactionClass)) {
+    return null;
+  }
+
+  const numericQuantity = Number(normalized);
+  if (!Number.isFinite(numericQuantity) || numericQuantity === 0) {
+    return null;
+  }
+
+  const absoluteQuantity = Math.abs(numericQuantity);
+  const signedQuantity =
+    transactionClass === "investment_trade_sell"
+      ? -absoluteQuantity
+      : absoluteQuantity;
+  return signedQuantity.toFixed(8);
 }
 
 function buildInvestmentPortfolioState(
@@ -414,7 +471,9 @@ function buildInvestmentPortfolioState(
     holdings.find((holding) => {
       if (!targetHint) return false;
       const symbol = normalizeDescription(holding.symbol).comparison;
-      const securityName = normalizeDescription(holding.securityName).comparison;
+      const securityName = normalizeDescription(
+        holding.securityName,
+      ).comparison;
       return (
         targetHint.includes(symbol) ||
         targetHint.includes(securityName) ||
@@ -423,10 +482,14 @@ function buildInvestmentPortfolioState(
     }) ??
     null;
 
-  const quantity = Number(transaction.quantity ?? deterministic.quantity ?? 0);
+  const normalizedTradeQuantity = normalizeTradeQuantity(
+    deterministic.transactionClass,
+    transaction.quantity ?? deterministic.quantity ?? null,
+  );
+  const quantity = Number(normalizedTradeQuantity ?? 0);
   const impliedUnitPrice =
-    Number.isFinite(quantity) && quantity > 0
-      ? (Math.abs(Number(transaction.amountOriginal)) / quantity).toFixed(2)
+    Number.isFinite(quantity) && Math.abs(quantity) > 0
+      ? (Math.abs(Number(transaction.amountOriginal)) / Math.abs(quantity)).toFixed(2)
       : null;
   const latestHoldingPrice = matchedHolding?.currentPrice ?? null;
   const sameCurrency =
@@ -581,7 +644,10 @@ function buildDeterministicClassification(
             ? `Parsed investment trade for "${parsed.securityHint}", but the system has not matched it to a tracked security yet.`
             : null,
         securityHint: parsed.securityHint ?? null,
-        quantity: transaction.quantity ?? parsed.quantity ?? null,
+        quantity: normalizeTradeQuantity(
+          parsed.transactionClass,
+          transaction.quantity ?? parsed.quantity ?? null,
+        ),
         unitPriceOriginal:
           transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null,
       };
@@ -660,12 +726,15 @@ async function requestLlmClassification(
   account: Account,
   transaction: Transaction,
   deterministic: DeterministicClassification,
+  options?: TransactionEnrichmentOptions,
 ): Promise<LlmClassification> {
   const { model } =
     account.assetDomain === "investment"
       ? getInvestmentTransactionClassifierConfig()
       : getTransactionClassifierConfig();
+  const requestedAt = new Date().toISOString();
   if (!isModelConfigured(model)) {
+    const completedAt = new Date().toISOString();
     return {
       analysisStatus: "skipped",
       model: null,
@@ -680,6 +749,10 @@ async function requestLlmClassification(
       reason: null,
       error: `LLM credentials are not configured for model ${model}.`,
       rawOutput: null,
+      requestedAt,
+      completedAt,
+      durationMs:
+        new Date(completedAt).getTime() - new Date(requestedAt).getTime(),
     };
   }
 
@@ -725,9 +798,29 @@ async function requestLlmClassification(
         transaction,
         deterministic,
       ),
+      reviewContext: {
+        trigger: options?.trigger ?? "import_classification",
+        previousReviewReason:
+          options?.reviewContext?.previousReviewReason ??
+          transaction.reviewReason ??
+          null,
+        previousUserContext:
+          options?.reviewContext?.previousUserContext ??
+          transaction.manualNotes ??
+          null,
+        userProvidedContext:
+          options?.reviewContext?.userProvidedContext ?? null,
+        previousLlmPayload:
+          options?.reviewContext?.previousLlmPayload ??
+          (transaction.llmPayload as Record<string, unknown> | null | undefined) ??
+          null,
+      },
     },
     model,
   );
+  const completedAt = new Date().toISOString();
+  const durationMs =
+    new Date(completedAt).getTime() - new Date(requestedAt).getTime();
 
   if (result.analysisStatus !== "done" || !result.output) {
     return {
@@ -744,6 +837,9 @@ async function requestLlmClassification(
       reason: null,
       error: result.error ?? "Unknown LLM classification failure.",
       rawOutput: result.rawOutput,
+      requestedAt,
+      completedAt,
+      durationMs,
     };
   }
 
@@ -758,7 +854,8 @@ async function requestLlmClassification(
     counterpartyName: normalizeOptionalText(
       result.output.counterparty_name ?? null,
     ),
-    economicEntityId: normalizeOptionalText(
+    economicEntityId: resolveValidEconomicEntityOverride(
+      dataset,
       result.output.economic_entity_override ?? null,
     ),
     securityHint: normalizeOptionalText(result.output.security_hint ?? null),
@@ -767,6 +864,9 @@ async function requestLlmClassification(
     reason: result.output.reason,
     error: null,
     rawOutput: result.rawOutput,
+    requestedAt,
+    completedAt,
+    durationMs,
   };
 }
 
@@ -774,6 +874,7 @@ export async function enrichImportedTransaction(
   dataset: DomainDataset,
   account: Account,
   transaction: Transaction,
+  options?: TransactionEnrichmentOptions,
 ): Promise<TransactionEnrichmentDecision> {
   const deterministic = buildDeterministicClassification(
     dataset,
@@ -785,6 +886,7 @@ export async function enrichImportedTransaction(
     account,
     transaction,
     deterministic,
+    options,
   );
   const { lowConfidenceCutoff } = getTransactionClassifierConfig();
   const allowedCategoryCodes = new Set(
@@ -820,10 +922,9 @@ export async function enrichImportedTransaction(
         ? llm.categoryCode
         : deterministic.categoryCode;
 
-    const deterministicWins = new Set([
-      "user_rule",
-      "transfer_matcher",
-    ]).has(deterministic.classificationSource);
+    const deterministicWins = new Set(["user_rule", "transfer_matcher"]).has(
+      deterministic.classificationSource,
+    );
     const shouldApplyLlm =
       !deterministicWins &&
       (deterministic.classificationSource !== "investment_parser" ||
@@ -877,7 +978,9 @@ export async function enrichImportedTransaction(
     reviewReason = `Parsed investment trade for "${securityHint}", but the system has not matched it to a tracked security yet.`;
   }
 
-  if (!isTradeTransactionClass(transactionClass)) {
+  if (isTradeTransactionClass(transactionClass)) {
+    quantity = normalizeTradeQuantity(transactionClass, quantity);
+  } else {
     quantity = null;
     unitPriceOriginal = null;
   }
@@ -908,6 +1011,24 @@ export async function enrichImportedTransaction(
       confidence: llm.confidence ?? deterministic.classificationConfidence,
       deterministic,
       llm,
+      reviewContext: {
+        trigger: options?.trigger ?? "import_classification",
+        previousReviewReason:
+          options?.reviewContext?.previousReviewReason ??
+          transaction.reviewReason ??
+          null,
+        previousUserContext:
+          options?.reviewContext?.previousUserContext ??
+          transaction.manualNotes ??
+          null,
+        userProvidedContext:
+          options?.reviewContext?.userProvidedContext ?? null,
+      },
+      timing: {
+        requestedAt: llm.requestedAt,
+        completedAt: llm.completedAt,
+        durationMs: llm.durationMs,
+      },
       applied: {
         transactionClass,
         categoryCode,
@@ -923,7 +1044,7 @@ export async function enrichImportedTransaction(
         quantity,
         unitPriceOriginal,
       },
-      analyzedAt: new Date().toISOString(),
+      analyzedAt: llm.completedAt,
     },
   };
 }

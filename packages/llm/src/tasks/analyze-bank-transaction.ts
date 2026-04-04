@@ -104,6 +104,13 @@ export interface AnalyzeBankTransactionInput {
       priceDeltaPercent: string | null;
     } | null;
   };
+  reviewContext?: {
+    trigger: string;
+    previousReviewReason?: string | null;
+    previousUserContext?: string | null;
+    userProvidedContext?: string | null;
+    previousLlmPayload?: unknown;
+  };
 }
 
 export type TransactionAnalysisOutput = z.infer<
@@ -145,6 +152,16 @@ function buildSystemPrompt(assetDomain: "cash" | "investment") {
 }
 
 function buildUserPrompt(input: AnalyzeBankTransactionInput) {
+  const reviewContext = input.reviewContext
+    ? [
+        `Review trigger: ${input.reviewContext.trigger}.`,
+        `Previous review reason: ${input.reviewContext.previousReviewReason ?? "null"}.`,
+        `Previous user review context: ${input.reviewContext.previousUserContext ?? "null"}.`,
+        `New user review context: ${input.reviewContext.userProvidedContext ?? "null"}.`,
+        `Previous LLM analysis: ${JSON.stringify(input.reviewContext.previousLlmPayload ?? null)}.`,
+      ]
+    : [];
+
   return [
     `Institution: ${input.account.institutionName}.`,
     `Account: ${input.account.displayName}.`,
@@ -169,6 +186,7 @@ function buildUserPrompt(input: AnalyzeBankTransactionInput) {
     `Current raw payload: ${JSON.stringify(input.transaction.rawPayload)}.`,
     `Deterministic hint: ${JSON.stringify(input.deterministicHint)}.`,
     `Portfolio state: ${JSON.stringify(input.portfolioState ?? null)}.`,
+    ...reviewContext,
   ].join("\n");
 }
 

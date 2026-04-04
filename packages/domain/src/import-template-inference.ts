@@ -9,6 +9,7 @@ import {
 } from "@myfinance/llm";
 
 import { logTemporaryImportDebug } from "./import-debug";
+import { todayIso } from "./finance";
 import {
   columnLetterToIndex,
   inspectSpreadsheetWorkbook,
@@ -32,6 +33,7 @@ export interface ImportTemplateInferenceDeps {
   inspectWorkbook?: typeof inspectSpreadsheetWorkbook;
   previewTable?: typeof previewSpreadsheetTable;
   modelName?: string;
+  referenceDate?: string;
 }
 
 export function getImportTemplateInferenceConfig() {
@@ -175,12 +177,14 @@ export async function inferImportTemplateDraft(
   deps: ImportTemplateInferenceDeps = {},
 ): Promise<Omit<ImportTemplate, "id" | "createdAt" | "updatedAt" | "version">> {
   const modelName = deps.modelName ?? getImportTemplateInferenceConfig().model;
+  const referenceDate = deps.referenceDate ?? todayIso();
   logTemporaryImportDebug("template-inference:start", {
     accountId: input.account.id,
     institutionName: input.account.institutionName,
     accountType: input.account.accountType,
     originalFilename: input.originalFilename ?? null,
     resolvedModel: modelName,
+    referenceDate,
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
   });
   if (!deps.llmClient && !isModelConfigured(modelName)) {
@@ -277,6 +281,7 @@ export async function inferImportTemplateDraft(
       accountType: input.account.accountType,
       defaultCurrency: input.account.defaultCurrency,
       detectedHeaders: tablePreview.headers,
+      referenceDate,
     },
     modelName,
   );

@@ -595,6 +595,71 @@ export function ReviewStateCell({
     typeof (llmPayload as { explanation?: unknown }).explanation === "string"
       ? (llmPayload as { explanation: string }).explanation
       : null;
+  const llmModel =
+    llmPayload &&
+    typeof llmPayload === "object" &&
+    "model" in llmPayload &&
+    typeof (llmPayload as { model?: unknown }).model === "string"
+      ? (llmPayload as { model: string }).model
+      : null;
+  const llmCompletedAt =
+    llmPayload &&
+    typeof llmPayload === "object" &&
+    "timing" in llmPayload &&
+    typeof (llmPayload as { timing?: unknown }).timing === "object" &&
+    (llmPayload as { timing: { completedAt?: unknown } }).timing &&
+    typeof (llmPayload as { timing: { completedAt?: unknown } }).timing
+      .completedAt === "string"
+      ? ((llmPayload as { timing: { completedAt: string } }).timing
+          .completedAt ?? null)
+      : null;
+  const llmDurationMs =
+    llmPayload &&
+    typeof llmPayload === "object" &&
+    "timing" in llmPayload &&
+    typeof (llmPayload as { timing?: unknown }).timing === "object" &&
+    (llmPayload as { timing: { durationMs?: unknown } }).timing &&
+    typeof (llmPayload as { timing: { durationMs?: unknown } }).timing
+      .durationMs === "number"
+      ? ((llmPayload as { timing: { durationMs: number } }).timing
+          .durationMs ?? null)
+      : null;
+  const llmTrigger =
+    llmPayload &&
+    typeof llmPayload === "object" &&
+    "reviewContext" in llmPayload &&
+    typeof (llmPayload as { reviewContext?: unknown }).reviewContext ===
+      "object" &&
+    (llmPayload as { reviewContext: { trigger?: unknown } }).reviewContext &&
+    typeof (llmPayload as { reviewContext: { trigger?: unknown } }).reviewContext
+      .trigger === "string"
+      ? ((llmPayload as { reviewContext: { trigger: string } }).reviewContext
+          .trigger ?? null)
+      : null;
+  const llmLogSummary =
+    llmModel || llmCompletedAt || llmDurationMs !== null
+      ? [
+          llmTrigger === "manual_review_update"
+            ? "manual re-review"
+            : llmTrigger === "import_classification"
+              ? "import enrichment"
+              : null,
+          llmModel,
+          llmCompletedAt
+            ? new Intl.DateTimeFormat("en-US", {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              }).format(new Date(llmCompletedAt))
+            : null,
+          typeof llmDurationMs === "number"
+            ? `${Math.round(llmDurationMs)}ms`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : null;
   const resolvedSummary =
     sourceLabel || transactionClass || securitySymbol || normalizedQuantity
       ? [
@@ -621,6 +686,11 @@ export function ReviewStateCell({
             {explanation}
           </span>
         ) : null}
+        {llmLogSummary ? (
+          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+            {llmLogSummary}
+          </span>
+        ) : null}
       </div>
     );
   }
@@ -635,6 +705,11 @@ export function ReviewStateCell({
       >
         {reviewReason ?? "Reason unavailable."}
       </span>
+      {llmLogSummary ? (
+        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          {llmLogSummary}
+        </span>
+      ) : null}
     </div>
   );
 }

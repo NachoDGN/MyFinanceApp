@@ -125,6 +125,9 @@ importers:
       '@myfinance/llm':
         specifier: workspace:*
         version: link:../llm
+      decimal.js:
+        specifier: ^10.4.3
+        version: 10.6.0
       zod:
         specifier: ^3.24.2
         version: 3.25.76

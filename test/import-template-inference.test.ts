@@ -323,3 +323,74 @@ test("inferImportTemplateDraft explains when an xlsx has no worksheet previews",
     /does not contain any worksheet tabs with rows and columns to preview/i,
   );
 });
+
+test("inferImportTemplateDraft passes the reference date into layout inference", async () => {
+  let layoutPrompt = "";
+
+  await inferImportTemplateDraft(
+    {
+      userId: "user-1",
+      account: {
+        id: "account-1",
+        institutionName: "MyInvestor",
+        accountType: "brokerage_account",
+        defaultCurrency: "EUR",
+      },
+      filePath: "/tmp/myinvestor.xlsx",
+      originalFilename: "myinvestor.xlsx",
+    },
+    {
+      referenceDate: "2026-04-04",
+      llmClient: {
+        async generateText() {
+          throw new Error("Not used in this test.");
+        },
+        async generateJson({ schemaName, userPrompt }) {
+          if (schemaName === "spreadsheet_table_start") {
+            return {
+              sheet_name: "Movimientos",
+              header_row_index: 1,
+              rows_to_skip_before_header: 0,
+              start_column_letter: "A",
+            };
+          }
+          if (schemaName === "spreadsheet_layout") {
+            layoutPrompt = userPrompt;
+            return {
+              column_map: {
+                transaction_date: "Fecha",
+                description_raw: "Concepto",
+                amount_original_signed: "Importe",
+              },
+              sign_logic: {
+                mode: "signed_amount",
+                invert_sign: false,
+              },
+              date_day_first: false,
+            };
+          }
+          throw new Error(`Unexpected schema ${schemaName}`);
+        },
+      },
+      inspectWorkbook: async () => ({
+        fileKind: "xlsx",
+        delimiter: null,
+        encoding: null,
+        sheetPreviews: [
+          {
+            sheetName: "Movimientos",
+            previewCsv: "row,A,B,C\n1,Fecha,Concepto,Importe",
+          },
+        ],
+      }),
+      previewTable: async () => ({
+        sheetName: "Movimientos",
+        previewCsv: "Fecha,Concepto,Importe\n03/12/2026,Compra ETF,-100.00",
+        headers: ["Fecha", "Concepto", "Importe"],
+      }),
+    },
+  );
+
+  assert.match(layoutPrompt, /Reference date: 2026-04-04/);
+  assert.match(layoutPrompt, /03\/12\/2026/);
+});

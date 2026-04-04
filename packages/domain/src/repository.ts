@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { Decimal } from "decimal.js";
 
+import { todayIso } from "./finance";
 import type {
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
@@ -335,6 +336,7 @@ export async function runDeterministicImport(
         "file-path": normalizedInput.filePath,
         "account-id": normalizedInput.accountId,
         "template-id": normalizedInput.templateId,
+        "reference-date": todayIso(),
         "template-json": JSON.stringify(
           createRunnerTemplate(dataset, normalizedInput.templateId),
         ),
@@ -361,6 +363,28 @@ function normalizeFingerprintText(value: string | null | undefined) {
     .trim()
     .replace(/\s+/g, " ")
     .toUpperCase();
+}
+
+function truncateDecimalTowardsZero(value: Decimal) {
+  return value.isNegative() ? value.ceil() : value.floor();
+}
+
+function matchesRoundedWholeValue(left: string, right: string) {
+  const leftValue = new Decimal(left);
+  const rightValue = new Decimal(right);
+  if (leftValue.eq(rightValue)) {
+    return false;
+  }
+  if (leftValue.minus(rightValue).abs().gte(1)) {
+    return false;
+  }
+
+  return (
+    (leftValue.isInteger() &&
+      truncateDecimalTowardsZero(rightValue).eq(leftValue)) ||
+    (rightValue.isInteger() &&
+      truncateDecimalTowardsZero(leftValue).eq(rightValue))
+  );
 }
 
 function resolveSecurityId(
@@ -410,6 +434,68 @@ function safeParseRawRowJson(row: CanonicalImportRow) {
   } catch {
     return {};
   }
+}
+
+type InvestmentDuplicateCandidate = {
+  amountOriginal: string;
+  unitPriceOriginal: string | null;
+};
+
+function buildInvestmentDuplicateSignature(
+  accountId: string,
+  row: {
+    transactionDate: string;
+    postedDate: string;
+    amountOriginal: string;
+    currencyOriginal: string;
+    descriptionRaw: string;
+    quantity: string | null;
+    securityId: string | null;
+    transactionTypeRaw: string | null;
+  },
+) {
+  if (!row.securityId) {
+    return null;
+  }
+
+  return [
+    "investment",
+    accountId,
+    row.transactionDate,
+    row.postedDate,
+    row.currencyOriginal,
+    row.securityId,
+    normalizeFingerprintText(row.descriptionRaw),
+    normalizeFingerprintText(row.quantity),
+    normalizeFingerprintText(row.transactionTypeRaw),
+    new Decimal(row.amountOriginal).isNegative() ? "outflow" : "inflow",
+  ].join("|");
+}
+
+function isRoundedInvestmentDuplicate(
+  candidate: InvestmentDuplicateCandidate,
+  existing: InvestmentDuplicateCandidate,
+) {
+  if (
+    candidate.unitPriceOriginal &&
+    existing.unitPriceOriginal &&
+    new Decimal(candidate.unitPriceOriginal)
+      .minus(existing.unitPriceOriginal)
+      .abs()
+      .gte(1)
+  ) {
+    return false;
+  }
+
+  return (
+    matchesRoundedWholeValue(candidate.amountOriginal, existing.amountOriginal) ||
+    (candidate.unitPriceOriginal !== null &&
+      existing.unitPriceOriginal !== null &&
+      matchesRoundedWholeValue(
+        candidate.unitPriceOriginal,
+        existing.unitPriceOriginal,
+      ))
+  );
 }
 
 function buildImportFingerprint(
@@ -480,9 +566,58 @@ export function buildImportedTransactions(
     throw new Error(`Account ${input.accountId} not found.`);
   }
 
+  const accountsById = new Map(
+    dataset.accounts.map((datasetAccount) => [datasetAccount.id, datasetAccount]),
+  );
   const existingFingerprints = new Set(
     dataset.transactions.map((transaction) => transaction.sourceFingerprint),
   );
+  const existingInvestmentDuplicateCandidates = new Map<
+    string,
+    InvestmentDuplicateCandidate[]
+  >();
+  for (const transaction of dataset.transactions) {
+    const transactionAccount = accountsById.get(transaction.accountId);
+    if (
+      transactionAccount?.assetDomain !== "investment" ||
+      transaction.voidedAt ||
+      transaction.excludeFromAnalytics
+    ) {
+      continue;
+    }
+
+    const transactionTypeRaw =
+      typeof transaction.rawPayload?._import === "object" &&
+      transaction.rawPayload._import &&
+      "transaction_type_raw" in transaction.rawPayload._import &&
+      typeof transaction.rawPayload._import.transaction_type_raw === "string"
+        ? transaction.rawPayload._import.transaction_type_raw
+        : null;
+    const duplicateSignature = buildInvestmentDuplicateSignature(
+      transaction.accountId,
+      {
+        transactionDate: transaction.transactionDate,
+        postedDate: transaction.postedDate ?? transaction.transactionDate,
+        amountOriginal: transaction.amountOriginal,
+        currencyOriginal: transaction.currencyOriginal,
+        descriptionRaw: transaction.descriptionRaw,
+        quantity: transaction.quantity ?? null,
+        securityId: transaction.securityId ?? null,
+        transactionTypeRaw,
+      },
+    );
+    if (!duplicateSignature) {
+      continue;
+    }
+
+    const candidates =
+      existingInvestmentDuplicateCandidates.get(duplicateSignature) ?? [];
+    candidates.push({
+      amountOriginal: transaction.amountOriginal,
+      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
+    });
+    existingInvestmentDuplicateCandidates.set(duplicateSignature, candidates);
+  }
   const inserted: Transaction[] = [];
   let duplicateCount = 0;
   const createdAt = new Date().toISOString();
@@ -557,6 +692,39 @@ export function buildImportedTransactions(
       },
     } satisfies Record<string, unknown>;
     const securityId = resolveSecurityId(dataset, row);
+    if (account.assetDomain === "investment") {
+      const duplicateSignature = buildInvestmentDuplicateSignature(account.id, {
+        transactionDate,
+        postedDate,
+        amountOriginal,
+        currencyOriginal,
+        descriptionRaw,
+        quantity,
+        securityId,
+        transactionTypeRaw,
+      });
+      if (duplicateSignature) {
+        const candidate = {
+          amountOriginal,
+          unitPriceOriginal,
+        } satisfies InvestmentDuplicateCandidate;
+        const existingCandidates =
+          existingInvestmentDuplicateCandidates.get(duplicateSignature) ?? [];
+        if (
+          existingCandidates.some((existing) =>
+            isRoundedInvestmentDuplicate(candidate, existing),
+          )
+        ) {
+          duplicateCount += 1;
+          continue;
+        }
+        existingCandidates.push(candidate);
+        existingInvestmentDuplicateCandidates.set(
+          duplicateSignature,
+          existingCandidates,
+        );
+      }
+    }
     const initialReviewReasons = [
       "Pending enrichment pipeline.",
       currencyOriginal !== "EUR" && !fxRateToEur

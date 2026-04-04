@@ -24,7 +24,9 @@ function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
 }
 
 function isPlaceholderSecurityPrice(price: SecurityPrice) {
-  return price.sourceName === "twelve_data" && !hasNonEmptyRawJson(price.rawJson);
+  return (
+    price.sourceName === "twelve_data" && !hasNonEmptyRawJson(price.rawJson)
+  );
 }
 
 function toDate(value: string) {
@@ -189,6 +191,7 @@ export function getDatasetLatestDate(
   dataset: DomainDataset,
   fallback = todayIso(),
 ) {
+  const cappedFallback = isIsoDate(fallback) ? fallback : todayIso();
   const nonPlaceholderPriceDates = dataset.securityPrices
     .filter((row) => !isPlaceholderSecurityPrice(row))
     .map((row) => row.priceDate);
@@ -208,11 +211,12 @@ export function getDatasetLatestDate(
     ...dataset.dailyPortfolioSnapshots.map((row) => row.snapshotDate),
     ...dataset.monthlyCashFlowRollups.map((row) => row.month),
   ]
-    .filter(Boolean)
+    .filter(isIsoDate)
+    .filter((value) => value <= cappedFallback)
     .sort()
     .at(-1);
 
-  return latest || fallback;
+  return latest || cappedFallback;
 }
 
 export function getScopeLatestDate(
@@ -220,6 +224,7 @@ export function getScopeLatestDate(
   scope: Scope,
   fallback = todayIso(),
 ) {
+  const cappedFallback = isIsoDate(fallback) ? fallback : todayIso();
   const scopedTransactions = filterTransactionsByScope(dataset, scope);
   const scopedAccountIds = new Set(
     scope.kind === "consolidated"
@@ -286,11 +291,12 @@ export function getScopeLatestDate(
       .filter((row) => entityIds.has(row.entityId))
       .map((row) => row.month),
   ]
-    .filter(Boolean)
+    .filter(isIsoDate)
+    .filter((value) => value <= cappedFallback)
     .sort()
     .at(-1);
 
-  return latest || fallback;
+  return latest || cappedFallback;
 }
 
 export function resolveScopeEntityIds(
@@ -519,7 +525,11 @@ function latestSecurityPrice(
         right.quoteTimestamp.localeCompare(left.quoteTimestamp),
     );
 
-  return candidates.find((row) => !isPlaceholderSecurityPrice(row)) ?? candidates[0] ?? null;
+  return (
+    candidates.find((row) => !isPlaceholderSecurityPrice(row)) ??
+    candidates[0] ??
+    null
+  );
 }
 
 export function buildHoldingRows(
@@ -714,6 +724,7 @@ export function rebuildInvestmentState(
     }
 
     const quantity = new Decimal(transaction.quantity ?? 0);
+    const absoluteQuantity = quantity.abs();
     const amountEur = new Decimal(transaction.amountBaseEur);
     const position = ensurePosition(
       transaction.economicEntityId,
@@ -723,8 +734,8 @@ export function rebuildInvestmentState(
 
     switch (transaction.transactionClass) {
       case "investment_trade_buy": {
-        if (quantity.lte(0)) break;
-        position.openQuantity = position.openQuantity.plus(quantity);
+        if (absoluteQuantity.lte(0)) break;
+        position.openQuantity = position.openQuantity.plus(absoluteQuantity);
         position.openCostBasisEur = position.openCostBasisEur.plus(
           amountEur.abs(),
         );
@@ -732,15 +743,18 @@ export function rebuildInvestmentState(
         break;
       }
       case "investment_trade_sell": {
-        if (quantity.lte(0) || position.openQuantity.lte(0)) break;
-        const sellQuantity = Decimal.min(position.openQuantity, quantity);
+        if (absoluteQuantity.lte(0) || position.openQuantity.lte(0)) break;
+        const sellQuantity = Decimal.min(
+          position.openQuantity,
+          absoluteQuantity,
+        );
         const currentAverageCost = position.openQuantity.eq(0)
           ? new Decimal(0)
           : position.openCostBasisEur.div(position.openQuantity);
         const removedCostBasis = currentAverageCost.mul(sellQuantity);
         const proportionalProceeds = amountEur
           .abs()
-          .mul(sellQuantity.div(quantity));
+          .mul(sellQuantity.div(absoluteQuantity));
 
         position.openQuantity = position.openQuantity.minus(sellQuantity);
         position.openCostBasisEur = Decimal.max(

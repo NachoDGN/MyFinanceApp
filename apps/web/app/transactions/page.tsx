@@ -1,5 +1,6 @@
 import { AppShell } from "../../components/app-shell";
-import { ReviewStateCell, SectionCard, SimpleTable } from "../../components/primitives";
+import { SectionCard, SimpleTable } from "../../components/primitives";
+import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { formatCurrency, getTransactionsModel } from "../../lib/queries";
 
 export default async function TransactionsPage({
@@ -71,9 +72,15 @@ export default async function TransactionsPage({
             formatCurrency(row.amountBaseEur, model.currency),
             row.transactionClass,
             row.categoryCode ?? "—",
-            <ReviewStateCell
+            <ReviewEditorCell
+              transactionId={row.id}
               needsReview={row.needsReview}
               reviewReason={row.reviewReason}
+              manualNotes={row.manualNotes}
+              transactionClass={row.transactionClass}
+              classificationSource={row.classificationSource}
+              quantity={row.quantity}
+              llmPayload={row.llmPayload}
             />,
             row.classificationConfidence,
           ])}

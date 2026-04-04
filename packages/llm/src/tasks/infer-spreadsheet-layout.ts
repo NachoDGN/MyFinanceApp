@@ -129,6 +129,7 @@ export interface InferSpreadsheetLayoutInput {
   accountType: string;
   defaultCurrency: string;
   detectedHeaders: readonly string[];
+  referenceDate: string;
 }
 
 export type SpreadsheetLayout = z.infer<typeof spreadsheetLayoutResponseSchema>;
@@ -142,6 +143,7 @@ function buildSystemPrompt() {
     "Choose one sign logic mode and fill only the fields needed for that mode.",
     "If debits and credits are already signed in one column, use signed_amount.",
     "Always include every field in column_map and sign_logic. Use null when a field does not apply.",
+    "If the date format is ambiguous, prefer the interpretation that stays consistent with the sheet and does not create impossible future transaction dates relative to the reference date.",
   ].join(" ");
 }
 
@@ -151,6 +153,7 @@ function buildUserPrompt(input: InferSpreadsheetLayoutInput) {
     `Sheet name: ${input.sheetName ?? "null"}.`,
     `Account type: ${input.accountType}.`,
     `Default currency if no currency column exists: ${input.defaultCurrency}.`,
+    `Reference date: ${input.referenceDate}.`,
     `Canonical fields: ${input.canonicalFields.join(", ")}.`,
     `Detected headers: ${input.detectedHeaders.join(", ")}.`,
     "Table preview CSV:",
