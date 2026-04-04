@@ -58,12 +58,40 @@ export default async function InvestmentsPage({
   const formatDisplayAmount = (amount: string | null | undefined) =>
     formatCurrency(toDisplayAmount(amount), model.currency);
 
-  const formatNativePrice = (
+  const formatCurrentPrice = (
     price: string | null | undefined,
     priceCurrency: string | null | undefined,
-  ) => {
-    if (!price || !priceCurrency) return "N/A";
-    return formatCurrency(price, priceCurrency);
+  ): { primary: string; secondary: string | null } => {
+    if (!price || !priceCurrency) {
+      return {
+        primary: "N/A",
+        secondary: null,
+      };
+    }
+
+    const native = formatCurrency(price, priceCurrency);
+    if (priceCurrency === model.currency) {
+      return {
+        primary: native,
+        secondary: null,
+      };
+    }
+
+    const converted = new Decimal(price)
+      .mul(
+        resolveFxRate(
+          model.dataset,
+          priceCurrency,
+          model.currency,
+          model.referenceDate,
+        ),
+      )
+      .toFixed(2);
+
+    return {
+      primary: formatCurrency(converted, model.currency),
+      secondary: native,
+    };
   };
 
   const buildInvestmentsPageHref = (page: number) =>
@@ -194,31 +222,38 @@ export default async function InvestmentsPage({
             "Unrealized",
             "Freshness",
           ]}
-          rows={model.holdings.holdings.map((holding) => [
-            holding.securityName,
-            holding.symbol,
-            model.dataset.accounts.find(
-              (account) => account.id === holding.accountId,
-            )?.displayName ?? holding.accountId,
-            formatQuantity(holding.quantity),
-            formatDisplayAmount(holding.avgCostEur),
-            <div style={{ display: "grid", gap: 4 }}>
-              <span>
-                {formatNativePrice(
-                  holding.currentPrice,
-                  holding.currentPriceCurrency,
-                )}
-              </span>
-              {holding.quoteTimestamp ? (
-                <span className="muted" style={{ fontSize: 12 }}>
-                  Last quote {formatDate(holding.quoteTimestamp.slice(0, 10))}
-                </span>
-              ) : null}
-            </div>,
-            formatDisplayAmount(holding.currentValueEur),
-            `${formatDisplayAmount(holding.unrealizedPnlEur)} (${formatPercent(holding.unrealizedPnlPercent)})`,
-            holding.quoteFreshness.toUpperCase(),
-          ])}
+          rows={model.holdings.holdings.map((holding) => {
+            const currentPrice = formatCurrentPrice(
+              holding.currentPrice,
+              holding.currentPriceCurrency,
+            );
+
+            return [
+              holding.securityName,
+              holding.symbol,
+              model.dataset.accounts.find(
+                (account) => account.id === holding.accountId,
+              )?.displayName ?? holding.accountId,
+              formatQuantity(holding.quantity),
+              formatDisplayAmount(holding.avgCostEur),
+              <div style={{ display: "grid", gap: 4 }}>
+                <span>{currentPrice.primary}</span>
+                {currentPrice.secondary ? (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {currentPrice.secondary} native
+                  </span>
+                ) : null}
+                {holding.quoteTimestamp ? (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Last quote {formatDate(holding.quoteTimestamp.slice(0, 10))}
+                  </span>
+                ) : null}
+              </div>,
+              formatDisplayAmount(holding.currentValueEur),
+              `${formatDisplayAmount(holding.unrealizedPnlEur)} (${formatPercent(holding.unrealizedPnlPercent)})`,
+              holding.quoteFreshness.toUpperCase(),
+            ];
+          })}
         />
 
         <SectionCard

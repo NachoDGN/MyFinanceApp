@@ -831,6 +831,21 @@ test("investment rebuild requests end-of-day quotes on weekends", async () => {
           createdAt: "2026-04-01T08:00:00Z",
         },
       ],
+      securityPrices: [
+        {
+          securityId: "security-amd-weekend",
+          priceDate: "2026-04-03",
+          quoteTimestamp: "2026-04-03T08:20:00Z",
+          price: "152.40",
+          currency: "USD",
+          sourceName: "twelve_data",
+          isRealtime: false,
+          isDelayed: true,
+          marketState: "closed",
+          rawJson: {},
+          createdAt: "2026-04-03T12:37:43Z",
+        },
+      ],
       fxRates: [
         {
           baseCurrency: "USD",
@@ -857,6 +872,7 @@ test("investment rebuild requests end-of-day quotes on weekends", async () => {
     assert.equal(latestPrice?.price, "110.00");
     assert.equal(latestPrice?.isDelayed, true);
     assert.equal(latestPrice?.isRealtime, false);
+    assert.notDeepEqual(latestPrice?.rawJson, {});
   } finally {
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) {
@@ -1468,6 +1484,110 @@ test("holding valuation uses as-of FX even when the latest quote is older than t
 
   assert.equal(holding?.currentValueEur, "920.00");
   assert.equal(holding?.unrealizedPnlEur, "20.00");
+  assert.equal(holding?.quoteFreshness, "delayed");
+});
+
+test("holding rows ignore placeholder seed quotes when a real market-data row exists", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-placeholder",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-placeholder",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        exchangeMic: "XNAS",
+        securityType: "stock",
+        quoteCurrency: "USD",
+        countryCode: "US",
+        isin: null,
+        cusip: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-placeholder",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T08:20:00Z",
+        price: "152.40",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-04-03T12:37:43Z",
+      },
+      {
+        securityId: "security-placeholder",
+        priceDate: "2026-04-02",
+        quoteTimestamp: "2026-04-02T19:59:00Z",
+        price: "217.50",
+        currency: "USD",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {
+          symbol: "AMD",
+          close: "217.5",
+          datetime: "2026-04-02",
+        },
+        createdAt: "2026-04-03T20:08:02Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-04",
+        asOfTimestamp: "2026-04-04T15:00:00Z",
+        rate: "0.920000",
+        sourceName: "ecb",
+        rawJson: {},
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: "entity-1",
+        accountId: "brokerage-placeholder",
+        securityId: "security-placeholder",
+        openQuantity: "1.00",
+        openCostBasisEur: "100.00",
+        avgCostEur: "100.00",
+        realizedPnlEur: "0.00",
+        dividendsEur: "0.00",
+        interestEur: "0.00",
+        feesEur: "0.00",
+        lastTradeDate: "2026-03-24",
+        lastRebuiltAt: "2026-04-04T16:00:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-04",
+  );
+
+  assert.equal(holding?.currentPrice, "217.50");
+  assert.equal(holding?.quoteTimestamp, "2026-04-02T19:59:00Z");
   assert.equal(holding?.quoteFreshness, "delayed");
 });
 

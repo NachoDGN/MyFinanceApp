@@ -6,12 +6,26 @@ import type {
   DomainDataset,
   HoldingRow,
   PeriodSelection,
+  SecurityPrice,
   Scope,
   Transaction,
 } from "./types";
 
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
+
+function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length > 0
+  );
+}
+
+function isPlaceholderSecurityPrice(price: SecurityPrice) {
+  return price.sourceName === "twelve_data" && !hasNonEmptyRawJson(price.rawJson);
+}
 
 function toDate(value: string) {
   return new Date(`${value}T00:00:00Z`);
@@ -175,13 +189,20 @@ export function getDatasetLatestDate(
   dataset: DomainDataset,
   fallback = todayIso(),
 ) {
+  const nonPlaceholderPriceDates = dataset.securityPrices
+    .filter((row) => !isPlaceholderSecurityPrice(row))
+    .map((row) => row.priceDate);
+  const securityPriceDates =
+    nonPlaceholderPriceDates.length > 0
+      ? nonPlaceholderPriceDates
+      : dataset.securityPrices.map((row) => row.priceDate);
   const latest = [
     ...dataset.transactions.map((row) => row.transactionDate),
     ...dataset.importBatches.flatMap((row) => [
       row.detectedDateRange?.end ?? "",
     ]),
     ...dataset.accountBalanceSnapshots.map((row) => row.asOfDate),
-    ...dataset.securityPrices.map((row) => row.priceDate),
+    ...securityPriceDates,
     ...dataset.fxRates.map((row) => row.asOfDate),
     ...dataset.holdingAdjustments.map((row) => row.effectiveDate),
     ...dataset.dailyPortfolioSnapshots.map((row) => row.snapshotDate),
@@ -484,21 +505,21 @@ function latestSecurityPrice(
   asOfDate: string,
   maxAgeDays?: number,
 ) {
-  return (
-    [...dataset.securityPrices]
-      .filter(
-        (row) =>
-          row.securityId === securityId &&
-          row.priceDate <= asOfDate &&
-          (maxAgeDays === undefined ||
-            dayDistance(row.priceDate, asOfDate) <= maxAgeDays),
-      )
-      .sort(
-        (left, right) =>
-          right.priceDate.localeCompare(left.priceDate) ||
-          right.quoteTimestamp.localeCompare(left.quoteTimestamp),
-      )[0] ?? null
-  );
+  const candidates = [...dataset.securityPrices]
+    .filter(
+      (row) =>
+        row.securityId === securityId &&
+        row.priceDate <= asOfDate &&
+        (maxAgeDays === undefined ||
+          dayDistance(row.priceDate, asOfDate) <= maxAgeDays),
+    )
+    .sort(
+      (left, right) =>
+        right.priceDate.localeCompare(left.priceDate) ||
+        right.quoteTimestamp.localeCompare(left.quoteTimestamp),
+    );
+
+  return candidates.find((row) => !isPlaceholderSecurityPrice(row)) ?? candidates[0] ?? null;
 }
 
 export function buildHoldingRows(
