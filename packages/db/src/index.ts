@@ -379,6 +379,23 @@ async function queueJob(
   `;
 }
 
+async function supportsJobType(sql: SqlClient, jobType: string) {
+  const rows = await sql`
+    select exists (
+      select 1
+      from pg_enum enum_value
+      join pg_type enum_type on enum_type.oid = enum_value.enumtypid
+      join pg_namespace enum_namespace
+        on enum_namespace.oid = enum_type.typnamespace
+      where enum_namespace.nspname = 'public'
+        and enum_type.typname = 'job_type'
+        and enum_value.enumlabel = ${jobType}
+    ) as supported
+  `;
+
+  return rows[0]?.supported === true;
+}
+
 async function claimNextQueuedJob(sql: SqlClient, workerId: string) {
   const startedAt = new Date().toISOString();
   const claimed = await sql`
@@ -1108,11 +1125,21 @@ export async function reanalyzeTransactionReview(
       !afterTransaction.needsReview &&
       afterTransaction.transactionClass !== "unknown"
     ) {
-      await queueJob(sql, "review_propagation", {
+      const reviewPropagationPayload = {
         sourceTransactionId: afterTransaction.id,
         accountId: afterTransaction.accountId,
         sourceAuditEventId: auditEvent.id,
-      });
+      };
+      if (await supportsJobType(sql, "review_propagation")) {
+        await queueJob(sql, "review_propagation", reviewPropagationPayload);
+      } else {
+        await processReviewPropagationJob(
+          sql,
+          userId,
+          reviewPropagationPayload,
+          promptOverrides,
+        );
+      }
     }
 
     return {
