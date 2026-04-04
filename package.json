@@ -8,6 +8,7 @@
     "dev:web": "pnpm --filter @myfinance/web dev",
     "python:setup": "python3 -m venv .venv && .venv/bin/pip install -r python/ingest/requirements.txt",
     "db:cli": "pnpm dlx supabase@latest",
+    "db:backup": "./scripts/backup-supabase.sh",
     "db:start": "pnpm db:cli start",
     "db:stop": "pnpm db:cli stop",
     "db:reset": "pnpm db:cli db reset --local",
