@@ -22,6 +22,9 @@ export interface GenerateTextParams {
   maxRetries?: number;
   temperature?: number;
   maxTokens?: number;
+  tools?: Array<Record<string, unknown>>;
+  toolChoice?: string;
+  include?: string[];
 }
 
 export interface GenerateJsonParams<T> extends GenerateTextParams {

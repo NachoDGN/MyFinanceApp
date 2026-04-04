@@ -48,6 +48,9 @@ type ProviderRequest = {
   maxTokens?: number;
   responseJsonSchema?: Record<string, unknown>;
   schemaName?: string;
+  tools?: Array<Record<string, unknown>>;
+  toolChoice?: string;
+  include?: string[];
 };
 
 interface ProviderAdapter {
@@ -251,6 +254,9 @@ class OpenAIProvider implements ProviderAdapter {
         ...(typeof request.maxTokens === "number"
           ? { max_output_tokens: request.maxTokens }
           : {}),
+        ...(request.tools?.length ? { tools: request.tools } : {}),
+        ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+        ...(request.include?.length ? { include: request.include } : {}),
         ...(mode === "json"
           ? request.responseJsonSchema
             ? {
@@ -425,6 +431,9 @@ export class LLMClient {
           userPrompt: params.userPrompt,
           temperature: params.temperature,
           maxTokens: params.maxTokens,
+          tools: params.tools,
+          toolChoice: params.toolChoice,
+          include: params.include,
         });
       } catch (error) {
         lastError = error;
@@ -475,6 +484,9 @@ export class LLMClient {
           maxTokens: params.maxTokens,
           responseJsonSchema: params.responseJsonSchema,
           schemaName: params.schemaName,
+          tools: params.tools,
+          toolChoice: params.toolChoice,
+          include: params.include,
         });
 
         try {

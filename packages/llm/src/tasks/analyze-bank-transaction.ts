@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { resolveModelProvider } from "../config";
 import { renderTransactionAnalyzerPrompt } from "../prompts";
 import { LLMError, type LLMTaskClient } from "../types";
 
@@ -10,6 +11,15 @@ export const transactionAnalysisResponseSchema = z.object({
   counterparty_name: z.string().nullable(),
   economic_entity_override: z.string().nullable(),
   security_hint: z.string().nullable(),
+  resolved_instrument_name: z.string().nullable().optional(),
+  resolved_instrument_isin: z.string().nullable().optional(),
+  resolved_instrument_ticker: z.string().nullable().optional(),
+  resolved_instrument_exchange: z.string().nullable().optional(),
+  current_price: z.number().nullable().optional(),
+  current_price_currency: z.string().nullable().optional(),
+  current_price_timestamp: z.string().nullable().optional(),
+  current_price_source: z.string().nullable().optional(),
+  current_price_type: z.string().nullable().optional(),
   confidence: z.number().min(0).max(1),
   explanation: z.string().min(1).max(240),
   reason: z.string().min(1).max(320),
@@ -25,6 +35,15 @@ const transactionAnalysisJsonSchema = {
     "counterparty_name",
     "economic_entity_override",
     "security_hint",
+    "resolved_instrument_name",
+    "resolved_instrument_isin",
+    "resolved_instrument_ticker",
+    "resolved_instrument_exchange",
+    "current_price",
+    "current_price_currency",
+    "current_price_timestamp",
+    "current_price_source",
+    "current_price_type",
     "confidence",
     "explanation",
     "reason",
@@ -36,6 +55,15 @@ const transactionAnalysisJsonSchema = {
     counterparty_name: { type: ["string", "null"] },
     economic_entity_override: { type: ["string", "null"] },
     security_hint: { type: ["string", "null"] },
+    resolved_instrument_name: { type: ["string", "null"] },
+    resolved_instrument_isin: { type: ["string", "null"] },
+    resolved_instrument_ticker: { type: ["string", "null"] },
+    resolved_instrument_exchange: { type: ["string", "null"] },
+    current_price: { type: ["number", "null"] },
+    current_price_currency: { type: ["string", "null"] },
+    current_price_timestamp: { type: ["string", "null"] },
+    current_price_source: { type: ["string", "null"] },
+    current_price_type: { type: ["string", "null"] },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     explanation: { type: "string" },
     reason: { type: "string" },
@@ -185,6 +213,9 @@ export async function analyzeBankTransaction(
   modelName: string,
 ) {
   try {
+    const enableWebSearch =
+      input.account.assetDomain === "investment" &&
+      resolveModelProvider(modelName) === "openai";
     const prompt = renderTransactionAnalyzerPrompt(input.account.assetDomain, {
       institutionName: input.account.institutionName,
       accountDisplayName: input.account.displayName,
@@ -242,6 +273,8 @@ export async function analyzeBankTransaction(
       responseJsonSchema: transactionAnalysisJsonSchema,
       schemaName: "transaction_enrichment",
       temperature: 0,
+      tools: enableWebSearch ? [{ type: "web_search" }] : undefined,
+      toolChoice: enableWebSearch ? "auto" : undefined,
     });
 
     return {

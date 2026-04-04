@@ -1569,12 +1569,25 @@ test("investment review includes portfolio state and can override commission-lik
   const previousKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
   let capturedUserPrompt = "";
+  let capturedSystemPrompt = "";
+  let capturedTools: unknown[] | null = null;
+  let capturedToolChoice: string | null = null;
   process.env.OPENAI_API_KEY = "test-key";
   globalThis.fetch = async (input, init) => {
     assert.equal(input, "https://api.openai.com/v1/responses");
     const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      tools?: unknown[];
+      tool_choice?: string;
       input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
     };
+    capturedTools = Array.isArray(requestBody.tools) ? requestBody.tools : null;
+    capturedToolChoice =
+      typeof requestBody.tool_choice === "string"
+        ? requestBody.tool_choice
+        : null;
+    capturedSystemPrompt =
+      requestBody.input?.find((item) => item.role === "system")?.content?.[0]
+        ?.text ?? "";
     capturedUserPrompt =
       requestBody.input?.find((item) => item.role === "user")?.content?.[0]
         ?.text ?? "";
@@ -1588,6 +1601,15 @@ test("investment review includes portfolio state and can override commission-lik
           counterparty_name: null,
           economic_entity_override: null,
           security_hint: "ALPHABET INC CL C",
+          resolved_instrument_name: "Alphabet Inc Class C",
+          resolved_instrument_isin: "US02079K1079",
+          resolved_instrument_ticker: "GOOG",
+          resolved_instrument_exchange: "NASDAQ",
+          current_price: 215.4,
+          current_price_currency: "USD",
+          current_price_timestamp: "2026-03-16T20:00:00Z",
+          current_price_source: "NASDAQ delayed quote",
+          current_price_type: "delayed",
           confidence: 0.95,
           explanation: "The row looks like a broker commission, not a sale.",
           reason:
@@ -1862,6 +1884,16 @@ test("investment review includes portfolio state and can override commission-lik
     assert.equal(decision.needsReview, false);
     assert.equal(decision.quantity, null);
     assert.equal(decision.unitPriceOriginal, null);
+    assert.deepEqual(capturedTools, [{ type: "web_search" }]);
+    assert.equal(capturedToolChoice, "auto");
+    assert.match(
+      capturedSystemPrompt,
+      /You are a security-resolution and pricing agent for a personal finance application\./,
+    );
+    assert.match(
+      capturedSystemPrompt,
+      /Never map a transaction to a security based on index wording alone\./,
+    );
     assert.match(capturedUserPrompt, /Portfolio state:/);
     assert.match(capturedUserPrompt, /Similar same-account resolved history:/);
     assert.match(
@@ -1910,6 +1942,13 @@ test("investment review includes portfolio state and can override commission-lik
       /New user review context: This is a broker commission for GOOG, not a stock sale\./,
     );
     const llmPayload = decision.llmPayload as {
+      llm?: {
+        rawOutput?: {
+          current_price?: number | null;
+          current_price_currency?: string | null;
+          resolved_instrument_isin?: string | null;
+        } | null;
+      };
       reviewContext?: {
         userProvidedContext?: string | null;
         trigger?: string | null;
@@ -1928,6 +1967,12 @@ test("investment review includes portfolio state and can override commission-lik
       "This is a broker commission for GOOG, not a stock sale.",
     );
     assert.equal(llmPayload.reviewContext?.trigger, "manual_review_update");
+    assert.equal(llmPayload.llm?.rawOutput?.current_price, 215.4);
+    assert.equal(llmPayload.llm?.rawOutput?.current_price_currency, "USD");
+    assert.equal(
+      llmPayload.llm?.rawOutput?.resolved_instrument_isin,
+      "US02079K1079",
+    );
     assert.equal(llmPayload.reviewExamplesUsed?.length, 1);
     assert.equal(
       llmPayload.reviewExamplesUsed?.[0]?.auditEventId,
