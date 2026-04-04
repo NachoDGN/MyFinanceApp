@@ -11,6 +11,7 @@ import type {
   DomainDataset,
   Transaction,
 } from "@myfinance/domain";
+import { buildHoldingRows, getDatasetLatestDate } from "@myfinance/domain";
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -376,6 +377,104 @@ function normalizeOptionalText(value: string | null | undefined) {
   return text || null;
 }
 
+function isTradeTransactionClass(
+  transactionClass: string,
+): transactionClass is "investment_trade_buy" | "investment_trade_sell" {
+  return (
+    transactionClass === "investment_trade_buy" ||
+    transactionClass === "investment_trade_sell"
+  );
+}
+
+function buildInvestmentPortfolioState(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  deterministic: DeterministicClassification,
+) {
+  if (account.assetDomain !== "investment") {
+    return undefined;
+  }
+
+  const asOfDate = getDatasetLatestDate(dataset);
+  const holdings = buildHoldingRows(
+    dataset,
+    { kind: "account", accountId: account.id },
+    asOfDate,
+  );
+
+  const targetHint = normalizeDescription(
+    deterministic.securityHint ??
+      transaction.descriptionRaw ??
+      transaction.securityId ??
+      "",
+  ).comparison;
+  const matchedHolding =
+    holdings.find((holding) => holding.securityId === transaction.securityId) ??
+    holdings.find((holding) => {
+      if (!targetHint) return false;
+      const symbol = normalizeDescription(holding.symbol).comparison;
+      const securityName = normalizeDescription(holding.securityName).comparison;
+      return (
+        targetHint.includes(symbol) ||
+        targetHint.includes(securityName) ||
+        securityName.includes(targetHint)
+      );
+    }) ??
+    null;
+
+  const quantity = Number(transaction.quantity ?? deterministic.quantity ?? 0);
+  const impliedUnitPrice =
+    Number.isFinite(quantity) && quantity > 0
+      ? (Math.abs(Number(transaction.amountOriginal)) / quantity).toFixed(2)
+      : null;
+  const latestHoldingPrice = matchedHolding?.currentPrice ?? null;
+  const sameCurrency =
+    matchedHolding?.currentPriceCurrency === transaction.currencyOriginal;
+  const priceDeltaPercent =
+    impliedUnitPrice &&
+    latestHoldingPrice &&
+    sameCurrency &&
+    Number(latestHoldingPrice) > 0
+      ? (
+          (Math.abs(Number(impliedUnitPrice) - Number(latestHoldingPrice)) /
+            Number(latestHoldingPrice)) *
+          100
+        ).toFixed(2)
+      : null;
+
+  const serializeHolding = (holding: (typeof holdings)[number]) => ({
+    securityId: holding.securityId,
+    symbol: holding.symbol,
+    securityName: holding.securityName,
+    quantity: holding.quantity,
+    currentPrice: holding.currentPrice,
+    currentPriceCurrency: holding.currentPriceCurrency,
+    currentValueEur: holding.currentValueEur,
+    quoteTimestamp: holding.quoteTimestamp,
+    quoteFreshness: holding.quoteFreshness,
+  });
+
+  return {
+    scope: "account" as const,
+    asOfDate,
+    holdings: holdings.map(serializeHolding),
+    matchedHolding: matchedHolding ? serializeHolding(matchedHolding) : null,
+    priceSanityCheck:
+      impliedUnitPrice || matchedHolding
+        ? {
+            impliedUnitPrice,
+            impliedUnitPriceCurrency: transaction.currencyOriginal,
+            latestHoldingPrice,
+            latestHoldingPriceCurrency:
+              matchedHolding?.currentPriceCurrency ?? null,
+            latestHoldingQuoteTimestamp: matchedHolding?.quoteTimestamp ?? null,
+            priceDeltaPercent,
+          }
+        : null,
+  };
+}
+
 function getFallbackCategory(transaction: Transaction, account: Account) {
   if (account.assetDomain === "investment") {
     return "uncategorized_investment";
@@ -620,6 +719,12 @@ async function requestLlmClassification(
         explanation: deterministic.explanation,
         source: deterministic.classificationSource,
       },
+      portfolioState: buildInvestmentPortfolioState(
+        dataset,
+        account,
+        transaction,
+        deterministic,
+      ),
     },
     model,
   );
@@ -703,6 +808,7 @@ export async function enrichImportedTransaction(
   const reviewCanBeResolvedByLlm =
     !deterministic.needsReview ||
     deterministic.reviewReason === "Needs LLM enrichment.";
+  const llmConfidence = Number(llm.confidence ?? "0") || 0;
 
   if (llm.analysisStatus === "done") {
     const llmTransactionClass =
@@ -717,9 +823,13 @@ export async function enrichImportedTransaction(
     const deterministicWins = new Set([
       "user_rule",
       "transfer_matcher",
-      "investment_parser",
     ]).has(deterministic.classificationSource);
-    if (!deterministicWins) {
+    const shouldApplyLlm =
+      !deterministicWins &&
+      (deterministic.classificationSource !== "investment_parser" ||
+        llmConfidence >= lowConfidenceCutoff);
+
+    if (shouldApplyLlm) {
       transactionClass = llmTransactionClass;
       categoryCode = llmCategoryCode;
       economicEntityId = llm.economicEntityId ?? deterministic.economicEntityId;
@@ -727,6 +837,12 @@ export async function enrichImportedTransaction(
       classificationSource = "llm";
       classificationConfidence =
         llm.confidence ?? deterministic.classificationConfidence;
+    } else if (
+      deterministic.classificationSource === "investment_parser" &&
+      llmTransactionClass !== deterministic.transactionClass
+    ) {
+      needsReview = true;
+      reviewReason = `LLM suggested ${llmTransactionClass} at ${llmConfidence.toFixed(2)} confidence, but the deterministic parser kept ${deterministic.transactionClass}.`;
     }
 
     merchantNormalized =
@@ -734,7 +850,7 @@ export async function enrichImportedTransaction(
     counterpartyName = llm.counterpartyName ?? deterministic.counterpartyName;
     securityHint = llm.securityHint ?? deterministic.securityHint;
 
-    if ((Number(llm.confidence ?? "0") || 0) < lowConfidenceCutoff) {
+    if (llmConfidence < lowConfidenceCutoff) {
       needsReview = true;
       reviewReason = `Low-confidence ${transactionClass} classification.`;
     } else if (transactionClass !== "unknown" && reviewCanBeResolvedByLlm) {
@@ -759,6 +875,11 @@ export async function enrichImportedTransaction(
   ) {
     needsReview = true;
     reviewReason = `Parsed investment trade for "${securityHint}", but the system has not matched it to a tracked security yet.`;
+  }
+
+  if (!isTradeTransactionClass(transactionClass)) {
+    quantity = null;
+    unitPriceOriginal = null;
   }
 
   return {

@@ -1226,6 +1226,175 @@ test("successful confident LLM classifications clear fallback review state", asy
   }
 });
 
+test("investment review includes portfolio state and can override commission-like sells", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  let capturedUserPrompt = "";
+  process.env.OPENAI_API_KEY = "test-key";
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, "https://api.openai.com/v1/responses");
+    const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
+    };
+    capturedUserPrompt =
+      requestBody.input?.find((item) => item.role === "user")?.content?.[0]
+        ?.text ?? "";
+
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "fee",
+          category_code: "broker_fee",
+          merchant_normalized: null,
+          counterparty_name: null,
+          economic_entity_override: null,
+          security_hint: "ALPHABET INC CL C",
+          confidence: 0.95,
+          explanation: "The row looks like a broker commission, not a sale.",
+          reason:
+            "The implied per-share amount is far below the latest GOOG quote while the position remains open.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-goog",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "MyInvestor",
+      displayName: "Brokerage",
+      defaultCurrency: "EUR",
+    });
+    const transaction = createTransaction({
+      id: "goog-commission-row",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-16",
+      postedDate: "2026-03-16",
+      amountOriginal: "1.00",
+      amountBaseEur: "1.00",
+      currencyOriginal: "EUR",
+      descriptionRaw: "ALPHABET INC CL C @ 8",
+      descriptionClean: "ALPHABET INC CL C @ 8",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+      securityId: "security-goog",
+      quantity: null,
+      unitPriceOriginal: null,
+    });
+    const baseCategories = createDataset().categories;
+    const dataset = createDataset({
+      accounts: [account],
+      categories: [
+        ...baseCategories,
+        {
+          code: "broker_fee",
+          displayName: "Broker Fee",
+          parentCode: null,
+          scopeKind: "investment",
+          directionKind: "investment",
+          sortOrder: 50,
+          active: true,
+          metadataJson: {},
+        },
+      ],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-goog",
+          providerName: "twelve_data",
+          providerSymbol: "GOOG",
+          canonicalSymbol: "GOOG",
+          displaySymbol: "GOOG",
+          name: "Alphabet Inc Class C",
+          exchangeName: "NASDAQ",
+          micCode: "XNAS",
+          assetType: "stock",
+          quoteCurrency: "USD",
+          country: "US",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {},
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      securityPrices: [
+        {
+          securityId: "security-goog",
+          priceDate: "2026-03-16",
+          quoteTimestamp: "2026-03-16T20:00:00Z",
+          price: "215.40",
+          currency: "USD",
+          sourceName: "twelve_data",
+          isRealtime: false,
+          isDelayed: true,
+          marketState: "closed",
+          rawJson: { close: "215.40" },
+          createdAt: "2026-03-16T20:00:00Z",
+        },
+      ],
+      investmentPositions: [
+        {
+          userId: "user-1",
+          entityId: account.entityId,
+          accountId: account.id,
+          securityId: "security-goog",
+          openQuantity: "45.00000000",
+          openCostBasisEur: "7200.00000000",
+          avgCostEur: "160.00000000",
+          realizedPnlEur: "0.00000000",
+          dividendsEur: "0.00000000",
+          interestEur: "0.00000000",
+          feesEur: "0.00000000",
+          lastTradeDate: "2026-03-01",
+          lastRebuiltAt: "2026-03-16T20:00:00Z",
+          provenanceJson: { source: "transactions" },
+          unrealizedComplete: true,
+        },
+      ],
+    });
+
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+    );
+
+    assert.equal(decision.classificationSource, "llm");
+    assert.equal(decision.transactionClass, "fee");
+    assert.equal(decision.categoryCode, "broker_fee");
+    assert.equal(decision.needsReview, false);
+    assert.equal(decision.quantity, null);
+    assert.equal(decision.unitPriceOriginal, null);
+    assert.match(capturedUserPrompt, /Portfolio state:/);
+    assert.match(capturedUserPrompt, /"symbol":"GOOG"/);
+    assert.match(capturedUserPrompt, /"quantity":"45\.00000000"/);
+    assert.match(capturedUserPrompt, /"impliedUnitPrice":"0\.13"/);
+    assert.match(capturedUserPrompt, /"latestHoldingPrice":"215\.40"/);
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("spending read model respects the selected period when building merchant totals", () => {
   const dataset = createDataset({
     transactions: [
