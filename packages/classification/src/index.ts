@@ -4,6 +4,7 @@ import {
   analyzeBankTransaction,
   createLLMClient,
   isModelConfigured,
+  type PromptProfileOverrides,
 } from "@myfinance/llm";
 import type {
   Account,
@@ -397,6 +398,7 @@ export interface TransactionReviewContextInput {
 export interface TransactionEnrichmentOptions {
   trigger?: "import_classification" | "manual_review_update";
   reviewContext?: TransactionReviewContextInput;
+  promptOverrides?: PromptProfileOverrides;
 }
 
 type HistoricalReviewExample = {
@@ -1104,6 +1106,12 @@ async function requestLlmClassification(
         userFeedback: example.userFeedback,
         correctedOutcome: example.correctedOutcome,
       })),
+      promptOverrides:
+        options?.promptOverrides?.[
+          account.assetDomain === "investment"
+            ? "investment_transaction_analyzer"
+            : "cash_transaction_analyzer"
+        ] ?? null,
       reviewContext: {
         trigger: options?.trigger ?? "import_classification",
         previousReviewReason:

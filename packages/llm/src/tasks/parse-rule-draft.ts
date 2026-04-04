@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { renderRuleDraftParserPromptFromInput } from "../prompts";
 import type { LLMTaskClient } from "../types";
 
 const ruleDraftScopeSchema = z
@@ -121,47 +122,36 @@ export interface ParseRuleDraftInput {
     accountType: string;
     institutionName: string;
   }>;
+  promptOverrides?: Record<string, unknown> | null;
 }
 
 export type ParsedRuleDraft = z.infer<typeof ruleDraftResponseSchema>;
-
-function buildSystemPrompt() {
-  return [
-    "Convert the user's natural-language rule request into deterministic transaction rule logic.",
-    "Return one strict JSON object only.",
-    "Use only the supported condition keys and output keys provided.",
-    "Do not invent taxonomy codes, entity ids, account ids, or transaction classes.",
-    "If the request is ambiguous, make the narrowest safe rule and lower confidence.",
-  ].join(" ");
-}
-
-function buildUserPrompt(input: ParseRuleDraftInput) {
-  return [
-    `Supported condition keys: ${input.supportedConditionKeys.join(", ")}`,
-    `Supported output keys: ${input.supportedOutputKeys.join(", ")}`,
-    `Allowed transaction classes: ${input.allowedTransactionClasses.join(", ")}`,
-    `Allowed category codes: ${input.allowedCategoryCodes.join(", ")}`,
-    `Entities: ${input.entities
-      .map((entity) => `${entity.displayName} [slug=${entity.slug}, id=${entity.id}]`)
-      .join("; ")}`,
-    `Accounts: ${input.accounts
-      .map(
-        (account) =>
-          `${account.displayName} [id=${account.id}, type=${account.accountType}, institution=${account.institutionName}]`,
-      )
-      .join("; ")}`,
-    `User request: ${input.requestText}`,
-  ].join("\n");
-}
 
 export async function parseRuleDraftWithLLM(
   client: LLMTaskClient,
   input: ParseRuleDraftInput,
   modelName: string,
 ) {
+  const prompt = renderRuleDraftParserPromptFromInput({
+    supportedConditionKeys: input.supportedConditionKeys.join(", "),
+    supportedOutputKeys: input.supportedOutputKeys.join(", "),
+    allowedTransactionClasses: input.allowedTransactionClasses.join(", "),
+    allowedCategoryCodes: input.allowedCategoryCodes.join(", "),
+    entities: input.entities
+      .map((entity) => `${entity.displayName} [slug=${entity.slug}, id=${entity.id}]`)
+      .join("; "),
+    accounts: input.accounts
+      .map(
+        (account) =>
+          `${account.displayName} [id=${account.id}, type=${account.accountType}, institution=${account.institutionName}]`,
+      )
+      .join("; "),
+    requestText: input.requestText,
+    promptOverrides: input.promptOverrides ?? null,
+  });
   return client.generateJson({
-    systemPrompt: buildSystemPrompt(),
-    userPrompt: buildUserPrompt(input),
+    systemPrompt: prompt.systemPrompt,
+    userPrompt: prompt.userPrompt,
     modelName,
     responseSchema: ruleDraftResponseSchema,
     responseJsonSchema: ruleDraftJsonSchema,

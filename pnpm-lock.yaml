@@ -140,6 +140,9 @@ importers:
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../domain
+      '@myfinance/llm':
+        specifier: workspace:*
+        version: link:../llm
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0

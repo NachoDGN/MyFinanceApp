@@ -6,6 +6,7 @@ import {
   inferSpreadsheetTableStart,
   isModelConfigured,
   type LLMTaskClient,
+  type PromptProfileOverrides,
 } from "@myfinance/llm";
 
 import { logTemporaryImportDebug } from "./import-debug";
@@ -34,6 +35,7 @@ export interface ImportTemplateInferenceDeps {
   previewTable?: typeof previewSpreadsheetTable;
   modelName?: string;
   referenceDate?: string;
+  promptOverrides?: PromptProfileOverrides;
 }
 
 export function getImportTemplateInferenceConfig() {
@@ -221,6 +223,7 @@ export async function inferImportTemplateDraft(
     {
       fileKind: workbookPreview.fileKind,
       sheetPreviews: workbookPreview.sheetPreviews,
+      promptOverrides: deps.promptOverrides?.spreadsheet_table_start ?? null,
     },
     modelName,
   );
@@ -282,6 +285,7 @@ export async function inferImportTemplateDraft(
       defaultCurrency: input.account.defaultCurrency,
       detectedHeaders: tablePreview.headers,
       referenceDate,
+      promptOverrides: deps.promptOverrides?.spreadsheet_layout ?? null,
     },
     modelName,
   );

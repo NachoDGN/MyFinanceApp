@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { renderSpreadsheetTableStartPromptFromInput } from "../prompts";
 import type { LLMTaskClient } from "../types";
 
 export const spreadsheetTableStartResponseSchema = z.object({
@@ -38,45 +39,29 @@ export interface InferSpreadsheetTableStartInput {
     sheetName: string | null;
     previewCsv: string;
   }>;
+  promptOverrides?: Record<string, unknown> | null;
 }
 
 export type SpreadsheetTableStart = z.infer<
   typeof spreadsheetTableStartResponseSchema
 >;
 
-function buildSystemPrompt() {
-  return [
-    "Locate the transaction table within a spreadsheet preview.",
-    "Return one strict JSON object only.",
-    "Each preview includes row numbers and Excel-style column letters.",
-    "Identify the header row and the left-most column of the transaction table.",
-    "Prefer the sheet that clearly contains transaction rows rather than cover pages or summaries.",
-    "For XLSX files, sheet_name must exactly match one of the provided sheet labels. Do not invent, translate, or paraphrase sheet names.",
-    "Always include sheet_name. Use null for CSV files or when uncertain.",
-  ].join(" ");
-}
-
-function buildUserPrompt(input: InferSpreadsheetTableStartInput) {
-  return [
-    `File kind: ${input.fileKind}.`,
-    "Workbook previews:",
-    ...input.sheetPreviews.map((preview, index) =>
-      [
-        `Sheet ${index + 1}: ${preview.sheetName ?? "null"}`,
-        preview.previewCsv,
-      ].join("\n"),
-    ),
-  ].join("\n\n");
-}
-
 export async function inferSpreadsheetTableStart(
   client: LLMTaskClient,
   input: InferSpreadsheetTableStartInput,
   modelName: string,
 ) {
+  const prompt = renderSpreadsheetTableStartPromptFromInput({
+    fileKind: input.fileKind,
+    sheetPreviews: input.sheetPreviews.map((preview) => ({
+      sheetName: preview.sheetName ?? "null",
+      previewCsv: preview.previewCsv,
+    })),
+    promptOverrides: input.promptOverrides ?? null,
+  });
   return client.generateJson({
-    systemPrompt: buildSystemPrompt(),
-    userPrompt: buildUserPrompt(input),
+    systemPrompt: prompt.systemPrompt,
+    userPrompt: prompt.userPrompt,
     modelName,
     responseSchema: spreadsheetTableStartResponseSchema,
     responseJsonSchema: spreadsheetTableStartJsonSchema,

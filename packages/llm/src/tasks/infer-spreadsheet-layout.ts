@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { renderSpreadsheetLayoutPromptFromInput } from "../prompts";
 import type { LLMTaskClient } from "../types";
 
 export const spreadsheetColumnMapSchema = z.object({
@@ -130,45 +131,30 @@ export interface InferSpreadsheetLayoutInput {
   defaultCurrency: string;
   detectedHeaders: readonly string[];
   referenceDate: string;
+  promptOverrides?: Record<string, unknown> | null;
 }
 
 export type SpreadsheetLayout = z.infer<typeof spreadsheetLayoutResponseSchema>;
-
-function buildSystemPrompt() {
-  return [
-    "Infer the canonical column mapping and sign logic for a bank-import table.",
-    "Return one strict JSON object only.",
-    "Only map headers that are clearly present in the preview.",
-    "Use only the exact source headers shown in the preview.",
-    "Choose one sign logic mode and fill only the fields needed for that mode.",
-    "If debits and credits are already signed in one column, use signed_amount.",
-    "Always include every field in column_map and sign_logic. Use null when a field does not apply.",
-    "If the date format is ambiguous, prefer the interpretation that stays consistent with the sheet and does not create impossible future transaction dates relative to the reference date.",
-  ].join(" ");
-}
-
-function buildUserPrompt(input: InferSpreadsheetLayoutInput) {
-  return [
-    `File kind: ${input.fileKind}.`,
-    `Sheet name: ${input.sheetName ?? "null"}.`,
-    `Account type: ${input.accountType}.`,
-    `Default currency if no currency column exists: ${input.defaultCurrency}.`,
-    `Reference date: ${input.referenceDate}.`,
-    `Canonical fields: ${input.canonicalFields.join(", ")}.`,
-    `Detected headers: ${input.detectedHeaders.join(", ")}.`,
-    "Table preview CSV:",
-    input.tablePreviewCsv,
-  ].join("\n");
-}
 
 export async function inferSpreadsheetLayout(
   client: LLMTaskClient,
   input: InferSpreadsheetLayoutInput,
   modelName: string,
 ) {
+  const prompt = renderSpreadsheetLayoutPromptFromInput({
+    fileKind: input.fileKind,
+    sheetName: input.sheetName ?? "null",
+    accountType: input.accountType,
+    defaultCurrency: input.defaultCurrency,
+    referenceDate: input.referenceDate,
+    canonicalFields: input.canonicalFields.join(", "),
+    detectedHeaders: input.detectedHeaders.join(", "),
+    tablePreviewCsv: input.tablePreviewCsv,
+    promptOverrides: input.promptOverrides ?? null,
+  });
   return client.generateJson({
-    systemPrompt: buildSystemPrompt(),
-    userPrompt: buildUserPrompt(input),
+    systemPrompt: prompt.systemPrompt,
+    userPrompt: prompt.userPrompt,
     modelName,
     responseSchema: spreadsheetLayoutResponseSchema,
     responseJsonSchema: spreadsheetLayoutJsonSchema,

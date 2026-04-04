@@ -1,4 +1,9 @@
-import { createLLMClient, isModelConfigured, parseRuleDraftWithLLM } from "@myfinance/llm";
+import {
+  createLLMClient,
+  isModelConfigured,
+  parseRuleDraftWithLLM,
+  type PromptProfileOverrides,
+} from "@myfinance/llm";
 
 import type { DomainDataset, RuleDraftParseResult } from "./types";
 
@@ -123,6 +128,7 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
 export async function parseRuleDraftRequest(
   requestText: string,
   dataset: DomainDataset,
+  promptOverrides?: PromptProfileOverrides,
 ): Promise<RuleDraftParseResult> {
   const { model } = getRuleParserConfig();
   if (!isModelConfigured(model)) {
@@ -168,6 +174,7 @@ export async function parseRuleDraftRequest(
         accountType: account.accountType,
         institutionName: account.institutionName,
       })),
+      promptOverrides: promptOverrides?.rule_draft_parser ?? null,
     },
     model,
   );

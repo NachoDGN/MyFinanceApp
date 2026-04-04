@@ -1,0 +1,868 @@
+export type PromptProfileId =
+  | "cash_transaction_analyzer"
+  | "investment_transaction_analyzer"
+  | "spreadsheet_table_start"
+  | "spreadsheet_layout"
+  | "rule_draft_parser";
+
+export type PromptSectionOverrides = Record<string, string>;
+export type PromptProfileOverrides = Partial<
+  Record<PromptProfileId, PromptSectionOverrides>
+>;
+
+export interface PromptSectionDefinition {
+  id: string;
+  label: string;
+  description: string;
+  defaultValue: string;
+  requiredPlaceholders: string[];
+}
+
+export interface PromptProfileDefinition {
+  id: PromptProfileId;
+  title: string;
+  description: string;
+  editableSections: PromptSectionDefinition[];
+}
+
+export interface PromptProfileResolvedSection
+  extends Omit<PromptSectionDefinition, "defaultValue"> {
+  value: string;
+}
+
+type PromptPreview = {
+  systemPrompt: string;
+  userPrompt: string;
+};
+
+type TransactionPromptExample = {
+  transaction: string;
+  initialInference: string;
+  userFeedback: string;
+  correctedOutcome: string;
+};
+
+type TransactionPromptReviewContext = {
+  trigger: string;
+  previousReviewReason: string;
+  previousUserContext: string;
+  userProvidedContext: string;
+  previousLlmPayload: string;
+};
+
+const transactionPromptPlaceholders = [
+  "institution_name",
+  "account_display_name",
+  "account_type",
+  "account_id",
+  "allowed_transaction_classes",
+  "allowed_category_codes",
+  "transaction_date",
+  "posted_date",
+  "amount_original",
+  "currency_original",
+  "description_raw",
+  "merchant_normalized",
+  "counterparty_name",
+  "security_id",
+  "quantity",
+  "unit_price_original",
+  "raw_payload",
+  "deterministic_hint",
+  "portfolio_state",
+  "review_examples_section",
+  "review_context_section",
+] as const;
+
+const reviewExamplePlaceholders = [
+  "example_index",
+  "transaction",
+  "initial_inference",
+  "user_feedback",
+  "corrected_outcome",
+] as const;
+
+const reviewContextPlaceholders = [
+  "review_trigger",
+  "previous_review_reason",
+  "previous_user_review_context",
+  "new_user_review_context",
+  "previous_llm_analysis",
+] as const;
+
+const spreadsheetTableStartPlaceholders = ["file_kind", "sheet_previews_block"] as const;
+const spreadsheetTableStartPreviewPlaceholders = [
+  "sheet_index",
+  "sheet_name",
+  "preview_csv",
+] as const;
+
+const spreadsheetLayoutPlaceholders = [
+  "file_kind",
+  "sheet_name",
+  "account_type",
+  "default_currency",
+  "reference_date",
+  "canonical_fields",
+  "detected_headers",
+  "table_preview_csv",
+] as const;
+
+const ruleDraftPlaceholders = [
+  "supported_condition_keys",
+  "supported_output_keys",
+  "allowed_transaction_classes",
+  "allowed_category_codes",
+  "entities",
+  "accounts",
+  "request_text",
+] as const;
+
+const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
+  cash_transaction_analyzer: {
+    id: "cash_transaction_analyzer",
+    title: "Cash Transaction Analyzer",
+    description:
+      "Classifies bank and card transactions for cash accounts into the existing taxonomy.",
+    editableSections: [
+      {
+        id: "system_prompt",
+        label: "System Prompt",
+        description:
+          "Core classifier instructions. Keep it strict and JSON-only.",
+        defaultValue: [
+          "You classify cash and company account transactions into existing taxonomy codes only.",
+          "Return one strict JSON object only.",
+          "Use only the allowed transaction classes and category codes provided.",
+          "Use null instead of guessing unsupported values.",
+          "Keep the explanation to one short sentence.",
+          "Never invent merchants, counterparties, or categories.",
+        ].join(" "),
+        requiredPlaceholders: [],
+      },
+      {
+        id: "user_prompt_template",
+        label: "User Prompt Template",
+        description:
+          "Transaction metadata and deterministic context. Keep every placeholder token.",
+        defaultValue: [
+          "Institution: {{institution_name}}.",
+          "Account: {{account_display_name}}.",
+          "Account type: {{account_type}}.",
+          "Account id: {{account_id}}.",
+          "Allowed transaction classes: {{allowed_transaction_classes}}.",
+          "Allowed category codes: {{allowed_category_codes}}.",
+          "Transaction date: {{transaction_date}}.",
+          "Posted date: {{posted_date}}.",
+          "Amount: {{amount_original}} {{currency_original}}.",
+          "Description: {{description_raw}}.",
+          "Existing merchant: {{merchant_normalized}}.",
+          "Existing counterparty: {{counterparty_name}}.",
+          "Security id: {{security_id}}.",
+          "Quantity: {{quantity}}.",
+          "Unit price: {{unit_price_original}}.",
+          "For cash accounts, do not use investment classes unless the transaction data explicitly supports them.",
+          "Current raw payload: {{raw_payload}}.",
+          "Deterministic hint: {{deterministic_hint}}.",
+          "Portfolio state: {{portfolio_state}}.",
+          "{{review_examples_section}}",
+          "{{review_context_section}}",
+        ].join("\n"),
+        requiredPlaceholders: [...transactionPromptPlaceholders],
+      },
+      {
+        id: "review_examples_wrapper",
+        label: "Review Examples Wrapper",
+        description:
+          "Heading and block container for previous user corrections.",
+        defaultValue: [
+          "Examples from prior user corrections:",
+          "{{review_examples_block}}",
+        ].join("\n"),
+        requiredPlaceholders: ["review_examples_block"],
+      },
+      {
+        id: "review_example_template",
+        label: "Single Review Example",
+        description:
+          "How one prior user correction is shown inside the prompt.",
+        defaultValue: [
+          "Example {{example_index}} transaction metadata: {{transaction}}.",
+          "Example {{example_index}} initial inference: {{initial_inference}}.",
+          "Example {{example_index}} user feedback: {{user_feedback}}.",
+          "Example {{example_index}} corrected outcome: {{corrected_outcome}}.",
+        ].join("\n"),
+        requiredPlaceholders: [...reviewExamplePlaceholders],
+      },
+      {
+        id: "review_context_template",
+        label: "Current Review Context",
+        description:
+          "Context passed when a user manually updates a transaction review.",
+        defaultValue: [
+          "Review trigger: {{review_trigger}}.",
+          "Previous review reason: {{previous_review_reason}}.",
+          "Previous user review context: {{previous_user_review_context}}.",
+          "New user review context: {{new_user_review_context}}.",
+          "Previous LLM analysis: {{previous_llm_analysis}}.",
+        ].join("\n"),
+        requiredPlaceholders: [...reviewContextPlaceholders],
+      },
+    ],
+  },
+  investment_transaction_analyzer: {
+    id: "investment_transaction_analyzer",
+    title: "Investment Transaction Analyzer",
+    description:
+      "Classifies brokerage transactions with portfolio-awareness and security hints.",
+    editableSections: [
+      {
+        id: "system_prompt",
+        label: "System Prompt",
+        description:
+          "Core investment-classification instructions. Keep it strict and JSON-only.",
+        defaultValue: [
+          "You classify brokerage and investment account transactions with security-aware structured output.",
+          "Return one strict JSON object only.",
+          "Use only the allowed transaction classes and category codes provided.",
+          "Use null instead of guessing unsupported values.",
+          "Keep the explanation to one short sentence.",
+          "Treat clearly named stocks, ETFs, index funds, and mutual funds as investment transactions even when ticker or quantity is missing.",
+          "Use security_hint for the best normalized issuer or fund name visible in the description.",
+          "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
+          "Never invent security ids or ticker symbols.",
+          "Use the latest portfolio snapshot when provided to sanity-check whether the row can realistically be a buy, sell, or fee.",
+          "Broker commissions can mention a security name and quantity without being a real disposal.",
+          "If a positive row implies a per-share price that is far below the latest quote for a still-held security, classify it as fee instead of investment_trade_sell unless the row clearly states a real sale.",
+          "You are a financial instrument identification expert. When you receive a partial asset name or description, do not provide a single best-guess ISIN or ticker unless the identification is totally clear.",
+          "First decompose the instrument into issuer, benchmark index, and geographic region. Then identify the plausible vehicles, explicitly distinguishing ETFs from mutual funds.",
+          "For each plausible vehicle, call out the variables that change the ISIN, including dividend treatment, legal domicile, and share class. If the description is still ambiguous, explain exactly what information is missing instead of making assumptions.",
+        ].join(" "),
+        requiredPlaceholders: [],
+      },
+      {
+        id: "user_prompt_template",
+        label: "User Prompt Template",
+        description:
+          "Transaction metadata, deterministic hints, and portfolio state. Keep every placeholder token.",
+        defaultValue: [
+          "Institution: {{institution_name}}.",
+          "Account: {{account_display_name}}.",
+          "Account type: {{account_type}}.",
+          "Account id: {{account_id}}.",
+          "Allowed transaction classes: {{allowed_transaction_classes}}.",
+          "Allowed category codes: {{allowed_category_codes}}.",
+          "Transaction date: {{transaction_date}}.",
+          "Posted date: {{posted_date}}.",
+          "Amount: {{amount_original}} {{currency_original}}.",
+          "Description: {{description_raw}}.",
+          "Existing merchant: {{merchant_normalized}}.",
+          "Existing counterparty: {{counterparty_name}}.",
+          "Security id: {{security_id}}.",
+          "Quantity: {{quantity}}.",
+          "Unit price: {{unit_price_original}}.",
+          "For investment accounts, prefer investment_trade_buy or investment_trade_sell when a company, fund, ETF, or index instrument is clearly named. Use transfer_internal for broker cash movements between owned accounts and leave statement-period rows as unknown.",
+          "Current raw payload: {{raw_payload}}.",
+          "Deterministic hint: {{deterministic_hint}}.",
+          "Portfolio state: {{portfolio_state}}.",
+          "{{review_examples_section}}",
+          "{{review_context_section}}",
+        ].join("\n"),
+        requiredPlaceholders: [...transactionPromptPlaceholders],
+      },
+      {
+        id: "review_examples_wrapper",
+        label: "Review Examples Wrapper",
+        description:
+          "Heading and block container for previous user corrections.",
+        defaultValue: [
+          "Examples from prior user corrections:",
+          "{{review_examples_block}}",
+        ].join("\n"),
+        requiredPlaceholders: ["review_examples_block"],
+      },
+      {
+        id: "review_example_template",
+        label: "Single Review Example",
+        description:
+          "How one prior user correction is shown inside the prompt.",
+        defaultValue: [
+          "Example {{example_index}} transaction metadata: {{transaction}}.",
+          "Example {{example_index}} initial inference: {{initial_inference}}.",
+          "Example {{example_index}} user feedback: {{user_feedback}}.",
+          "Example {{example_index}} corrected outcome: {{corrected_outcome}}.",
+        ].join("\n"),
+        requiredPlaceholders: [...reviewExamplePlaceholders],
+      },
+      {
+        id: "review_context_template",
+        label: "Current Review Context",
+        description:
+          "Context passed when a user manually updates a transaction review.",
+        defaultValue: [
+          "Review trigger: {{review_trigger}}.",
+          "Previous review reason: {{previous_review_reason}}.",
+          "Previous user review context: {{previous_user_review_context}}.",
+          "New user review context: {{new_user_review_context}}.",
+          "Previous LLM analysis: {{previous_llm_analysis}}.",
+        ].join("\n"),
+        requiredPlaceholders: [...reviewContextPlaceholders],
+      },
+    ],
+  },
+  spreadsheet_table_start: {
+    id: "spreadsheet_table_start",
+    title: "Spreadsheet Table Start Inference",
+    description:
+      "Finds the transaction table within workbook previews before column mapping runs.",
+    editableSections: [
+      {
+        id: "system_prompt",
+        label: "System Prompt",
+        description:
+          "Instructions for identifying the start of the transaction table.",
+        defaultValue: [
+          "Locate the transaction table within a spreadsheet preview.",
+          "Return one strict JSON object only.",
+          "Each preview includes row numbers and Excel-style column letters.",
+          "Identify the header row and the left-most column of the transaction table.",
+          "Prefer the sheet that clearly contains transaction rows rather than cover pages or summaries.",
+          "For XLSX files, sheet_name must exactly match one of the provided sheet labels. Do not invent, translate, or paraphrase sheet names.",
+          "Always include sheet_name. Use null for CSV files or when uncertain.",
+        ].join(" "),
+        requiredPlaceholders: [],
+      },
+      {
+        id: "user_prompt_template",
+        label: "User Prompt Template",
+        description:
+          "Workbook preview wrapper. Keep every placeholder token.",
+        defaultValue: [
+          "File kind: {{file_kind}}.",
+          "Workbook previews:",
+          "{{sheet_previews_block}}",
+        ].join("\n\n"),
+        requiredPlaceholders: [...spreadsheetTableStartPlaceholders],
+      },
+      {
+        id: "sheet_preview_template",
+        label: "Sheet Preview Template",
+        description:
+          "How each sheet preview is rendered inside the prompt.",
+        defaultValue: [
+          "Sheet {{sheet_index}}: {{sheet_name}}",
+          "{{preview_csv}}",
+        ].join("\n"),
+        requiredPlaceholders: [...spreadsheetTableStartPreviewPlaceholders],
+      },
+    ],
+  },
+  spreadsheet_layout: {
+    id: "spreadsheet_layout",
+    title: "Spreadsheet Layout Inference",
+    description:
+      "Infers canonical field mappings and sign logic for import tables.",
+    editableSections: [
+      {
+        id: "system_prompt",
+        label: "System Prompt",
+        description:
+          "Instructions for mapping headers and sign logic from a table preview.",
+        defaultValue: [
+          "Infer the canonical column mapping and sign logic for a bank-import table.",
+          "Return one strict JSON object only.",
+          "Only map headers that are clearly present in the preview.",
+          "Use only the exact source headers shown in the preview.",
+          "Choose one sign logic mode and fill only the fields needed for that mode.",
+          "If debits and credits are already signed in one column, use signed_amount.",
+          "Always include every field in column_map and sign_logic. Use null when a field does not apply.",
+          "If the date format is ambiguous, prefer the interpretation that stays consistent with the sheet and does not create impossible future transaction dates relative to the reference date.",
+        ].join(" "),
+        requiredPlaceholders: [],
+      },
+      {
+        id: "user_prompt_template",
+        label: "User Prompt Template",
+        description:
+          "Table-preview wrapper. Keep every placeholder token.",
+        defaultValue: [
+          "File kind: {{file_kind}}.",
+          "Sheet name: {{sheet_name}}.",
+          "Account type: {{account_type}}.",
+          "Default currency if no currency column exists: {{default_currency}}.",
+          "Reference date: {{reference_date}}.",
+          "Canonical fields: {{canonical_fields}}.",
+          "Detected headers: {{detected_headers}}.",
+          "Table preview CSV:",
+          "{{table_preview_csv}}",
+        ].join("\n"),
+        requiredPlaceholders: [...spreadsheetLayoutPlaceholders],
+      },
+    ],
+  },
+  rule_draft_parser: {
+    id: "rule_draft_parser",
+    title: "Rule Draft Parser",
+    description:
+      "Converts natural-language rule requests into deterministic rule JSON.",
+    editableSections: [
+      {
+        id: "system_prompt",
+        label: "System Prompt",
+        description:
+          "Core instructions for translating user rule requests into supported rule fields.",
+        defaultValue: [
+          "Convert the user's natural-language rule request into deterministic transaction rule logic.",
+          "Return one strict JSON object only.",
+          "Use only the supported condition keys and output keys provided.",
+          "Do not invent taxonomy codes, entity ids, account ids, or transaction classes.",
+          "If the request is ambiguous, make the narrowest safe rule and lower confidence.",
+        ].join(" "),
+        requiredPlaceholders: [],
+      },
+      {
+        id: "user_prompt_template",
+        label: "User Prompt Template",
+        description:
+          "Rule-parser context. Keep every placeholder token.",
+        defaultValue: [
+          "Supported condition keys: {{supported_condition_keys}}",
+          "Supported output keys: {{supported_output_keys}}",
+          "Allowed transaction classes: {{allowed_transaction_classes}}",
+          "Allowed category codes: {{allowed_category_codes}}",
+          "Entities: {{entities}}",
+          "Accounts: {{accounts}}",
+          "User request: {{request_text}}",
+        ].join("\n"),
+        requiredPlaceholders: [...ruleDraftPlaceholders],
+      },
+    ],
+  },
+};
+
+function getDefinition(promptId: PromptProfileId) {
+  return promptProfiles[promptId];
+}
+
+function interpolateTemplate(
+  template: string,
+  variables: Record<string, string>,
+) {
+  return template.replace(/\{\{([a-z0-9_]+)\}\}/gi, (_, key: string) => {
+    return variables[key] ?? "";
+  });
+}
+
+function resolveSections(
+  promptId: PromptProfileId,
+  overrides?: Record<string, unknown> | null,
+) {
+  const definition = getDefinition(promptId);
+  const overrideRecord =
+    overrides && typeof overrides === "object" && !Array.isArray(overrides)
+      ? (overrides as Record<string, unknown>)
+      : {};
+
+  return Object.fromEntries(
+    definition.editableSections.map((section) => {
+      const override = overrideRecord[section.id];
+      const value =
+        typeof override === "string" && override.trim()
+          ? override.trim()
+          : section.defaultValue;
+      return [section.id, value];
+    }),
+  ) as Record<string, string>;
+}
+
+function validateRequiredPlaceholders(
+  section: PromptSectionDefinition,
+  value: string,
+) {
+  for (const placeholder of section.requiredPlaceholders) {
+    const token = `{{${placeholder}}}`;
+    if (!value.includes(token)) {
+      throw new Error(
+        `${section.label} must keep the placeholder ${token}.`,
+      );
+    }
+  }
+}
+
+function renderTransactionPrompt(
+  promptId: "cash_transaction_analyzer" | "investment_transaction_analyzer",
+  overrides: Record<string, unknown> | null | undefined,
+  variables: Record<string, string>,
+  reviewExamples: TransactionPromptExample[],
+  reviewContext: TransactionPromptReviewContext | null,
+): PromptPreview {
+  const sections = resolveSections(promptId, overrides);
+  const reviewExamplesBlock =
+    reviewExamples.length > 0
+      ? interpolateTemplate(sections.review_examples_wrapper, {
+          review_examples_block: reviewExamples
+            .map((example, index) =>
+              interpolateTemplate(sections.review_example_template, {
+                example_index: String(index + 1),
+                transaction: example.transaction,
+                initial_inference: example.initialInference,
+                user_feedback: example.userFeedback,
+                corrected_outcome: example.correctedOutcome,
+              }),
+            )
+            .join("\n"),
+        })
+      : "";
+  const reviewContextBlock = reviewContext
+    ? interpolateTemplate(sections.review_context_template, {
+        review_trigger: reviewContext.trigger,
+        previous_review_reason: reviewContext.previousReviewReason,
+        previous_user_review_context: reviewContext.previousUserContext,
+        new_user_review_context: reviewContext.userProvidedContext,
+        previous_llm_analysis: reviewContext.previousLlmPayload,
+      })
+    : "";
+
+  return {
+    systemPrompt: sections.system_prompt,
+    userPrompt: interpolateTemplate(sections.user_prompt_template, {
+      ...variables,
+      review_examples_section: reviewExamplesBlock,
+      review_context_section: reviewContextBlock,
+    }),
+  };
+}
+
+function renderSpreadsheetTableStartPrompt(
+  overrides: Record<string, unknown> | null | undefined,
+  variables: {
+    fileKind: string;
+    sheetPreviews: Array<{ sheetName: string; previewCsv: string }>;
+  },
+): PromptPreview {
+  const sections = resolveSections("spreadsheet_table_start", overrides);
+  return {
+    systemPrompt: sections.system_prompt,
+    userPrompt: interpolateTemplate(sections.user_prompt_template, {
+      file_kind: variables.fileKind,
+      sheet_previews_block: variables.sheetPreviews
+        .map((preview, index) =>
+          interpolateTemplate(sections.sheet_preview_template, {
+            sheet_index: String(index + 1),
+            sheet_name: preview.sheetName,
+            preview_csv: preview.previewCsv,
+          }),
+        )
+        .join("\n\n"),
+    }),
+  };
+}
+
+function renderSpreadsheetLayoutPrompt(
+  overrides: Record<string, unknown> | null | undefined,
+  variables: Record<string, string>,
+): PromptPreview {
+  const sections = resolveSections("spreadsheet_layout", overrides);
+  return {
+    systemPrompt: sections.system_prompt,
+    userPrompt: interpolateTemplate(sections.user_prompt_template, variables),
+  };
+}
+
+function renderRuleDraftParserPrompt(
+  overrides: Record<string, unknown> | null | undefined,
+  variables: Record<string, string>,
+): PromptPreview {
+  const sections = resolveSections("rule_draft_parser", overrides);
+  return {
+    systemPrompt: sections.system_prompt,
+    userPrompt: interpolateTemplate(sections.user_prompt_template, variables),
+  };
+}
+
+export function listPromptProfileDefinitions() {
+  return Object.values(promptProfiles);
+}
+
+export function getPromptProfileDefinition(promptId: PromptProfileId) {
+  return getDefinition(promptId);
+}
+
+export function resolvePromptProfileSections(
+  promptId: PromptProfileId,
+  overrides?: Record<string, unknown> | null,
+): PromptProfileResolvedSection[] {
+  const definition = getDefinition(promptId);
+  const resolved = resolveSections(promptId, overrides);
+  return definition.editableSections.map((section) => ({
+    id: section.id,
+    label: section.label,
+    description: section.description,
+    requiredPlaceholders: section.requiredPlaceholders,
+    value: resolved[section.id],
+  }));
+}
+
+export function sanitizePromptProfileSectionOverrides(
+  promptId: PromptProfileId,
+  overrides: Record<string, unknown>,
+) {
+  const definition = getDefinition(promptId);
+  const sanitized: PromptSectionOverrides = {};
+
+  for (const section of definition.editableSections) {
+    const raw = overrides[section.id];
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new Error(`${section.label} cannot be empty.`);
+    }
+
+    const value = raw.trim();
+    validateRequiredPlaceholders(section, value);
+    sanitized[section.id] = value;
+  }
+
+  return sanitized;
+}
+
+export function buildPromptProfilePreview(
+  promptId: PromptProfileId,
+  overrides?: Record<string, unknown> | null,
+): PromptPreview {
+  switch (promptId) {
+    case "cash_transaction_analyzer":
+      return renderTransactionPrompt(
+        promptId,
+        overrides,
+        {
+          institution_name: "{{institution_name}}",
+          account_display_name: "{{account_display_name}}",
+          account_type: "{{account_type}}",
+          account_id: "{{account_id}}",
+          allowed_transaction_classes: "{{allowed_transaction_classes}}",
+          allowed_category_codes: "{{allowed_category_codes}}",
+          transaction_date: "{{transaction_date}}",
+          posted_date: "{{posted_date}}",
+          amount_original: "{{amount_original}}",
+          currency_original: "{{currency_original}}",
+          description_raw: "{{description_raw}}",
+          merchant_normalized: "{{merchant_normalized}}",
+          counterparty_name: "{{counterparty_name}}",
+          security_id: "{{security_id}}",
+          quantity: "{{quantity}}",
+          unit_price_original: "{{unit_price_original}}",
+          raw_payload: "{{raw_payload}}",
+          deterministic_hint: "{{deterministic_hint}}",
+          portfolio_state: "{{portfolio_state}}",
+        },
+        [
+          {
+            transaction: "{{example_transaction_metadata}}",
+            initialInference: "{{example_initial_inference}}",
+            userFeedback: "{{example_user_feedback}}",
+            correctedOutcome: "{{example_corrected_outcome}}",
+          },
+        ],
+        {
+          trigger: "{{review_trigger}}",
+          previousReviewReason: "{{previous_review_reason}}",
+          previousUserContext: "{{previous_user_review_context}}",
+          userProvidedContext: "{{new_user_review_context}}",
+          previousLlmPayload: "{{previous_llm_analysis}}",
+        },
+      );
+    case "investment_transaction_analyzer":
+      return renderTransactionPrompt(
+        promptId,
+        overrides,
+        {
+          institution_name: "{{institution_name}}",
+          account_display_name: "{{account_display_name}}",
+          account_type: "{{account_type}}",
+          account_id: "{{account_id}}",
+          allowed_transaction_classes: "{{allowed_transaction_classes}}",
+          allowed_category_codes: "{{allowed_category_codes}}",
+          transaction_date: "{{transaction_date}}",
+          posted_date: "{{posted_date}}",
+          amount_original: "{{amount_original}}",
+          currency_original: "{{currency_original}}",
+          description_raw: "{{description_raw}}",
+          merchant_normalized: "{{merchant_normalized}}",
+          counterparty_name: "{{counterparty_name}}",
+          security_id: "{{security_id}}",
+          quantity: "{{quantity}}",
+          unit_price_original: "{{unit_price_original}}",
+          raw_payload: "{{raw_payload}}",
+          deterministic_hint: "{{deterministic_hint}}",
+          portfolio_state: "{{portfolio_state}}",
+        },
+        [
+          {
+            transaction: "{{example_transaction_metadata}}",
+            initialInference: "{{example_initial_inference}}",
+            userFeedback: "{{example_user_feedback}}",
+            correctedOutcome: "{{example_corrected_outcome}}",
+          },
+        ],
+        {
+          trigger: "{{review_trigger}}",
+          previousReviewReason: "{{previous_review_reason}}",
+          previousUserContext: "{{previous_user_review_context}}",
+          userProvidedContext: "{{new_user_review_context}}",
+          previousLlmPayload: "{{previous_llm_analysis}}",
+        },
+      );
+    case "spreadsheet_table_start":
+      return renderSpreadsheetTableStartPrompt(overrides, {
+        fileKind: "{{file_kind}}",
+        sheetPreviews: [
+          {
+            sheetName: "{{sheet_name}}",
+            previewCsv: "{{preview_csv}}",
+          },
+        ],
+      });
+    case "spreadsheet_layout":
+      return renderSpreadsheetLayoutPrompt(overrides, {
+        file_kind: "{{file_kind}}",
+        sheet_name: "{{sheet_name}}",
+        account_type: "{{account_type}}",
+        default_currency: "{{default_currency}}",
+        reference_date: "{{reference_date}}",
+        canonical_fields: "{{canonical_fields}}",
+        detected_headers: "{{detected_headers}}",
+        table_preview_csv: "{{table_preview_csv}}",
+      });
+    case "rule_draft_parser":
+      return renderRuleDraftParserPrompt(overrides, {
+        supported_condition_keys: "{{supported_condition_keys}}",
+        supported_output_keys: "{{supported_output_keys}}",
+        allowed_transaction_classes: "{{allowed_transaction_classes}}",
+        allowed_category_codes: "{{allowed_category_codes}}",
+        entities: "{{entities}}",
+        accounts: "{{accounts}}",
+        request_text: "{{request_text}}",
+      });
+  }
+}
+
+export function renderTransactionAnalyzerPrompt(
+  assetDomain: "cash" | "investment",
+  input: {
+    institutionName: string;
+    accountDisplayName: string;
+    accountType: string;
+    accountId: string;
+    allowedTransactionClasses: string;
+    allowedCategoryCodes: string;
+    transactionDate: string;
+    postedDate: string;
+    amountOriginal: string;
+    currencyOriginal: string;
+    descriptionRaw: string;
+    merchantNormalized: string;
+    counterpartyName: string;
+    securityId: string;
+    quantity: string;
+    unitPriceOriginal: string;
+    rawPayload: string;
+    deterministicHint: string;
+    portfolioState: string;
+    reviewExamples: TransactionPromptExample[];
+    reviewContext: TransactionPromptReviewContext | null;
+    promptOverrides?: Record<string, unknown> | null;
+  },
+) {
+  return renderTransactionPrompt(
+    assetDomain === "investment"
+      ? "investment_transaction_analyzer"
+      : "cash_transaction_analyzer",
+    input.promptOverrides,
+    {
+      institution_name: input.institutionName,
+      account_display_name: input.accountDisplayName,
+      account_type: input.accountType,
+      account_id: input.accountId,
+      allowed_transaction_classes: input.allowedTransactionClasses,
+      allowed_category_codes: input.allowedCategoryCodes,
+      transaction_date: input.transactionDate,
+      posted_date: input.postedDate,
+      amount_original: input.amountOriginal,
+      currency_original: input.currencyOriginal,
+      description_raw: input.descriptionRaw,
+      merchant_normalized: input.merchantNormalized,
+      counterparty_name: input.counterpartyName,
+      security_id: input.securityId,
+      quantity: input.quantity,
+      unit_price_original: input.unitPriceOriginal,
+      raw_payload: input.rawPayload,
+      deterministic_hint: input.deterministicHint,
+      portfolio_state: input.portfolioState,
+    },
+    input.reviewExamples,
+    input.reviewContext,
+  );
+}
+
+export function renderSpreadsheetTableStartPromptFromInput(
+  input: {
+    fileKind: string;
+    sheetPreviews: Array<{ sheetName: string; previewCsv: string }>;
+    promptOverrides?: Record<string, unknown> | null;
+  },
+) {
+  return renderSpreadsheetTableStartPrompt(input.promptOverrides, {
+    fileKind: input.fileKind,
+    sheetPreviews: input.sheetPreviews.map((preview) => ({
+      sheetName: preview.sheetName,
+      previewCsv: preview.previewCsv,
+    })),
+  });
+}
+
+export function renderSpreadsheetLayoutPromptFromInput(
+  input: {
+    fileKind: string;
+    sheetName: string;
+    accountType: string;
+    defaultCurrency: string;
+    referenceDate: string;
+    canonicalFields: string;
+    detectedHeaders: string;
+    tablePreviewCsv: string;
+    promptOverrides?: Record<string, unknown> | null;
+  },
+) {
+  return renderSpreadsheetLayoutPrompt(input.promptOverrides, {
+    file_kind: input.fileKind,
+    sheet_name: input.sheetName,
+    account_type: input.accountType,
+    default_currency: input.defaultCurrency,
+    reference_date: input.referenceDate,
+    canonical_fields: input.canonicalFields,
+    detected_headers: input.detectedHeaders,
+    table_preview_csv: input.tablePreviewCsv,
+  });
+}
+
+export function renderRuleDraftParserPromptFromInput(
+  input: {
+    supportedConditionKeys: string;
+    supportedOutputKeys: string;
+    allowedTransactionClasses: string;
+    allowedCategoryCodes: string;
+    entities: string;
+    accounts: string;
+    requestText: string;
+    promptOverrides?: Record<string, unknown> | null;
+  },
+) {
+  return renderRuleDraftParserPrompt(input.promptOverrides, {
+    supported_condition_keys: input.supportedConditionKeys,
+    supported_output_keys: input.supportedOutputKeys,
+    allowed_transaction_classes: input.allowedTransactionClasses,
+    allowed_category_codes: input.allowedCategoryCodes,
+    entities: input.entities,
+    accounts: input.accounts,
+    request_text: input.requestText,
+  });
+}

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { renderTransactionAnalyzerPrompt } from "../prompts";
 import { LLMError, type LLMTaskClient } from "../types";
 
 export const transactionAnalysisResponseSchema = z.object({
@@ -147,6 +148,7 @@ export interface AnalyzeBankTransactionInput {
       reviewReason: string | null;
     };
   }>;
+  promptOverrides?: Record<string, unknown> | null;
 }
 
 export type TransactionAnalysisOutput = z.infer<
@@ -161,93 +163,61 @@ export interface AnalyzeBankTransactionResult {
   rawOutput: Record<string, unknown> | null;
 }
 
-function buildSystemPrompt(assetDomain: "cash" | "investment") {
-  return [
-    assetDomain === "investment"
-      ? "You classify brokerage and investment account transactions with security-aware structured output."
-      : "You classify cash and company account transactions into existing taxonomy codes only.",
-    "Return one strict JSON object only.",
-    "Use only the allowed transaction classes and category codes provided.",
-    "Use null instead of guessing unsupported values.",
-    "Keep the explanation to one short sentence.",
-    assetDomain === "investment"
-      ? [
-          "Treat clearly named stocks, ETFs, index funds, and mutual funds as investment transactions even when ticker or quantity is missing.",
-          "Use security_hint for the best normalized issuer or fund name visible in the description.",
-          "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
-          "Never invent security ids or ticker symbols.",
-          "Use the latest portfolio snapshot when provided to sanity-check whether the row can realistically be a buy, sell, or fee.",
-          "Broker commissions can mention a security name and quantity without being a real disposal.",
-          "If a positive row implies a per-share price that is far below the latest quote for a still-held security, classify it as fee instead of investment_trade_sell unless the row clearly states a real sale.",
-          "You are a financial instrument identification expert. When you receive a partial asset name or description, do not provide a single best-guess ISIN or ticker unless the identification is totally clear.",
-          "First decompose the instrument into issuer, benchmark index, and geographic region. Then identify the plausible vehicles, explicitly distinguishing ETFs from mutual funds.",
-          "For each plausible vehicle, call out the variables that change the ISIN, including dividend treatment, legal domicile, and share class. If the description is still ambiguous, explain exactly what information is missing instead of making assumptions.",
-        ].join(" ")
-      : "Never invent merchants, counterparties, or categories.",
-  ].join(" ");
-}
-
-function buildUserPrompt(input: AnalyzeBankTransactionInput) {
-  const reviewExamples =
-    input.reviewExamples && input.reviewExamples.length > 0
-      ? [
-          "Examples from prior user corrections:",
-          ...input.reviewExamples.flatMap((example, index) => [
-            `Example ${index + 1} transaction metadata: ${JSON.stringify(example.transaction)}.`,
-            `Example ${index + 1} initial inference: ${JSON.stringify(example.initialInference)}.`,
-            `Example ${index + 1} user feedback: ${example.userFeedback}.`,
-            `Example ${index + 1} corrected outcome: ${JSON.stringify(example.correctedOutcome)}.`,
-          ]),
-        ]
-      : [];
-  const reviewContext = input.reviewContext
-    ? [
-        `Review trigger: ${input.reviewContext.trigger}.`,
-        `Previous review reason: ${input.reviewContext.previousReviewReason ?? "null"}.`,
-        `Previous user review context: ${input.reviewContext.previousUserContext ?? "null"}.`,
-        `New user review context: ${input.reviewContext.userProvidedContext ?? "null"}.`,
-        `Previous LLM analysis: ${JSON.stringify(input.reviewContext.previousLlmPayload ?? null)}.`,
-      ]
-    : [];
-
-  return [
-    `Institution: ${input.account.institutionName}.`,
-    `Account: ${input.account.displayName}.`,
-    `Account type: ${input.account.accountType}.`,
-    `Account id: ${input.account.id}.`,
-    `Allowed transaction classes: ${input.allowedTransactionClasses.join(", ")}.`,
-    `Allowed category codes: ${input.allowedCategories
-      .map((category) => `${category.code} (${category.displayName})`)
-      .join(", ")}.`,
-    `Transaction date: ${input.transaction.transactionDate}.`,
-    `Posted date: ${input.transaction.postedDate ?? "null"}.`,
-    `Amount: ${input.transaction.amountOriginal} ${input.transaction.currencyOriginal}.`,
-    `Description: ${input.transaction.descriptionRaw}.`,
-    `Existing merchant: ${input.transaction.merchantNormalized ?? "null"}.`,
-    `Existing counterparty: ${input.transaction.counterpartyName ?? "null"}.`,
-    `Security id: ${input.transaction.securityId ?? "null"}.`,
-    `Quantity: ${input.transaction.quantity ?? "null"}.`,
-    `Unit price: ${input.transaction.unitPriceOriginal ?? "null"}.`,
-    input.account.assetDomain === "investment"
-      ? "For investment accounts, prefer investment_trade_buy or investment_trade_sell when a company, fund, ETF, or index instrument is clearly named. Use transfer_internal for broker cash movements between owned accounts and leave statement-period rows as unknown."
-      : "For cash accounts, do not use investment classes unless the transaction data explicitly supports them.",
-    `Current raw payload: ${JSON.stringify(input.transaction.rawPayload)}.`,
-    `Deterministic hint: ${JSON.stringify(input.deterministicHint)}.`,
-    `Portfolio state: ${JSON.stringify(input.portfolioState ?? null)}.`,
-    ...reviewExamples,
-    ...reviewContext,
-  ].join("\n");
-}
-
 export async function analyzeBankTransaction(
   client: LLMTaskClient,
   input: AnalyzeBankTransactionInput,
   modelName: string,
 ) {
   try {
+    const prompt = renderTransactionAnalyzerPrompt(input.account.assetDomain, {
+      institutionName: input.account.institutionName,
+      accountDisplayName: input.account.displayName,
+      accountType: input.account.accountType,
+      accountId: input.account.id,
+      allowedTransactionClasses: input.allowedTransactionClasses.join(", "),
+      allowedCategoryCodes: input.allowedCategories
+        .map((category) => `${category.code} (${category.displayName})`)
+        .join(", "),
+      transactionDate: input.transaction.transactionDate,
+      postedDate: input.transaction.postedDate ?? "null",
+      amountOriginal: input.transaction.amountOriginal,
+      currencyOriginal: input.transaction.currencyOriginal,
+      descriptionRaw: input.transaction.descriptionRaw,
+      merchantNormalized: input.transaction.merchantNormalized ?? "null",
+      counterpartyName: input.transaction.counterpartyName ?? "null",
+      securityId: input.transaction.securityId ?? "null",
+      quantity: input.transaction.quantity ?? "null",
+      unitPriceOriginal: input.transaction.unitPriceOriginal ?? "null",
+      rawPayload: JSON.stringify(input.transaction.rawPayload),
+      deterministicHint: JSON.stringify(input.deterministicHint),
+      portfolioState: JSON.stringify(input.portfolioState ?? null),
+      reviewExamples:
+        input.reviewExamples?.map((example) => ({
+          transaction: JSON.stringify(example.transaction),
+          initialInference: JSON.stringify(example.initialInference),
+          userFeedback: example.userFeedback,
+          correctedOutcome: JSON.stringify(example.correctedOutcome),
+        })) ?? [],
+      reviewContext: input.reviewContext
+        ? {
+            trigger: input.reviewContext.trigger,
+            previousReviewReason:
+              input.reviewContext.previousReviewReason ?? "null",
+            previousUserContext:
+              input.reviewContext.previousUserContext ?? "null",
+            userProvidedContext:
+              input.reviewContext.userProvidedContext ?? "null",
+            previousLlmPayload: JSON.stringify(
+              input.reviewContext.previousLlmPayload ?? null,
+            ),
+          }
+        : null,
+      promptOverrides: input.promptOverrides ?? null,
+    });
+
     const output = await client.generateJson({
-      systemPrompt: buildSystemPrompt(input.account.assetDomain),
-      userPrompt: buildUserPrompt(input),
+      systemPrompt: prompt.systemPrompt,
+      userPrompt: prompt.userPrompt,
       modelName,
       responseSchema: transactionAnalysisResponseSchema,
       responseJsonSchema: transactionAnalysisJsonSchema,

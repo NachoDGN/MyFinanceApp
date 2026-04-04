@@ -8,7 +8,12 @@ import { join } from "node:path";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
-import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
+import {
+  createFinanceRepository,
+  getDbRuntimeConfig,
+  getPromptOverrides,
+  updatePromptProfile,
+} from "@myfinance/db";
 import {
   accountTypeOptions,
   canonicalFieldKeys,
@@ -101,6 +106,17 @@ const accountSchema = z.object({
   staleAfterDays: z.coerce.number().int().min(1).max(365).nullable().optional(),
 });
 
+const promptProfileUpdateSchema = z.object({
+  promptId: z.enum([
+    "cash_transaction_analyzer",
+    "investment_transaction_analyzer",
+    "spreadsheet_table_start",
+    "spreadsheet_layout",
+    "rule_draft_parser",
+  ]),
+  sectionsJson: z.string().min(2),
+});
+
 function toAssetDomain(
   accountType: z.infer<typeof accountSchema>["accountType"],
 ) {
@@ -184,12 +200,13 @@ async function withUploadedImport<T>(
       }
 
       const { seededUserId } = getDbRuntimeConfig();
+      const promptOverrides = await getPromptOverrides();
       const inferredTemplate = await inferImportTemplateDraft({
         userId: seededUserId,
         account,
         filePath,
         originalFilename: file.name,
-      });
+      }, { promptOverrides });
       const createResult = await domain.createTemplate({
         template: inferredTemplate,
         actorName: "web-action",
@@ -425,6 +442,27 @@ export async function resetWorkspaceAction() {
   revalidatePath("/templates");
   revalidatePath("/settings");
   return result;
+}
+
+export async function updatePromptProfileAction(formData: FormData) {
+  const fields = promptProfileUpdateSchema.parse({
+    promptId: formData.get("promptId"),
+    sectionsJson: formData.get("sectionsJson"),
+  });
+
+  const parsedSections = JSON.parse(fields.sectionsJson) as Record<string, unknown>;
+  const profile = await updatePromptProfile({
+    promptId: fields.promptId,
+    sections: parsedSections,
+    actorName: "web-action",
+    sourceChannel: "web",
+  });
+
+  revalidatePath("/prompts");
+  return {
+    profile,
+    message: `Saved prompt overrides for ${fields.promptId}.`,
+  };
 }
 
 export async function queueRuleDraftAction(requestText: string) {

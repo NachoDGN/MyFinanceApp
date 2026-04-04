@@ -14,6 +14,7 @@ const secondaryNav = [
   { href: "/transactions", label: "Transactions" },
   { href: "/imports", label: "Imports" },
   { href: "/templates", label: "Templates" },
+  { href: "/prompts", label: "Prompts" },
   { href: "/rules", label: "Rules" },
   { href: "/insights", label: "Insights" },
   { href: "/settings", label: "Settings" },

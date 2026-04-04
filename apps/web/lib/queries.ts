@@ -8,7 +8,7 @@ import {
   buildSpendingReadModel,
 } from "@myfinance/analytics";
 import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
-import { createFinanceRepository } from "@myfinance/db";
+import { createFinanceRepository, listPromptProfiles } from "@myfinance/db";
 import {
   FinanceDomainService,
   getScopeLatestDate,
@@ -185,6 +185,7 @@ export type InvestmentsModel = Awaited<ReturnType<typeof getInvestmentsModel>>;
 export type SpendingModel = Awaited<ReturnType<typeof getSpendingModel>>;
 export type IncomeModel = Awaited<ReturnType<typeof getIncomeModel>>;
 export type InsightsModel = Awaited<ReturnType<typeof getInsightsModel>>;
+export type PromptsModel = Awaited<ReturnType<typeof getPromptsModel>>;
 
 export async function getTransactionsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
@@ -283,6 +284,15 @@ export async function getInsightsModel(searchParams: RawSearchParams) {
 export async function getSettingsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
   return state;
+}
+
+export async function getPromptsModel(searchParams: RawSearchParams) {
+  const state = await resolveAppState(searchParams);
+  const profiles = await listPromptProfiles();
+  return {
+    ...state,
+    promptProfiles: profiles,
+  };
 }
 
 export function transactionBadge(transaction: Transaction) {
