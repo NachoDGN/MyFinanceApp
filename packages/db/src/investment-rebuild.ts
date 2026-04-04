@@ -65,6 +65,22 @@ function hasNonEmptyPayload(value: unknown): value is Record<string, unknown> {
   );
 }
 
+function readOptionalRecord(
+  value: unknown,
+): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function readOptionalNumberAsString(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+}
+
 function isPlaceholderSecurityPrice(price: SecurityPrice) {
   return price.sourceName === "twelve_data" && !hasNonEmptyPayload(price.rawJson);
 }
@@ -102,32 +118,264 @@ function shiftIsoDate(value: string, days: number) {
   return date.toISOString().slice(0, 10);
 }
 
-function securityHintFromTransaction(transaction: Transaction) {
-  const parsed = parseInvestmentEvent(transaction);
-  if (parsed.securityHint) {
-    return parsed.securityHint;
-  }
+type SecurityResolutionContext = {
+  hint: string | null;
+  exactInstrumentName: string | null;
+  exactIsin: string | null;
+  exactTicker: string | null;
+  exactExchange: string | null;
+  currentPrice: string | null;
+  currentPriceCurrency: string | null;
+  currentPriceTimestamp: string | null;
+  currentPriceSource: string | null;
+  currentPriceType: string | null;
+  transactionCurrency: string;
+  prefersEuroShareClass: boolean;
+  rejectsEtf: boolean;
+  prefersMutualFund: boolean;
+  prefersEtf: boolean;
+};
 
-  const llmHintCandidate =
-    transaction.llmPayload &&
-    typeof transaction.llmPayload === "object" &&
-    typeof transaction.llmPayload.llm === "object" &&
-    transaction.llmPayload.llm &&
-    typeof (transaction.llmPayload.llm as Record<string, unknown>)
-      .securityHint === "string"
-      ? ((transaction.llmPayload.llm as Record<string, unknown>)
-          .securityHint as string)
-      : null;
-
-  return llmHintCandidate;
+function normalizeSecurityIdentifier(value: string | null | undefined) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
 }
 
-function buildSearchQueries(hint: string) {
+function normalizedSecurityNameMatches(
+  left: string | null | undefined,
+  right: string | null | undefined,
+) {
+  const normalizedLeft = normalizeSecurityText(left);
+  const normalizedRight = normalizeSecurityText(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.includes(normalizedRight) ||
+    normalizedRight.includes(normalizedLeft)
+  );
+}
+
+function buildSecurityResolutionContext(
+  transaction: Transaction,
+): SecurityResolutionContext {
+  const parsed = parseInvestmentEvent(transaction);
+  const llmPayload = readOptionalRecord(transaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+  const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
+
+  const llmHintCandidate =
+    readOptionalString(llmNode?.securityHint) ??
+    readOptionalString(rawOutput?.security_hint);
+  const resolvedInstrumentName = readOptionalString(
+    rawOutput?.resolved_instrument_name,
+  );
+  const resolvedInstrumentIsin = normalizeSecurityIdentifier(
+    readOptionalString(rawOutput?.resolved_instrument_isin),
+  );
+  const resolvedInstrumentTicker = readOptionalString(
+    rawOutput?.resolved_instrument_ticker,
+  );
+  const resolvedInstrumentExchange = readOptionalString(
+    rawOutput?.resolved_instrument_exchange,
+  );
+  const currentPrice = readOptionalNumberAsString(rawOutput?.current_price);
+  const currentPriceCurrency = readOptionalString(
+    rawOutput?.current_price_currency,
+  );
+  const currentPriceTimestamp = readOptionalString(
+    rawOutput?.current_price_timestamp,
+  );
+  const currentPriceSource = readOptionalString(rawOutput?.current_price_source);
+  const currentPriceType = readOptionalString(rawOutput?.current_price_type);
+  const reviewText = normalizeSecurityText(
+    [
+      transaction.manualNotes,
+      readOptionalString(reviewContext?.previousUserContext),
+      readOptionalString(reviewContext?.userProvidedContext),
+      resolvedInstrumentName,
+      currentPriceType,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" "),
+  );
+  const rejectsEtf = /\bNOT AN ETF\b|\bNOT ETF\b|\bNON ETF\b/.test(reviewText);
+  const prefersMutualFund =
+    rejectsEtf ||
+    /\b(MUTUAL FUND|INDEX FUND|OEIC)\b/.test(reviewText) ||
+    /\bNAV\b/.test(reviewText);
+  const prefersEtf = !rejectsEtf && /\bETF\b/.test(reviewText);
+  const hint =
+    resolvedInstrumentName ??
+    parsed.securityHint ??
+    llmHintCandidate ??
+    resolvedInstrumentTicker;
+
+  return {
+    hint,
+    exactInstrumentName: resolvedInstrumentName,
+    exactIsin: resolvedInstrumentIsin || null,
+    exactTicker: resolvedInstrumentTicker,
+    exactExchange: resolvedInstrumentExchange,
+    currentPrice,
+    currentPriceCurrency,
+    currentPriceTimestamp,
+    currentPriceSource,
+    currentPriceType,
+    transactionCurrency: transaction.currencyOriginal,
+    prefersEuroShareClass:
+      hintPrefersEuroShareClass(hint ?? "") || /\b(EURO|EUR)\b/.test(reviewText),
+    rejectsEtf,
+    prefersMutualFund,
+    prefersEtf,
+  };
+}
+
+function shouldUseWebResolvedSecurity(context?: SecurityResolutionContext) {
+  return Boolean(
+    context &&
+      (context.prefersMutualFund ||
+        normalizeSecurityText(context.currentPriceType).includes("NAV")),
+  );
+}
+
+function supportsTwelveDataMarketData(
+  security: Pick<Security, "providerSymbol" | "assetType">,
+) {
+  return (
+    Boolean(security.providerSymbol?.trim()) &&
+    ["stock", "etf"].includes(security.assetType)
+  );
+}
+
+function buildWebResolvedProviderSymbol(
+  context: SecurityResolutionContext,
+  hint: string,
+) {
+  if (context.exactTicker) return context.exactTicker;
+  if (context.exactIsin) return context.exactIsin;
+  const normalizedHint = normalizeSecurityText(
+    context.exactInstrumentName ?? hint,
+  ).replace(/[^A-Z0-9]+/g, " ");
+  return (
+    normalizedHint
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 6)
+      .join("_")
+      .slice(0, 48) || "WEB_RESOLVED_SECURITY"
+  );
+}
+
+function buildWebResolvedSecurity(
+  hint: string,
+  context: SecurityResolutionContext,
+) {
+  const providerSymbol = buildWebResolvedProviderSymbol(context, hint);
+  const createdAt = new Date().toISOString();
+
+  return {
+    id: randomUUID(),
+    providerName: "llm_web_search",
+    providerSymbol,
+    canonicalSymbol: providerSymbol,
+    displaySymbol: providerSymbol,
+    name: context.exactInstrumentName ?? hint,
+    exchangeName: context.exactExchange ?? "WEB",
+    micCode: null,
+    assetType: context.prefersEtf ? "etf" : "other",
+    quoteCurrency:
+      context.currentPriceCurrency ??
+      (context.prefersEuroShareClass ? "EUR" : context.transactionCurrency),
+    country: null,
+    isin: context.exactIsin,
+    figi: null,
+    active: true,
+    metadataJson: {
+      instrumentType:
+        context.prefersEtf ||
+        normalizeSecurityText(context.currentPriceType).includes("ETF")
+          ? "ETF"
+          : "Mutual Fund",
+      resolutionSource: "llm_web_search",
+      exactInstrumentName: context.exactInstrumentName,
+      exactExchange: context.exactExchange,
+      currentPriceSource: context.currentPriceSource,
+      currentPriceType: context.currentPriceType,
+    },
+    lastPriceRefreshAt: context.currentPriceTimestamp ?? null,
+    createdAt,
+  } satisfies Security;
+}
+
+function buildWebResolvedLatestPrice(
+  security: Security,
+  context: SecurityResolutionContext,
+  referenceDate: string,
+) {
+  if (!context.currentPrice || !context.currentPriceCurrency) {
+    return null;
+  }
+
+  const quoteTimestamp =
+    context.currentPriceTimestamp ?? `${referenceDate}T16:00:00Z`;
+  const priceDate = quoteTimestamp.slice(0, 10);
+  const normalizedPriceType = normalizeSecurityText(context.currentPriceType);
+
+  return {
+    securityId: security.id,
+    priceDate,
+    quoteTimestamp,
+    price: context.currentPrice,
+    currency: context.currentPriceCurrency,
+    sourceName: "llm_web_search",
+    isRealtime: normalizedPriceType.includes("LIVE"),
+    isDelayed:
+      normalizedPriceType.includes("DELAY") ||
+      normalizedPriceType.includes("CLOSE") ||
+      normalizedPriceType.includes("NAV"),
+    marketState: context.currentPriceType ?? null,
+    rawJson: {
+      source: context.currentPriceSource,
+      priceType: context.currentPriceType,
+      resolvedVia: "llm_web_search",
+    },
+    createdAt: new Date().toISOString(),
+  } satisfies SecurityPrice;
+}
+
+function buildSearchQueries(hint: string, context?: SecurityResolutionContext) {
   const normalized = normalizeSecurityText(hint);
   const strippedQuantity = normalized
     .replace(/\s*@\s*\d+(?:\.\d+)?$/, "")
     .trim();
   const queries = new Set<string>([strippedQuantity]);
+
+  if (context?.exactIsin) {
+    queries.add(context.exactIsin);
+  }
+  if (context?.exactTicker && context?.exactExchange) {
+    queries.add(`${context.exactTicker} ${context.exactExchange}`);
+  }
+  if (context?.exactTicker) {
+    queries.add(context.exactTicker);
+  }
+  if (context?.exactInstrumentName) {
+    queries.add(context.exactInstrumentName);
+  }
+
+  if (context?.prefersMutualFund) {
+    queries.add(`${strippedQuantity} INDEX FUND`);
+    queries.add(`${strippedQuantity} MUTUAL FUND`);
+  }
+  if (context?.prefersEtf) {
+    queries.add(`${strippedQuantity} ETF`);
+  }
 
   if (normalized.includes("ADVANCED MICRO DEVICES")) {
     queries.add("ADVANCED MICRO DEVICES");
@@ -186,7 +434,27 @@ function hintPrefersEuroShareClass(hint: string) {
   return /\b(EU|EUR)\b/.test(normalizedHint);
 }
 
-function scoreCandidate(hint: string, candidate: SearchCandidate) {
+function candidateLooksLikeEtf(candidate: SearchCandidate) {
+  return candidate.instrumentType.toUpperCase().includes("ETF");
+}
+
+function candidateLooksLikeMutualFund(candidate: SearchCandidate) {
+  const typeText = candidate.instrumentType.toUpperCase();
+  const nameText = candidate.instrumentName.toUpperCase();
+  return (
+    typeText.includes("MUTUAL") ||
+    typeText.includes("FUND") ||
+    nameText.includes("INDEX FUND") ||
+    nameText.includes("MUTUAL FUND") ||
+    nameText.includes("OEIC")
+  );
+}
+
+function scoreCandidate(
+  hint: string,
+  candidate: SearchCandidate,
+  context?: SecurityResolutionContext,
+) {
   const normalizedHint = normalizeSecurityText(hint);
   const candidateText = normalizeSecurityText(
     `${candidate.providerSymbol} ${candidate.instrumentName} ${candidate.exchange} ${candidate.currency}`,
@@ -204,6 +472,43 @@ function scoreCandidate(hint: string, candidate: SearchCandidate) {
     score += 4;
   } else if (candidate.instrumentType.toUpperCase().includes("STOCK")) {
     score += 5;
+  }
+
+  if (context?.prefersMutualFund) {
+    if (candidateLooksLikeMutualFund(candidate)) score += 16;
+    if (candidateLooksLikeEtf(candidate)) score -= 18;
+  }
+  if (context?.prefersEtf) {
+    if (candidateLooksLikeEtf(candidate)) score += 12;
+    if (candidateLooksLikeMutualFund(candidate)) score -= 10;
+  }
+  if (
+    context?.exactTicker &&
+    normalizeSecurityText(candidate.providerSymbol) ===
+      normalizeSecurityText(context.exactTicker)
+  ) {
+    score += 18;
+  }
+  if (
+    context?.exactExchange &&
+    [candidate.exchange, candidate.micCode]
+      .filter((value): value is string => Boolean(value))
+      .some(
+        (value) =>
+          normalizeSecurityText(value) ===
+          normalizeSecurityText(context.exactExchange),
+      )
+  ) {
+    score += 10;
+  }
+  if (
+    context?.exactInstrumentName &&
+    normalizedSecurityNameMatches(
+      candidate.instrumentName,
+      context.exactInstrumentName,
+    )
+  ) {
+    score += 18;
   }
 
   if (normalizedHint.includes("CL C") || normalizedHint.includes("CLASS C")) {
@@ -270,7 +575,7 @@ function scoreCandidate(hint: string, candidate: SearchCandidate) {
     }
   }
 
-  if (hintPrefersEuroShareClass(normalizedHint)) {
+  if (context?.prefersEuroShareClass ?? hintPrefersEuroShareClass(normalizedHint)) {
     if (candidate.currency === "EUR") score += 8;
     if (candidate.instrumentName.toUpperCase().includes("EUR")) score += 6;
     if (candidate.exchange === "OTC") score -= 6;
@@ -298,7 +603,10 @@ function scoreCandidate(hint: string, candidate: SearchCandidate) {
     ) {
       score += 10;
     }
-    if (hintPrefersEuroShareClass(normalizedHint)) {
+    if (
+      context?.prefersEuroShareClass ??
+      hintPrefersEuroShareClass(normalizedHint)
+    ) {
       if (candidate.currency === "EUR") score += 12;
       if (candidate.instrumentName.toUpperCase().includes("EUR")) score += 8;
       if (
@@ -331,6 +639,16 @@ function scoreCandidate(hint: string, candidate: SearchCandidate) {
 
 function securityConflictsWithHint(hint: string, security: Security) {
   const normalizedHint = normalizeSecurityText(hint);
+  const instrumentType = normalizeSecurityText(
+    readOptionalString(readOptionalRecord(security.metadataJson)?.instrumentType) ??
+      security.name,
+  );
+  const securityLooksLikeEtf =
+    security.assetType === "etf" || instrumentType.includes("ETF");
+  const securityLooksLikeMutualFund =
+    instrumentType.includes("MUTUAL") ||
+    instrumentType.includes("INDEX FUND") ||
+    instrumentType.includes("OEIC");
 
   if (
     hintPrefersEuroShareClass(normalizedHint) &&
@@ -344,6 +662,105 @@ function securityConflictsWithHint(hint: string, security: Security) {
     (normalizedHint.includes("US 500") || normalizedHint.includes("S&P")) &&
     hintPrefersEuroShareClass(normalizedHint) &&
     security.exchangeName.toUpperCase() === "OTC"
+  ) {
+    return true;
+  }
+
+  if (
+    /\bNOT AN ETF\b|\bNOT ETF\b|\bNON ETF\b|\bINDEX FUND\b|\bMUTUAL FUND\b|\bOEIC\b/.test(
+      normalizedHint,
+    ) &&
+    securityLooksLikeEtf &&
+    !securityLooksLikeMutualFund
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function securityConflictsWithResolutionContext(
+  security: Security,
+  context: SecurityResolutionContext,
+) {
+  const instrumentType = normalizeSecurityText(
+    readOptionalString(readOptionalRecord(security.metadataJson)?.instrumentType) ??
+      security.name,
+  );
+  const securityLooksLikeEtf =
+    security.assetType === "etf" || instrumentType.includes("ETF");
+  const securityLooksLikeMutualFund =
+    instrumentType.includes("MUTUAL") ||
+    instrumentType.includes("INDEX FUND") ||
+    instrumentType.includes("OEIC");
+  const normalizedSecurityIsin = normalizeSecurityIdentifier(security.isin);
+  const normalizedSecuritySymbols = [
+    security.providerSymbol,
+    security.canonicalSymbol,
+    security.displaySymbol,
+  ].map((value) => normalizeSecurityText(value));
+  const exactTickerMatches = context.exactTicker
+    ? normalizedSecuritySymbols.includes(
+        normalizeSecurityText(context.exactTicker),
+      )
+    : false;
+  const exactExchangeMatches = context.exactExchange
+    ? [security.exchangeName, security.micCode]
+        .filter((value): value is string => Boolean(value))
+        .some(
+          (value) =>
+            normalizeSecurityText(value) ===
+            normalizeSecurityText(context.exactExchange),
+        )
+    : false;
+  const exactNameMatches = context.exactInstrumentName
+    ? normalizedSecurityNameMatches(security.name, context.exactInstrumentName)
+    : false;
+
+  if (context.exactIsin) {
+    if (normalizedSecurityIsin === context.exactIsin) {
+      return false;
+    }
+
+    if (
+      exactTickerMatches &&
+      (!context.exactExchange || exactExchangeMatches || exactNameMatches)
+    ) {
+      return false;
+    }
+
+    if (!exactNameMatches) {
+      return true;
+    }
+  }
+
+  if (
+    context.prefersEuroShareClass &&
+    security.quoteCurrency !== "EUR"
+  ) {
+    return true;
+  }
+
+  if (
+    context.rejectsEtf &&
+    securityLooksLikeEtf &&
+    !securityLooksLikeMutualFund
+  ) {
+    return true;
+  }
+
+  if (
+    context.prefersMutualFund &&
+    securityLooksLikeEtf &&
+    !securityLooksLikeMutualFund
+  ) {
+    return true;
+  }
+
+  if (
+    context.prefersEtf &&
+    securityLooksLikeMutualFund &&
+    !securityLooksLikeEtf
   ) {
     return true;
   }
@@ -561,13 +978,29 @@ async function fetchLatestPrice(
 
 function mapAssetType(instrumentType: string): Security["assetType"] {
   const normalized = instrumentType.toUpperCase();
-  if (normalized.includes("ETF") || normalized.includes("FUND")) return "etf";
+  if (normalized.includes("ETF")) return "etf";
+  if (normalized.includes("MUTUAL") || normalized.includes("FUND")) return "other";
   if (normalized.includes("STOCK")) return "stock";
   if (normalized.includes("CASH")) return "cash";
   return "other";
 }
 
-function findSecurityByHint(dataset: DomainDataset, hint: string) {
+function findSecurityByHint(
+  dataset: DomainDataset,
+  hint: string,
+  context?: SecurityResolutionContext,
+) {
+  if (context?.exactIsin) {
+    const isinMatch =
+      dataset.securities.find(
+        (security) =>
+          normalizeSecurityIdentifier(security.isin) === context.exactIsin,
+      ) ?? null;
+    if (isinMatch) {
+      return isinMatch;
+    }
+  }
+
   const normalizedHint = normalizeSecurityText(hint);
   const directMatch = dataset.securities.find((security) => {
     const candidates = [
@@ -581,7 +1014,11 @@ function findSecurityByHint(dataset: DomainDataset, hint: string) {
     }
     return candidates.some((candidate) => candidate === normalizedHint);
   });
-  if (directMatch && !securityConflictsWithHint(hint, directMatch)) {
+  if (
+    directMatch &&
+    !securityConflictsWithHint(hint, directMatch) &&
+    !(context && securityConflictsWithResolutionContext(directMatch, context))
+  ) {
     return directMatch;
   }
 
@@ -595,7 +1032,11 @@ function findSecurityByHint(dataset: DomainDataset, hint: string) {
       ) ?? null)
     : null;
 
-  if (aliasedSecurity && !securityConflictsWithHint(hint, aliasedSecurity)) {
+  if (
+    aliasedSecurity &&
+    !securityConflictsWithHint(hint, aliasedSecurity) &&
+    !(context && securityConflictsWithResolutionContext(aliasedSecurity, context))
+  ) {
     return aliasedSecurity;
   }
 
@@ -606,11 +1047,42 @@ async function resolveSecurity(
   dataset: DomainDataset,
   hint: string,
   apiKey: string | null,
+  context?: SecurityResolutionContext,
 ) {
-  const existing = findSecurityByHint(dataset, hint);
+  const existing = findSecurityByHint(dataset, hint, context);
   if (existing) {
     return {
       security: existing,
+      insertedSecurity: null,
+      insertedAlias: null,
+    };
+  }
+
+  if (
+    shouldUseWebResolvedSecurity(context) &&
+    (context?.exactInstrumentName || context?.exactIsin || context?.exactTicker)
+  ) {
+    const security = buildWebResolvedSecurity(hint, context);
+    const alias = {
+      id: randomUUID(),
+      securityId: security.id,
+      aliasTextNormalized: normalizeSecurityText(hint),
+      aliasSource: "provider",
+      templateId: null,
+      confidence: "0.9500",
+      createdAt: new Date().toISOString(),
+    } satisfies SecurityAlias;
+
+    return {
+      security,
+      insertedSecurity: security,
+      insertedAlias: alias,
+    };
+  }
+
+  if (shouldUseWebResolvedSecurity(context)) {
+    return {
+      security: null,
       insertedSecurity: null,
       insertedAlias: null,
     };
@@ -626,11 +1098,11 @@ async function resolveSecurity(
 
   let bestCandidate: SearchCandidate | null = null;
   let bestScore = Number.NEGATIVE_INFINITY;
-  const queries = buildSearchQueries(hint);
+  const queries = buildSearchQueries(hint, context);
   for (const query of queries) {
     const candidates = await fetchSearchCandidates(query, apiKey);
     for (const candidate of candidates) {
-      const score = scoreCandidate(hint, candidate);
+      const score = scoreCandidate(hint, candidate, context);
       if (score > bestScore) {
         bestCandidate = candidate;
         bestScore = score;
@@ -672,7 +1144,7 @@ async function resolveSecurity(
     assetType: mapAssetType(bestCandidate.instrumentType),
     quoteCurrency: bestCandidate.currency,
     country: bestCandidate.country,
-    isin: null,
+    isin: context?.exactIsin ?? null,
     figi: null,
     active: true,
     metadataJson: {
@@ -798,6 +1270,10 @@ function buildQuantityReviewReason(
     return `Quantity could not be derived for "${hint}".`;
   }
 
+  if (!supportsTwelveDataMarketData(resolvedSecurity)) {
+    return `Mapped to ${resolvedSecurity.displaySymbol}, but no reliable historical fund price was available to derive quantity for "${hint}".`;
+  }
+
   if (!apiKeyAvailable) {
     return `Mapped to ${resolvedSecurity.displaySymbol}, but market-data enrichment is unavailable, so quantity could not be derived for "${hint}".`;
   }
@@ -907,7 +1383,7 @@ function shouldClearReview(
 
   return (
     transaction.needsReview &&
-    /security mapping|quantity could not be derived|twelve data|market-data enrichment|diverges from available market data|lacks details|llm enrichment/i.test(
+    /security mapping|quantity could not be derived|historical fund price|twelve data|market-data enrichment|diverges from available market data|lacks details|llm enrichment/i.test(
       transaction.reviewReason ?? "",
     )
   );
@@ -1057,7 +1533,14 @@ export async function prepareInvestmentRebuild(
       return storedPrice;
     }
 
-    if (apiKey) {
+    const securityRecord =
+      workingDataset.securities.find((candidate) => candidate.id === security.id) ??
+      null;
+    if (
+      apiKey &&
+      securityRecord &&
+      supportsTwelveDataMarketData(securityRecord)
+    ) {
       const fetchedPrice = await fetchHistoricalPrice(
         security,
         transactionDate,
@@ -1089,9 +1572,10 @@ export async function prepareInvestmentRebuild(
       return recentStoredPrice;
     }
 
-    const price = apiKey
-      ? await fetchLatestPrice(security, apiKey, referenceDate)
-      : null;
+    const price =
+      apiKey && supportsTwelveDataMarketData(security)
+        ? await fetchLatestPrice(security, apiKey, referenceDate)
+        : null;
     latestPriceCache.set(cacheKey, price);
     return price;
   };
@@ -1142,7 +1626,8 @@ export async function prepareInvestmentRebuild(
     let unitPriceOriginal =
       transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null;
 
-    const hint = securityHintFromTransaction(transaction);
+    const resolutionContext = buildSecurityResolutionContext(transaction);
+    const hint = resolutionContext.hint;
     const currentResolvedSecurity = resolvedSecurityId
       ? (workingDataset.securities.find(
           (security) => security.id === resolvedSecurityId,
@@ -1151,15 +1636,23 @@ export async function prepareInvestmentRebuild(
 
     if (
       hint &&
-      apiKey &&
       currentResolvedSecurity &&
-      securityConflictsWithHint(hint, currentResolvedSecurity)
+      (securityConflictsWithHint(hint, currentResolvedSecurity) ||
+        securityConflictsWithResolutionContext(
+          currentResolvedSecurity,
+          resolutionContext,
+        ))
     ) {
       resolvedSecurityId = null;
     }
 
     if (!resolvedSecurityId && hint) {
-      const resolved = await resolveSecurity(workingDataset, hint, apiKey);
+      const resolved = await resolveSecurity(
+        workingDataset,
+        hint,
+        apiKey,
+        resolutionContext,
+      );
       if (resolved.insertedSecurity) {
         insertedSecurities.push(resolved.insertedSecurity);
         workingDataset.securities.push(resolved.insertedSecurity);
@@ -1181,8 +1674,20 @@ export async function prepareInvestmentRebuild(
       ["investment_trade_buy", "investment_trade_sell"].includes(
         transaction.transactionClass,
       );
+    const latestWebResolvedPrice = resolvedSecurity
+      ? buildWebResolvedLatestPrice(
+          resolvedSecurity,
+          resolutionContext,
+          referenceDate,
+        )
+      : null;
+    recordPrice(latestWebResolvedPrice);
+    if (resolvedSecurity && latestWebResolvedPrice) {
+      latestPriceCache.set(resolvedSecurity.id, latestWebResolvedPrice);
+    }
+
     const historicalPrice =
-      isTrade && apiKey
+      isTrade && resolvedSecurity
         ? await loadHistoricalPrice(
             resolvedSecurity,
             transaction.transactionDate,
@@ -1243,7 +1748,7 @@ export async function prepareInvestmentRebuild(
       changed = true;
     }
 
-    if (resolvedSecurityId && resolvedSecurityId !== transaction.securityId) {
+    if (resolvedSecurityId !== (transaction.securityId ?? null)) {
       transaction.securityId = resolvedSecurityId;
       patch.securityId = resolvedSecurityId;
       changed = true;
@@ -1324,9 +1829,11 @@ export async function prepareInvestmentRebuild(
       !resolvedSecurityId &&
       reviewHint
     ) {
-      const clearerReason = apiKey
-        ? `Security mapping unresolved after Twelve Data symbol search for "${reviewHint}".`
-        : `Security mapping unresolved for "${reviewHint}".`;
+      const clearerReason = shouldUseWebResolvedSecurity(resolutionContext)
+        ? `Security mapping unresolved after analyzer web search for "${reviewHint}".`
+        : apiKey
+          ? `Security mapping unresolved after Twelve Data symbol search for "${reviewHint}".`
+          : `Security mapping unresolved for "${reviewHint}".`;
       if (transaction.reviewReason !== clearerReason) {
         transaction.reviewReason = clearerReason;
         patch.reviewReason = clearerReason;

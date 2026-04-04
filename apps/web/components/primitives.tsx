@@ -595,6 +595,13 @@ export function ReviewStateCell({
     typeof (llmPayload as { explanation?: unknown }).explanation === "string"
       ? (llmPayload as { explanation: string }).explanation
       : null;
+  const llmReason =
+    llmPayload &&
+    typeof llmPayload === "object" &&
+    "reason" in llmPayload &&
+    typeof (llmPayload as { reason?: unknown }).reason === "string"
+      ? (llmPayload as { reason: string }).reason
+      : null;
   const llmModel =
     llmPayload &&
     typeof llmPayload === "object" &&
@@ -705,6 +712,18 @@ export function ReviewStateCell({
       >
         {reviewReason ?? "Reason unavailable."}
       </span>
+      {explanation && explanation !== reviewReason ? (
+        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          {explanation}
+        </span>
+      ) : null}
+      {llmReason &&
+      llmReason !== reviewReason &&
+      llmReason !== explanation ? (
+        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          Latest analyzer: {llmReason}
+        </span>
+      ) : null}
       {llmLogSummary ? (
         <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
           {llmLogSummary}

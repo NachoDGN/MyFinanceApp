@@ -1388,6 +1388,303 @@ test("investment rebuild remaps stale EU fund aliases away from USD OTC securiti
   }
 });
 
+test("manual review notes can remap an ETF security to a mutual fund candidate", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const searchQueries: string[] = [];
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+    if (url.pathname.endsWith("/symbol_search")) {
+      searchQueries.push(url.searchParams.get("symbol") ?? "");
+    }
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-review-remap",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "review-remap-vanguard",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-24",
+      postedDate: "2026-03-24",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.94",
+      securityId: "security-vusa-eur",
+      manualNotes: "This is an index fund in EUR, not an ETF.",
+      llmPayload: {
+        llm: {
+          rawOutput: {
+            resolved_instrument_name:
+              "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+            resolved_instrument_isin: "IE00B03HCZ61",
+            resolved_instrument_ticker: null,
+            resolved_instrument_exchange: null,
+            current_price: 102.44,
+            current_price_currency: "EUR",
+            current_price_timestamp: "2026-04-04T09:00:00Z",
+            current_price_source: "Official Vanguard factsheet",
+            current_price_type: "NAV",
+          },
+        },
+        reviewContext: {
+          trigger: "manual_review_update",
+          userProvidedContext: "This is an index fund in EUR, not an ETF.",
+        },
+      },
+      needsReview: true,
+      reviewReason:
+        'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-vusa-eur",
+          providerName: "twelve_data",
+          providerSymbol: "VUSA",
+          canonicalSymbol: "VUSA",
+          displaySymbol: "VUSA",
+          name: "Vanguard S&P 500 UCITS ETF EUR",
+          exchangeName: "XETR",
+          micCode: "XETR",
+          assetType: "etf",
+          quoteCurrency: "EUR",
+          country: "Germany",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {
+            instrumentType: "ETF",
+          },
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      securityAliases: [
+        {
+          id: "alias-vusa-eur",
+          securityId: "security-vusa-eur",
+          aliasTextNormalized: "VANGUARD US 500 STOCK INDEX EU",
+          aliasSource: "provider",
+          templateId: null,
+          confidence: "0.9000",
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+
+    assert.equal(rebuilt.insertedSecurities[0]?.providerName, "llm_web_search");
+    assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "IE00B03HCZ61");
+    assert.equal(rebuilt.insertedSecurities[0]?.assetType, "other");
+    assert.equal(rebuilt.upsertedPrices[0]?.sourceName, "llm_web_search");
+    assert.equal(
+      rebuilt.transactionPatches[0]?.securityId,
+      rebuilt.insertedSecurities[0]?.id,
+    );
+    assert.equal(searchQueries.length, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test("exact ISIN from a manual re-review can remap a mismatched ETF security", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const searchQueries: string[] = [];
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+
+    if (url.pathname.endsWith("/symbol_search")) {
+      searchQueries.push(url.searchParams.get("symbol") ?? "");
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              symbol: "VUSA",
+              instrument_name: "Vanguard S&P 500 UCITS ETF EUR",
+              exchange: "XETR",
+              mic_code: "XETR",
+              instrument_type: "ETF",
+              country: "Germany",
+              currency: "EUR",
+            },
+            {
+              symbol: "0P00000G12",
+              instrument_name:
+                "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+              exchange: "XHAM",
+              mic_code: "XHAM",
+              instrument_type: "Mutual Fund",
+              country: "Germany",
+              currency: "EUR",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-review-isin-remap",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "review-isin-remap-vanguard",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-24",
+      postedDate: "2026-03-24",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.94",
+      securityId: "security-vusa-eur",
+      manualNotes:
+        "Exact ISIN is IE00B03HCZ61 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+      needsReview: true,
+      reviewReason:
+        'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+      llmPayload: {
+        llm: {
+          rawOutput: {
+            resolved_instrument_name:
+              "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+            resolved_instrument_isin: "IE00B03HCZ61",
+            resolved_instrument_ticker: null,
+            resolved_instrument_exchange: null,
+            current_price: 101.37,
+            current_price_currency: "EUR",
+            current_price_timestamp: "2026-04-04T09:00:00Z",
+            current_price_source: "Official Vanguard factsheet",
+            current_price_type: "NAV",
+          },
+        },
+        reviewContext: {
+          trigger: "manual_review_update",
+          userProvidedContext:
+            "Exact ISIN is IE00B03HCZ61 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+        },
+      },
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-vusa-eur",
+          providerName: "twelve_data",
+          providerSymbol: "VUSA",
+          canonicalSymbol: "VUSA",
+          displaySymbol: "VUSA",
+          name: "Vanguard S&P 500 UCITS ETF EUR",
+          exchangeName: "XETR",
+          micCode: "XETR",
+          assetType: "etf",
+          quoteCurrency: "EUR",
+          country: "Germany",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {
+            instrumentType: "ETF",
+          },
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      securityAliases: [
+        {
+          id: "alias-vusa-eur-isin",
+          securityId: "security-vusa-eur",
+          aliasTextNormalized: "VANGUARD US 500 STOCK INDEX EU",
+          aliasSource: "provider",
+          templateId: null,
+          confidence: "0.9000",
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+
+    assert.equal(rebuilt.insertedSecurities[0]?.providerName, "llm_web_search");
+    assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "IE00B03HCZ61");
+    assert.equal(rebuilt.insertedSecurities[0]?.isin, "IE00B03HCZ61");
+    assert.equal(rebuilt.upsertedPrices[0]?.sourceName, "llm_web_search");
+    assert.equal(
+      rebuilt.transactionPatches[0]?.securityId,
+      rebuilt.insertedSecurities[0]?.id,
+    );
+    assert.equal(searchQueries.length, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
 test("successful confident LLM classifications clear fallback review state", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
@@ -1893,6 +2190,10 @@ test("investment review includes portfolio state and can override commission-lik
     assert.match(
       capturedSystemPrompt,
       /Never map a transaction to a security based on index wording alone\./,
+    );
+    assert.match(
+      capturedSystemPrompt,
+      /If any exact identifier such as ISIN, CUSIP, or SEDOL appears anywhere in the transaction, prior analysis, or user review context, search that identifier directly first/,
     );
     assert.match(capturedUserPrompt, /Portfolio state:/);
     assert.match(capturedUserPrompt, /Similar same-account resolved history:/);

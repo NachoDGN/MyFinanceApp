@@ -1009,6 +1009,31 @@ export interface ReanalyzeTransactionReviewInput {
   sourceChannel: AuditEvent["sourceChannel"];
 }
 
+const REVIEW_REANALYZE_COMPARISON_FIELDS = [
+  "transactionClass",
+  "categoryCode",
+  "merchantNormalized",
+  "counterpartyName",
+  "economicEntityId",
+  "classificationStatus",
+  "classificationSource",
+  "classificationConfidence",
+  "securityId",
+  "quantity",
+  "unitPriceOriginal",
+  "needsReview",
+  "reviewReason",
+] as const;
+
+function getReviewReanalyzeChangedFields(
+  before: Transaction,
+  after: Transaction,
+) {
+  return REVIEW_REANALYZE_COMPARISON_FIELDS.filter(
+    (field) => before[field] !== after[field],
+  );
+}
+
 export async function reanalyzeTransactionReview(
   input: ReanalyzeTransactionReviewInput,
 ) {
@@ -1095,7 +1120,23 @@ export async function reanalyzeTransactionReview(
       accountId: beforeTransaction.accountId,
     });
 
-    const afterTransaction = mapFromSql<Transaction>(after[0]);
+    const finalRows = await sql`
+      select * from public.transactions
+      where id = ${input.transactionId}
+        and user_id = ${userId}
+      limit 1
+    `;
+    const finalRow = finalRows[0];
+    if (!finalRow) {
+      throw new Error(
+        `Transaction ${input.transactionId} disappeared after review reanalysis.`,
+      );
+    }
+    const afterTransaction = mapFromSql<Transaction>(finalRow);
+    const changedFields = getReviewReanalyzeChangedFields(
+      beforeTransaction,
+      afterTransaction,
+    );
     const auditEvent = createAuditEvent(
       input.sourceChannel,
       input.actorName,
@@ -1144,6 +1185,8 @@ export async function reanalyzeTransactionReview(
 
     return {
       applied: true,
+      changed: changedFields.length > 0,
+      changedFields,
       transaction: afterTransaction,
       auditEvent,
     };

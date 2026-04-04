@@ -35,6 +35,23 @@ export function ReviewEditorCell({
 
   const trimmedDraft = draft.trim();
 
+  const formatChangedField = (field: string) =>
+    ({
+      transactionClass: "class",
+      categoryCode: "category",
+      merchantNormalized: "merchant",
+      counterpartyName: "counterparty",
+      economicEntityId: "economic entity",
+      classificationStatus: "status",
+      classificationSource: "source",
+      classificationConfidence: "confidence",
+      securityId: "security",
+      quantity: "quantity",
+      unitPriceOriginal: "unit price",
+      needsReview: "review state",
+      reviewReason: "review reason",
+    })[field] ?? field;
+
   function handleUpdate() {
     if (!trimmedDraft) {
       setFeedback("Add review context before updating.");
@@ -63,7 +80,29 @@ export function ReviewEditorCell({
           throw new Error(payload?.error || "Review update failed.");
         }
 
-        setFeedback("Transaction re-reviewed.");
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              changed?: boolean;
+              changedFields?: string[];
+              transaction?: { needsReview?: boolean | null } | null;
+            }
+          | null;
+        const changedFields = Array.isArray(payload?.changedFields)
+          ? payload.changedFields
+          : [];
+
+        if (!payload?.changed && changedFields.length === 0) {
+          setFeedback("Transaction re-reviewed. No visible changes were applied.");
+        } else if (payload?.transaction?.needsReview === false) {
+          setFeedback("Transaction re-reviewed and resolved.");
+        } else {
+          setFeedback(
+            `Transaction re-reviewed. Updated ${changedFields
+              .slice(0, 3)
+              .map(formatChangedField)
+              .join(", ")}${changedFields.length > 3 ? ", …" : ""}.`,
+          );
+        }
         router.refresh();
       } catch (error) {
         setFeedback(
