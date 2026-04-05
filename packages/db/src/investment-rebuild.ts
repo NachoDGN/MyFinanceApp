@@ -1715,12 +1715,7 @@ function shouldClearReview(
     return false;
   }
 
-  return (
-    transaction.needsReview &&
-    /security mapping|quantity could not be derived|historical fund price|twelve data|market-data enrichment|diverges from available market data|lacks details|llm enrichment/i.test(
-      transaction.reviewReason ?? "",
-    )
-  );
+  return transaction.needsReview;
 }
 
 function shouldClearDeterministicNonTradeReview(

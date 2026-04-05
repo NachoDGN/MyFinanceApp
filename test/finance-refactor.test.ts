@@ -2737,8 +2737,7 @@ test("investment rebuild derives quantity from historical NAV for exact fund ISI
       quantity: null,
       unitPriceOriginal: null,
       needsReview: true,
-      reviewReason:
-        'Security mapping unresolved for "VANGUARD EUROZONE STOCK INDEX".',
+      reviewReason: "Quantity still needs to be derived.",
       llmPayload: {
         llm: {
           rawOutput: {
