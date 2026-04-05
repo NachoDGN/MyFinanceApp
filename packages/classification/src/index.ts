@@ -2027,6 +2027,15 @@ export async function enrichImportedTransaction(
     unitPriceOriginal = null;
   }
 
+  if (
+    account.assetDomain === "investment" &&
+    isTradeTransactionClass(transactionClass) &&
+    !quantity
+  ) {
+    needsReview = true;
+    reviewReason = reviewReason ?? "Quantity still needs to be derived.";
+  }
+
   return {
     transactionClass,
     categoryCode,

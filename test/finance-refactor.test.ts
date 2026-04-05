@@ -4032,6 +4032,150 @@ test("resolved-source propagation passes full source precedent into candidate re
   }
 });
 
+test("investment follow-up review keeps mapped trades unresolved when quantity is missing", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousImportModel = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  const previousFollowupModel =
+    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+  const previousFetch = globalThis.fetch;
+
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
+
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, "https://api.openai.com/v1/responses");
+    const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
+    };
+    assert.equal(requestBody.model, "gpt-5.4");
+
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "investment_trade_buy",
+          category_code: "stock_buy",
+          merchant_normalized: null,
+          counterparty_name: null,
+          economic_entity_override: null,
+          security_hint: "EMERGING MARKETS STOCK EUR ACC",
+          resolved_instrument_name:
+            "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+          resolved_instrument_isin: "IE0031786696",
+          resolved_instrument_ticker: null,
+          resolved_instrument_exchange: null,
+          current_price: 258.774,
+          current_price_currency: "EUR",
+          current_price_timestamp: "2026-04-02T00:00:00Z",
+          current_price_source: "Financial Times",
+          current_price_type: "NAV",
+          resolution_process:
+            "Confirmed the exact ISIN from issuer documentation and checked a dated fund-price source tied to the same ISIN.",
+          confidence: 0.93,
+          explanation:
+            "The instrument is resolved, but no dated NAV was retrieved for the transaction date, so quantity is still missing.",
+          reason:
+            "This is the same fund purchase, but quantity remains unresolved without a dated NAV.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-followup-quantity",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "candidate-with-stale-security",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2025-10-23",
+      postedDate: "2025-10-23",
+      amountOriginal: "-97.35",
+      amountBaseEur: "-97.35",
+      currencyOriginal: "EUR",
+      descriptionRaw: "EMERGING MARKETS STOCK EUR ACC",
+      descriptionClean: "EMERGING MARKETS STOCK EUR ACC",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.88",
+      securityId: "security-em-stale",
+      quantity: null,
+      unitPriceOriginal: null,
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-em-stale",
+          providerName: "manual",
+          providerSymbol: "0P000060MS",
+          canonicalSymbol: "0P000060MS",
+          displaySymbol: "0P000060MS",
+          name: "Vanguard Emerging Markets Stock Index Fund Investor EUR Accumulation",
+          exchangeName: "FUNDS",
+          micCode: null,
+          assetType: "other",
+          quoteCurrency: "EUR",
+          country: "IE",
+          isin: null,
+          figi: null,
+          active: true,
+          metadataJson: {},
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+      {
+        trigger: "review_propagation",
+      },
+    );
+
+    assert.equal(decision.transactionClass, "investment_trade_buy");
+    assert.equal(decision.quantity, null);
+    assert.equal(decision.needsReview, true);
+    assert.equal(decision.reviewReason, "Quantity still needs to be derived.");
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    if (previousImportModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImportModel;
+    }
+    if (previousFollowupModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
+        previousFollowupModel;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("spending read model respects the selected period when building merchant totals", () => {
   const dataset = createDataset({
     transactions: [
