@@ -6,6 +6,7 @@ import {
   buildMetricResult,
   buildSpendingReadModel,
 } from "../packages/analytics/src/index.ts";
+import { lookupHistoricalFundPrice } from "../packages/llm/src/index.ts";
 import {
   applyRuleMatch,
   enrichImportedTransaction,
@@ -531,20 +532,41 @@ test("latest date helpers cap future imports at the provided fallback date", () 
   );
 });
 
-test("investment review uses the dedicated model override when configured", () => {
-  const previous = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+test("investment review routes import and follow-up models separately", () => {
+  const previousImport = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  const previousFollowup =
+    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
   process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
 
   try {
     assert.equal(
       getInvestmentTransactionClassifierConfig().model,
       "gpt-5.4-mini",
     );
+    assert.equal(
+      getInvestmentTransactionClassifierConfig("import_classification").model,
+      "gpt-5.4-mini",
+    );
+    assert.equal(
+      getInvestmentTransactionClassifierConfig("manual_review_update").model,
+      "gpt-5.4",
+    );
+    assert.equal(
+      getInvestmentTransactionClassifierConfig("review_propagation").model,
+      "gpt-5.4",
+    );
   } finally {
-    if (previous === undefined) {
+    if (previousImport === undefined) {
       delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
     } else {
-      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previous;
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImport;
+    }
+    if (previousFollowup === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
+        previousFollowup;
     }
   }
 });
@@ -838,6 +860,97 @@ test("source precedent includes resolution_process and rebuild evidence when qua
       quantityDerivedFromHistoricalPrice?: boolean;
     } | null)?.quantityDerivedFromHistoricalPrice,
     true,
+  );
+});
+
+test("historical fund NAV lookup prompt prefers official issuer price-history pages over identity-only factsheets", async () => {
+  let capturedSystemPrompt = "";
+  let capturedUserPrompt = "";
+  let capturedTools: Array<Record<string, unknown>> | undefined;
+  let capturedToolChoice: string | undefined;
+
+  const result = await lookupHistoricalFundPrice(
+    {
+      async generateText() {
+        throw new Error("Not used in this test.");
+      },
+      async generateJson({
+        systemPrompt,
+        userPrompt,
+        tools,
+        toolChoice,
+      }) {
+        capturedSystemPrompt = systemPrompt;
+        capturedUserPrompt = userPrompt;
+        capturedTools = tools;
+        capturedToolChoice = toolChoice;
+
+        return {
+          isin: "IE0007286036",
+          target_date: "2025-12-31",
+          security: "Vanguard Japan Stock Index Fund - EUR Acc",
+          security_type: "open-ended fund",
+          share_class: "EUR Acc",
+          currency: "EUR",
+          historical_nav: null,
+          historical_nav_date: null,
+          match_status: "exact",
+          identity_source: {
+            name: "Identity source",
+            url: "https://example.com/identity",
+          },
+          historical_price_source: {
+            name: "Price source",
+            url: "https://example.com/prices",
+          },
+          explanation: "No dated NAV found.",
+        };
+      },
+    },
+    {
+      isin: "IE0007286036",
+      targetDate: "2025-12-31",
+      securityNameHint: "Vanguard Japan Stock Index Fund - EUR Acc",
+      transactionDescription: "VANGUARD JAPA STOCK IDX EUR AC",
+      transactionCurrency: "EUR",
+    },
+    "gpt-5.4-mini",
+  );
+
+  assert.equal(result.analysisStatus, "done");
+  assert.deepEqual(capturedTools, [{ type: "web_search" }]);
+  assert.equal(capturedToolChoice, "auto");
+  assert.match(
+    capturedSystemPrompt,
+    /prefer official issuer price-history pages, official daily price tables, historical NAV pages, official past-prices tools, and issuer-hosted CSV or downloadable price files/i,
+  );
+  assert.match(
+    capturedSystemPrompt,
+    /Do not stop after finding a factsheet or brochure that proves identity if it does not expose the dated NAV per share you need\./,
+  );
+  assert.match(
+    capturedSystemPrompt,
+    /If the issuer has both factsheets and dedicated prices pages, use the factsheet for identity and the prices page for the dated NAV\./,
+  );
+  assert.match(
+    capturedSystemPrompt,
+    /Financial Times fund tearsheets on markets\.ft\.com\/data\/funds\/tearsheet\/historical/i,
+  );
+  assert.match(
+    capturedSystemPrompt,
+    /For Vanguard and similar fund issuers, explicitly look for official prices or price-history pages rather than stopping at PDF factsheets that summarize performance only\./,
+  );
+  assert.match(
+    capturedUserPrompt,
+    /SEARCH_WORKFLOW = 1\) confirm identity with the exact ISIN, 2\) search official issuer price-history or NAV pages for the exact ISIN on the target date/i,
+  );
+  assert.match(
+    capturedUserPrompt,
+    /PRICE_SEARCH_TERMS = exact ISIN \+ target date \+ NAV \+ historical price \+ price history \+ past prices \+ daily prices \+ valuation\./,
+  );
+  assert.match(
+    capturedUserPrompt,
+    /SECONDARY_PRICE_SOURCE_HINT = after identity is exact, search markets\.ft\.com\/data\/funds\/tearsheet\/historical with the exact ISIN and matching share-class currency/i,
   );
 });
 
@@ -2484,11 +2597,17 @@ test("investment rebuild prefers an exact stored alias over a stale carried secu
 test("investment rebuild derives quantity from historical NAV for exact fund ISIN matches", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
   const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  const previousImportNavModel = process.env.INVESTMENT_HISTORICAL_NAV_LLM;
+  const previousFollowupNavModel =
+    process.env.INVESTMENT_HISTORICAL_NAV_FOLLOWUP_REVIEW_LLM;
   const previousFetch = globalThis.fetch;
+  let capturedModel = "";
   delete process.env.TWELVE_DATA_API_KEY;
   process.env.OPENAI_API_KEY = "test-key";
+  process.env.INVESTMENT_HISTORICAL_NAV_LLM = "gpt-5.4-mini";
+  process.env.INVESTMENT_HISTORICAL_NAV_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
 
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const requestUrl =
       typeof input === "string"
         ? input
@@ -2498,6 +2617,11 @@ test("investment rebuild derives quantity from historical NAV for exact fund ISI
     const url = new URL(requestUrl);
 
     if (url.origin === "https://api.openai.com" && url.pathname === "/v1/responses") {
+      const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+        model?: string;
+      };
+      capturedModel =
+        typeof requestBody.model === "string" ? requestBody.model : "";
       return new Response(
         JSON.stringify({
           output_text: JSON.stringify({
@@ -2599,6 +2723,7 @@ test("investment rebuild derives quantity from historical NAV for exact fund ISI
       (price) => price.sourceName === "llm_historical_nav",
     );
 
+    assert.equal(capturedModel, "gpt-5.4");
     assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "IE0032126645");
     assert.equal(historicalNavPrice?.price, "49.79000000");
     assert.equal(historicalNavPrice?.priceDate, "2026-03-03");
@@ -2623,6 +2748,17 @@ test("investment rebuild derives quantity from historical NAV for exact fund ISI
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = previousOpenAiKey;
+    }
+    if (previousImportNavModel === undefined) {
+      delete process.env.INVESTMENT_HISTORICAL_NAV_LLM;
+    } else {
+      process.env.INVESTMENT_HISTORICAL_NAV_LLM = previousImportNavModel;
+    }
+    if (previousFollowupNavModel === undefined) {
+      delete process.env.INVESTMENT_HISTORICAL_NAV_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_HISTORICAL_NAV_FOLLOWUP_REVIEW_LLM =
+        previousFollowupNavModel;
     }
   }
 });
@@ -3018,19 +3154,27 @@ test("invalid LLM economic entity overrides are ignored", async () => {
 
 test("investment review includes portfolio state and can override commission-like sells", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
+  const previousImportModel = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  const previousFollowupModel =
+    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
   const previousFetch = globalThis.fetch;
   let capturedUserPrompt = "";
   let capturedSystemPrompt = "";
   let capturedTools: unknown[] | null = null;
   let capturedToolChoice: string | null = null;
+  let capturedModel = "";
   process.env.OPENAI_API_KEY = "test-key";
+  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
   globalThis.fetch = async (input, init) => {
     assert.equal(input, "https://api.openai.com/v1/responses");
     const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
       tools?: unknown[];
       tool_choice?: string;
       input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
     };
+    capturedModel = typeof requestBody.model === "string" ? requestBody.model : "";
     capturedTools = Array.isArray(requestBody.tools) ? requestBody.tools : null;
     capturedToolChoice =
       typeof requestBody.tool_choice === "string"
@@ -3337,6 +3481,7 @@ test("investment review includes portfolio state and can override commission-lik
     assert.equal(decision.needsReview, false);
     assert.equal(decision.quantity, null);
     assert.equal(decision.unitPriceOriginal, null);
+    assert.equal(capturedModel, "gpt-5.4");
     assert.deepEqual(capturedTools, [{ type: "web_search" }]);
     assert.equal(capturedToolChoice, "auto");
     assert.match(
@@ -3350,6 +3495,10 @@ test("investment review includes portfolio state and can override commission-lik
     assert.match(
       capturedSystemPrompt,
       /If any exact identifier such as ISIN, CUSIP, or SEDOL appears anywhere in the transaction, prior analysis, or user review context, search that identifier directly first/,
+    );
+    assert.match(
+      capturedSystemPrompt,
+      /Once an exact ISIN is known for a mutual fund or index fund, lock identity from issuer-originated pages that explicitly reference that ISIN, then search dated fund-price pages keyed to that same ISIN and currency\./,
     );
     assert.match(
       capturedSystemPrompt,
@@ -3451,6 +3600,17 @@ test("investment review includes portfolio state and can override commission-lik
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = previousKey;
+    }
+    if (previousImportModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImportModel;
+    }
+    if (previousFollowupModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
+        previousFollowupModel;
     }
     globalThis.fetch = previousFetch;
   }
@@ -3594,14 +3754,22 @@ test("investment review includes persisted confirmed security mappings from stor
 
 test("resolved-source propagation passes full source precedent into candidate review context and keeps propagated precedent when still unresolved", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
+  const previousImportModel = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  const previousFollowupModel =
+    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
   const previousFetch = globalThis.fetch;
   let capturedUserPrompt = "";
+  let capturedModel = "";
   process.env.OPENAI_API_KEY = "test-key";
+  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
   globalThis.fetch = async (input, init) => {
     assert.equal(input, "https://api.openai.com/v1/responses");
     const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
       input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
     };
+    capturedModel = typeof requestBody.model === "string" ? requestBody.model : "";
     capturedUserPrompt =
       requestBody.input?.find((item) => item.role === "user")?.content?.[0]
         ?.text ?? "";
@@ -3752,6 +3920,7 @@ test("resolved-source propagation passes full source precedent into candidate re
       },
     );
 
+    assert.equal(capturedModel, "gpt-5.4");
     assert.match(
       capturedUserPrompt,
       /Resolved source precedent from a similar transaction:/,
@@ -3798,6 +3967,17 @@ test("resolved-source propagation passes full source precedent into candidate re
       delete process.env.OPENAI_API_KEY;
     } else {
       process.env.OPENAI_API_KEY = previousKey;
+    }
+    if (previousImportModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImportModel;
+    }
+    if (previousFollowupModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
+        previousFollowupModel;
     }
     globalThis.fetch = previousFetch;
   }

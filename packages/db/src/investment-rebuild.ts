@@ -209,6 +209,7 @@ function shiftIsoDate(value: string, days: number) {
 }
 
 type SecurityResolutionContext = {
+  reviewTrigger: "import_classification" | "manual_review_update" | "review_propagation" | null;
   hint: string | null;
   exactInstrumentName: string | null;
   exactIsin: string | null;
@@ -231,6 +232,14 @@ function normalizeSecurityIdentifier(value: string | null | undefined) {
     .trim()
     .replace(/\s+/g, "")
     .toUpperCase();
+}
+
+function normalizeReviewTrigger(value: unknown) {
+  return value === "import_classification" ||
+    value === "manual_review_update" ||
+    value === "review_propagation"
+    ? value
+    : null;
 }
 
 function extractIsinFromText(...values: Array<string | null | undefined>) {
@@ -269,6 +278,7 @@ function buildSecurityResolutionContext(
   const llmNode = readOptionalRecord(llmPayload?.llm);
   const rawOutput = readOptionalRecord(llmNode?.rawOutput);
   const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
+  const reviewTrigger = normalizeReviewTrigger(reviewContext?.trigger);
 
   const llmHintCandidate =
     readOptionalString(llmNode?.securityHint) ??
@@ -331,6 +341,7 @@ function buildSecurityResolutionContext(
     resolvedInstrumentTicker;
 
   return {
+    reviewTrigger,
     hint,
     exactInstrumentName: resolvedInstrumentName,
     exactIsin: resolvedInstrumentIsin || null,
@@ -931,12 +942,32 @@ function isWeekendIso(value: string) {
   return day === 0 || day === 6;
 }
 
-function getHistoricalFundPriceLookupModel() {
+function isFollowupInvestmentReviewTrigger(
+  trigger: SecurityResolutionContext["reviewTrigger"],
+) {
+  return (
+    trigger === "manual_review_update" || trigger === "review_propagation"
+  );
+}
+
+function getHistoricalFundPriceLookupModel(
+  trigger: SecurityResolutionContext["reviewTrigger"],
+) {
+  if (isFollowupInvestmentReviewTrigger(trigger)) {
+    return (
+      process.env.INVESTMENT_HISTORICAL_NAV_FOLLOWUP_REVIEW_LLM?.trim() ||
+      process.env.INVESTMENT_HISTORICAL_NAV_MANUAL_REVIEW_LLM?.trim() ||
+      "gpt-5.4"
+    );
+  }
+
   return process.env.INVESTMENT_HISTORICAL_NAV_LLM?.trim() || "gpt-5.4-mini";
 }
 
-function isHistoricalFundPriceLookupConfigured() {
-  const model = getHistoricalFundPriceLookupModel();
+function isHistoricalFundPriceLookupConfigured(
+  trigger: SecurityResolutionContext["reviewTrigger"],
+) {
+  const model = getHistoricalFundPriceLookupModel(trigger);
   return (
     resolveModelProvider(model) === "openai" && isModelConfigured(model)
   );
@@ -1113,7 +1144,7 @@ async function fetchHistoricalFundNavPrice(
 ) {
   if (
     !supportsHistoricalFundNavLookup(security, context) ||
-    !isHistoricalFundPriceLookupConfigured()
+    !isHistoricalFundPriceLookupConfigured(context?.reviewTrigger ?? null)
   ) {
     return null;
   }
@@ -1137,7 +1168,7 @@ async function fetchHistoricalFundNavPrice(
       transactionDescription: context?.hint ?? security.name,
       transactionCurrency: context?.transactionCurrency ?? null,
     },
-    getHistoricalFundPriceLookupModel(),
+    getHistoricalFundPriceLookupModel(context?.reviewTrigger ?? null),
   );
   if (result.analysisStatus !== "done" || !result.output) {
     return null;

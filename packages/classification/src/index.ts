@@ -410,6 +410,10 @@ export interface TransactionEnrichmentOptions {
   promptOverrides?: PromptProfileOverrides;
 }
 
+type TransactionEnrichmentTrigger = NonNullable<
+  TransactionEnrichmentOptions["trigger"]
+>;
+
 type HistoricalReviewExample = {
   auditEventId: string;
   objectId: string;
@@ -1616,12 +1620,33 @@ export function getTransactionClassifierConfig() {
   };
 }
 
-export function getInvestmentTransactionClassifierConfig() {
+export function getInvestmentTransactionClassifierConfig(
+  trigger?: TransactionEnrichmentOptions["trigger"],
+) {
   const base = getTransactionClassifierConfig();
+  const model = isFollowupInvestmentReviewTrigger(trigger)
+    ? (process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM?.trim() ||
+        process.env.INVESTMENT_TRANSACTION_MANUAL_REVIEW_LLM?.trim() ||
+        "gpt-5.4")
+    : (process.env.INVESTMENT_TRANSACTION_REVIEW_LLM ?? "gpt-5.4-mini");
   return {
     ...base,
-    model: process.env.INVESTMENT_TRANSACTION_REVIEW_LLM ?? "gpt-5.4-mini",
+    model,
   };
+}
+
+function isFollowupInvestmentReviewTrigger(
+  trigger?: TransactionEnrichmentOptions["trigger"],
+): trigger is Exclude<TransactionEnrichmentTrigger, "import_classification"> {
+  return (
+    trigger === "manual_review_update" || trigger === "review_propagation"
+  );
+}
+
+function getInvestmentReviewModel(
+  trigger?: TransactionEnrichmentOptions["trigger"],
+) {
+  return getInvestmentTransactionClassifierConfig(trigger).model;
 }
 
 export function isTransactionClassifierConfigured() {
@@ -1668,7 +1693,7 @@ async function requestLlmClassification(
   );
   const { model } =
     account.assetDomain === "investment"
-      ? getInvestmentTransactionClassifierConfig()
+      ? { model: getInvestmentReviewModel(options?.trigger) }
       : getTransactionClassifierConfig();
   const reviewExamples = buildHistoricalReviewExamples(
     dataset,
@@ -2021,7 +2046,7 @@ export async function enrichImportedTransaction(
       model:
         llm.model ??
         (account.assetDomain === "investment"
-          ? getInvestmentTransactionClassifierConfig().model
+          ? getInvestmentReviewModel(options?.trigger)
           : getTransactionClassifierConfig().model),
       explanation: llm.explanation ?? deterministic.explanation,
       reason: llm.reason ?? deterministic.explanation,

@@ -104,6 +104,12 @@ function buildSystemPrompt() {
     "Resolve identity first, then historical pricing.",
     "Do not infer the fund from name similarity.",
     "Prioritize official issuer pages, official factsheets, KIIDs/KIDs, prospectuses, regulator-grade listings, and reputable fund databases that explicitly reference the same ISIN.",
+    "For pricing, prefer official issuer price-history pages, official daily price tables, historical NAV pages, official past-prices tools, and issuer-hosted CSV or downloadable price files over identity-only documents.",
+    "Do not stop after finding a factsheet or brochure that proves identity if it does not expose the dated NAV per share you need.",
+    "When an official factsheet confirms the ISIN but does not contain the requested historical NAV, continue searching official issuer pricing pages using the exact ISIN plus the target date and terms such as NAV, historical price, price history, past prices, daily prices, or valuation.",
+    "If the issuer has both factsheets and dedicated prices pages, use the factsheet for identity and the prices page for the dated NAV.",
+    "Once identity is locked from the exact ISIN, reputable fund-history pages keyed to that same ISIN and share-class currency, such as Financial Times fund tearsheets on markets.ft.com/data/funds/tearsheet/historical, are acceptable sources for the dated NAV when official issuer pages do not expose an accessible historical value.",
+    "For Vanguard and similar fund issuers, explicitly look for official prices or price-history pages rather than stopping at PDF factsheets that summarize performance only.",
     "If the security is an open-ended fund or mutual/index fund, retrieve NAV, not a market quote.",
     "If the security is an ETF, retrieve the correct historical market price for the relevant listing and do not mix it with mutual-fund NAV data.",
     "Never guess, never interpolate, never derive the value from returns, and never return a current NAV when asked for a historical one.",
@@ -121,6 +127,9 @@ function buildUserPrompt(input: LookupHistoricalFundPriceInput) {
     `SECURITY_NAME_HINT = ${input.securityNameHint ?? "null"}`,
     `TRANSACTION_DESCRIPTION = ${input.transactionDescription ?? "null"}`,
     `TRANSACTION_CURRENCY = ${input.transactionCurrency ?? "null"}`,
+    "SEARCH_WORKFLOW = 1) confirm identity with the exact ISIN, 2) search official issuer price-history or NAV pages for the exact ISIN on the target date, 3) only if the target date has no published value, search the nearest prior official valuation date and state that explicitly.",
+    "PRICE_SEARCH_TERMS = exact ISIN + target date + NAV + historical price + price history + past prices + daily prices + valuation.",
+    "SECONDARY_PRICE_SOURCE_HINT = after identity is exact, search markets.ft.com/data/funds/tearsheet/historical with the exact ISIN and matching share-class currency when official issuer pricing pages do not expose the dated NAV.",
     "Return JSON only in the required schema.",
   ].join("\n");
 }
