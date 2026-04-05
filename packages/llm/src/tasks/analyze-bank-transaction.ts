@@ -157,6 +157,18 @@ export interface AnalyzeBankTransactionInput {
     unitPriceOriginal: string | null;
     reviewReason: string | null;
     similarityScore: string;
+    userProvidedContext?: string | null;
+    resolvedInstrumentName?: string | null;
+    resolvedInstrumentIsin?: string | null;
+    resolvedInstrumentTicker?: string | null;
+    resolvedInstrumentExchange?: string | null;
+    currentPrice?: number | null;
+    currentPriceCurrency?: string | null;
+    currentPriceTimestamp?: string | null;
+    currentPriceSource?: string | null;
+    currentPriceType?: string | null;
+    resolutionProcess?: string | null;
+    model?: string | null;
   }>;
   reviewContext?: {
     trigger: string;

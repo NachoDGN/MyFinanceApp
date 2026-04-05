@@ -11,6 +11,8 @@ import {
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
   normalizeInvestmentMatchingText,
+  type TransactionEnrichmentDecision,
+  type SimilarAccountTransactionPromptContext,
 } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
@@ -185,6 +187,8 @@ export const TRANSACTION_SELECT_COLUMNS =
 
 const TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS = 768;
 const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
+const RESOLVED_REVIEW_SIMILARITY_THRESHOLD = 0.8;
+const MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT = 5;
 
 type TransactionEmbeddingSeedRow = {
   id: string;
@@ -196,6 +200,10 @@ type SimilarUnresolvedTransactionMatch = {
   transactionId: string;
   similarity: number;
 };
+
+type SimilarResolvedTransactionMatch = SimilarUnresolvedTransactionMatch;
+
+type ReviewReanalysisMode = "manual_review_update" | "manual_resolved_review";
 
 export type ResolvedSourcePrecedent = {
   sourceTransactionId: string;
@@ -235,10 +243,7 @@ export type PropagatedContextEntry = {
   resolvedPrecedent: Record<string, unknown> | null;
 };
 
-function transactionColumnsSql(
-  sql: SqlClient,
-  alias?: string,
-) {
+function transactionColumnsSql(sql: SqlClient, alias?: string) {
   const prefix = alias ? `${alias}.` : "";
   return sql.unsafe(
     TRANSACTION_SELECT_COLUMN_NAMES.map((column) => `${prefix}${column}`).join(
@@ -268,9 +273,7 @@ export interface PromptProfileModel {
   preview: ReturnType<typeof buildPromptProfilePreview>;
 }
 
-function normalizePromptOverrides(
-  value: unknown,
-): PromptProfileOverrides {
+function normalizePromptOverrides(value: unknown): PromptProfileOverrides {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
   }
@@ -513,7 +516,9 @@ function readOptionalString(value: unknown) {
 }
 
 function readOptionalNumberAsString(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : null;
 }
 
 function readRawOutputField(
@@ -566,7 +571,9 @@ function readTransactionRawOutput(
 function readTransactionReviewContext(
   transaction: Transaction,
 ): Record<string, unknown> | null {
-  return readOptionalRecord(readOptionalRecord(transaction.llmPayload)?.reviewContext);
+  return readOptionalRecord(
+    readOptionalRecord(transaction.llmPayload)?.reviewContext,
+  );
 }
 
 function normalizeStoredVectorLiteral(value: unknown) {
@@ -729,6 +736,59 @@ export async function findSimilarUnresolvedTransactionsByDescriptionEmbedding(
     );
 }
 
+export async function findSimilarResolvedTransactionsByDescriptionEmbedding(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    sourceTransactionId: string;
+    accountId: string;
+    sourceEmbedding: string;
+    threshold?: number;
+    limit?: number;
+  },
+): Promise<SimilarResolvedTransactionMatch[]> {
+  const threshold =
+    typeof input.threshold === "number" && Number.isFinite(input.threshold)
+      ? input.threshold
+      : RESOLVED_REVIEW_SIMILARITY_THRESHOLD;
+  const limit =
+    input.limit && Number.isFinite(input.limit) && input.limit > 0
+      ? Math.floor(input.limit)
+      : MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT;
+  const rows = await sql`
+    select
+      id,
+      1 - (
+        description_embedding <=>
+        ${input.sourceEmbedding}::extensions.vector(768)
+      ) as similarity
+    from public.transactions
+    where user_id = ${input.userId}
+      and account_id = ${input.accountId}
+      and id <> ${input.sourceTransactionId}
+      and coalesce(needs_review, false) = false
+      and voided_at is null
+      and description_embedding is not null
+      and 1 - (
+        description_embedding <=>
+        ${input.sourceEmbedding}::extensions.vector(768)
+      ) >= ${threshold}
+    order by
+      description_embedding <=>
+      ${input.sourceEmbedding}::extensions.vector(768) asc
+    limit ${limit}
+  `;
+
+  return rows
+    .map((row) => ({
+      transactionId: typeof row.id === "string" ? row.id : "",
+      similarity: Number(row.similarity ?? 0),
+    }))
+    .filter(
+      (row) => row.transactionId !== "" && Number.isFinite(row.similarity),
+    );
+}
+
 function getTransactionUserProvidedContext(transaction: Transaction) {
   const reviewContext = readTransactionReviewContext(transaction);
   return (
@@ -775,8 +835,84 @@ export function buildResolvedSourcePrecedent(
       resolutionProcess: readRawOutputString(rawOutput, "resolution_process"),
       rawOutput,
     },
-    rebuildEvidence:
-      readOptionalRecord(llmPayload?.rebuildEvidence) ?? null,
+    rebuildEvidence: readOptionalRecord(llmPayload?.rebuildEvidence) ?? null,
+  };
+}
+
+function buildResolvedReviewSeedTransaction(
+  transaction: Transaction,
+  assetDomain: "cash" | "investment",
+): Transaction {
+  return {
+    ...transaction,
+    merchantNormalized: null,
+    counterpartyName: null,
+    transactionClass: "unknown",
+    categoryCode:
+      assetDomain === "investment" ? "uncategorized_investment" : null,
+    classificationStatus: "unknown",
+    classificationSource: "system_fallback",
+    classificationConfidence: "0.00",
+    needsReview: true,
+    reviewReason: "Resolved transaction requested manual reanalysis.",
+    manualNotes: null,
+    llmPayload: null,
+    securityId: null,
+    quantity: null,
+    unitPriceOriginal: null,
+  };
+}
+
+function buildResolvedReviewSimilarTransactionContext(
+  transaction: Transaction,
+  similarity: number,
+): SimilarAccountTransactionPromptContext {
+  const llmPayload = readOptionalRecord(transaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+
+  return {
+    transactionDate: transaction.transactionDate,
+    postedDate: transaction.postedDate ?? null,
+    amountOriginal: transaction.amountOriginal,
+    currencyOriginal: transaction.currencyOriginal,
+    descriptionRaw: transaction.descriptionRaw,
+    transactionClass: transaction.transactionClass,
+    categoryCode: transaction.categoryCode ?? null,
+    merchantNormalized: transaction.merchantNormalized ?? null,
+    counterpartyName: transaction.counterpartyName ?? null,
+    securityId: transaction.securityId ?? null,
+    quantity: transaction.quantity ?? null,
+    unitPriceOriginal: transaction.unitPriceOriginal ?? null,
+    reviewReason: transaction.reviewReason ?? null,
+    similarityScore: similarity.toFixed(2),
+    userProvidedContext: getTransactionUserProvidedContext(transaction),
+    resolvedInstrumentName:
+      readRawOutputString(rawOutput, "resolved_instrument_name") ?? null,
+    resolvedInstrumentIsin:
+      readRawOutputString(rawOutput, "resolved_instrument_isin") ?? null,
+    resolvedInstrumentTicker:
+      readRawOutputString(rawOutput, "resolved_instrument_ticker") ?? null,
+    resolvedInstrumentExchange:
+      readRawOutputString(rawOutput, "resolved_instrument_exchange") ?? null,
+    currentPrice:
+      typeof readRawOutputField(rawOutput, "current_price") === "number"
+        ? (readRawOutputField(rawOutput, "current_price") as number)
+        : null,
+    currentPriceCurrency:
+      readRawOutputString(rawOutput, "current_price_currency") ?? null,
+    currentPriceTimestamp:
+      readRawOutputString(rawOutput, "current_price_timestamp") ?? null,
+    currentPriceSource:
+      readRawOutputString(rawOutput, "current_price_source") ?? null,
+    currentPriceType:
+      readRawOutputString(rawOutput, "current_price_type") ?? null,
+    resolutionProcess:
+      readRawOutputString(rawOutput, "resolution_process") ?? null,
+    model:
+      readOptionalString(llmNode?.model) ??
+      readOptionalString(llmPayload?.model) ??
+      null,
   };
 }
 
@@ -797,8 +933,8 @@ function buildResolvedSourcePrecedentSummary(
       : precedent.llm.reason
         ? `Resolution reason: ${precedent.llm.reason}.`
         : null,
-    readOptionalRecord(precedent.rebuildEvidence)?.quantityDerivedFromHistoricalPrice ===
-    true
+    readOptionalRecord(precedent.rebuildEvidence)
+      ?.quantityDerivedFromHistoricalPrice === true
       ? "Quantity was later derived during the rebuild step from a historical price or NAV."
       : null,
   ]
@@ -901,7 +1037,9 @@ export function buildUnresolvedSourcePropagatedContextEntry(input: {
     sourceTransactionClass: input.sourceTransaction.transactionClass ?? null,
     sourceNeedsReview: input.sourceTransaction.needsReview,
     sourceReviewReason: input.sourceTransaction.reviewReason ?? null,
-    userProvidedContext: getTransactionUserProvidedContext(input.sourceTransaction),
+    userProvidedContext: getTransactionUserProvidedContext(
+      input.sourceTransaction,
+    ),
     summaryText: buildUnresolvedSourceContextSummary(input.sourceTransaction),
     resolvedPrecedent: null,
   };
@@ -924,7 +1062,9 @@ export function buildResolvedSourcePropagatedContextEntry(input: {
     sourceTransactionClass: input.sourceTransaction.transactionClass ?? null,
     sourceNeedsReview: input.sourceTransaction.needsReview,
     sourceReviewReason: input.sourceTransaction.reviewReason ?? null,
-    userProvidedContext: getTransactionUserProvidedContext(input.sourceTransaction),
+    userProvidedContext: getTransactionUserProvidedContext(
+      input.sourceTransaction,
+    ),
     summaryText: buildResolvedSourcePrecedentSummary(input.precedent),
     resolvedPrecedent: input.precedent as unknown as Record<string, unknown>,
   };
@@ -932,7 +1072,10 @@ export function buildResolvedSourcePropagatedContextEntry(input: {
 
 export function canSeedReviewPropagationFromTransaction(
   account: { assetDomain: "cash" | "investment" },
-  transaction: Pick<Transaction, "transactionClass" | "needsReview" | "securityId" | "voidedAt">,
+  transaction: Pick<
+    Transaction,
+    "transactionClass" | "needsReview" | "securityId" | "voidedAt"
+  >,
 ) {
   if (transaction.voidedAt || transaction.transactionClass === "unknown") {
     return false;
@@ -942,22 +1085,34 @@ export function canSeedReviewPropagationFromTransaction(
     return true;
   }
 
-  return account.assetDomain === "investment" && Boolean(transaction.securityId);
+  return (
+    account.assetDomain === "investment" && Boolean(transaction.securityId)
+  );
 }
 
 export function shouldQueueReviewPropagationAfterManualReview(
   account: { assetDomain: "cash" | "investment" },
   transaction: Pick<Transaction, "needsReview">,
 ) {
-  return account.assetDomain === "investment" && transaction.needsReview === true;
+  return (
+    account.assetDomain === "investment" && transaction.needsReview === true
+  );
 }
 
-export function buildReviewPropagationUserContext(sourceTransaction: Transaction) {
+export function buildReviewPropagationUserContext(
+  sourceTransaction: Transaction,
+) {
   const rawOutput = readTransactionRawOutput(sourceTransaction);
   const llmPayload = readOptionalRecord(sourceTransaction.llmPayload);
   const rebuildEvidence = readOptionalRecord(llmPayload?.rebuildEvidence);
-  const instrumentName = readRawOutputString(rawOutput, "resolved_instrument_name");
-  const instrumentIsin = readRawOutputString(rawOutput, "resolved_instrument_isin");
+  const instrumentName = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_name",
+  );
+  const instrumentIsin = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_isin",
+  );
   const instrumentTicker = readRawOutputString(
     rawOutput,
     "resolved_instrument_ticker",
@@ -980,7 +1135,10 @@ export function buildReviewPropagationUserContext(sourceTransaction: Transaction
     "current_price_source",
   );
   const currentPriceType = readRawOutputString(rawOutput, "current_price_type");
-  const resolutionProcess = readRawOutputString(rawOutput, "resolution_process");
+  const resolutionProcess = readRawOutputString(
+    rawOutput,
+    "resolution_process",
+  );
 
   return [
     "A similar unresolved transaction from this same account was manually re-reviewed and should be used as supporting precedent when the evidence matches.",
@@ -1223,6 +1381,129 @@ export function shouldRunInvestmentRebuildAfterReviewPropagation(
   );
 }
 
+type ReviewPropagationMode =
+  | "unresolved_source_context"
+  | "resolved_source_rereview";
+
+type ReviewPropagationCandidateResult = {
+  afterTransaction: Transaction | null;
+  shouldRunInvestmentRebuild: boolean;
+  shouldQueueMetricRefresh: boolean;
+};
+
+async function applyReviewPropagationToCandidate(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    mode: ReviewPropagationMode;
+    dataset: DomainDataset;
+    account: DomainDataset["accounts"][number];
+    currentCandidate: Transaction;
+    nextPropagatedContexts: PropagatedContextEntry[];
+    promptOverrides: PromptProfileOverrides;
+    resolvedSourcePrecedent: ResolvedSourcePrecedent | null;
+  },
+): Promise<ReviewPropagationCandidateResult> {
+  if (input.mode === "unresolved_source_context") {
+    const currentLlmPayload =
+      readOptionalRecord(input.currentCandidate.llmPayload) ?? {};
+    const nextLlmPayload = {
+      ...currentLlmPayload,
+      reviewContext: {
+        ...(readOptionalRecord(currentLlmPayload.reviewContext) ?? {}),
+        propagatedContexts: input.nextPropagatedContexts,
+      },
+    };
+
+    if (JSON.stringify(currentLlmPayload) === JSON.stringify(nextLlmPayload)) {
+      return {
+        afterTransaction: null,
+        shouldRunInvestmentRebuild: false,
+        shouldQueueMetricRefresh: false,
+      };
+    }
+
+    const after = await updateTransactionRecord(sql, {
+      userId: input.userId,
+      transactionId: input.currentCandidate.id,
+      updatePayload: {
+        updated_at: new Date().toISOString(),
+      },
+      llmPayload: nextLlmPayload,
+    });
+    const afterTransaction = mapFromSql<Transaction>(after);
+    const auditEvent = createAuditEvent(
+      "worker",
+      "job:review_propagation",
+      "transactions.review_propagate_context",
+      "transaction",
+      input.currentCandidate.id,
+      input.currentCandidate as unknown as Record<string, unknown>,
+      after,
+    );
+    await insertAuditEventRecord(
+      sql,
+      auditEvent,
+      "Appended propagated unresolved review context from a similar transaction in the same investment account.",
+    );
+
+    return {
+      afterTransaction,
+      shouldRunInvestmentRebuild: false,
+      shouldQueueMetricRefresh: false,
+    };
+  }
+
+  const decision = await enrichImportedTransaction(
+    input.dataset,
+    input.account,
+    input.currentCandidate,
+    {
+      trigger: "review_propagation",
+      promptOverrides: input.promptOverrides,
+      reviewContext: {
+        previousReviewReason: input.currentCandidate.reviewReason ?? null,
+        previousUserContext: input.currentCandidate.manualNotes ?? null,
+        previousLlmPayload:
+          input.currentCandidate.llmPayload &&
+          typeof input.currentCandidate.llmPayload === "object"
+            ? (input.currentCandidate.llmPayload as Record<string, unknown>)
+            : null,
+        propagatedContexts: input.nextPropagatedContexts,
+        resolvedSourcePrecedent: input.resolvedSourcePrecedent,
+      },
+    },
+  );
+
+  const after = await updateTransactionFromEnrichmentDecision(
+    sql,
+    input.userId,
+    input.currentCandidate.id,
+    decision,
+  );
+  const afterTransaction = mapFromSql<Transaction>(after);
+  const auditEvent = createAuditEvent(
+    "worker",
+    "job:review_propagation",
+    "transactions.review_propagate",
+    "transaction",
+    input.currentCandidate.id,
+    input.currentCandidate as unknown as Record<string, unknown>,
+    after,
+  );
+  await insertAuditEventRecord(
+    sql,
+    auditEvent,
+    "Re-ran LLM classification for a similar unresolved transaction using a resolved precedent from the same investment account.",
+  );
+
+  return {
+    afterTransaction,
+    shouldRunInvestmentRebuild: true,
+    shouldQueueMetricRefresh: true,
+  };
+}
+
 async function processReviewPropagationJob(
   sql: SqlClient,
   userId: string,
@@ -1238,9 +1519,7 @@ async function processReviewPropagationJob(
       ? payloadJson.sourceAuditEventId
       : null;
   if (!sourceTransactionId) {
-    throw new Error(
-      "Review propagation job is missing sourceTransactionId.",
-    );
+    throw new Error("Review propagation job is missing sourceTransactionId.");
   }
 
   let dataset = await loadDatasetForUser(sql, userId);
@@ -1425,7 +1704,11 @@ async function processReviewPropagationJob(
       dataset.transactions.find(
         (candidate) => candidate.id === match.transactionId,
       ) ?? null;
-    if (!currentCandidate || !currentCandidate.needsReview || currentCandidate.voidedAt) {
+    if (
+      !currentCandidate ||
+      !currentCandidate.needsReview ||
+      currentCandidate.voidedAt
+    ) {
       skippedCount += 1;
       continue;
     }
@@ -1453,142 +1736,30 @@ async function processReviewPropagationJob(
         existingReviewContext.propagatedContexts,
         propagationEntry,
       );
-
-      if (mode === "unresolved_source_context") {
-        const currentLlmPayload =
-          readOptionalRecord(currentCandidate.llmPayload) ?? {};
-        const nextLlmPayload = {
-          ...currentLlmPayload,
-          reviewContext: {
-            ...(readOptionalRecord(currentLlmPayload.reviewContext) ?? {}),
-            propagatedContexts: nextPropagatedContexts,
-          },
-        };
-
-        if (
-          JSON.stringify(currentLlmPayload) === JSON.stringify(nextLlmPayload)
-        ) {
-          skippedCount += 1;
-          continue;
-        }
-
-        const after = await sql`
-          update public.transactions
-          set llm_payload = ${serializeJson(sql, nextLlmPayload)}::jsonb,
-              updated_at = ${new Date().toISOString()}
-          where id = ${currentCandidate.id}
-            and user_id = ${userId}
-          returning ${transactionColumnsSql(sql)}
-        `;
-        const afterTransaction = mapFromSql<Transaction>(after[0]);
-        const auditEvent = createAuditEvent(
-          "worker",
-          "job:review_propagation",
-          "transactions.review_propagate_context",
-          "transaction",
-          currentCandidate.id,
-          currentCandidate as unknown as Record<string, unknown>,
-          after[0],
-        );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes:
-              "Appended propagated unresolved review context from a similar transaction in the same investment account.",
-          } as Record<string, unknown>)}
-        `;
-
-        dataset = replaceTransactionInDataset(dataset, afterTransaction);
-        appliedTransactionIds.push(afterTransaction.id);
-        appliedCount += 1;
-        continue;
-      }
-
-      const decision = await enrichImportedTransaction(
+      const candidateResult = await applyReviewPropagationToCandidate(sql, {
+        userId,
+        mode,
         dataset,
         account,
         currentCandidate,
-        {
-          trigger: "review_propagation",
-          promptOverrides,
-          reviewContext: {
-            previousReviewReason: currentCandidate.reviewReason ?? null,
-            previousUserContext: currentCandidate.manualNotes ?? null,
-            previousLlmPayload:
-              currentCandidate.llmPayload &&
-              typeof currentCandidate.llmPayload === "object"
-                ? (currentCandidate.llmPayload as Record<string, unknown>)
-                : null,
-            propagatedContexts: nextPropagatedContexts,
-            resolvedSourcePrecedent,
-          },
-        },
-      );
+        nextPropagatedContexts,
+        promptOverrides,
+        resolvedSourcePrecedent,
+      });
 
-      const after = await sql`
-        update public.transactions
-        set transaction_class = ${decision.transactionClass},
-            category_code = ${decision.categoryCode ?? null},
-            merchant_normalized = ${decision.merchantNormalized ?? null},
-            counterparty_name = ${decision.counterpartyName ?? null},
-            economic_entity_id = ${decision.economicEntityId},
-            classification_status = ${decision.classificationStatus},
-            classification_source = ${decision.classificationSource},
-            classification_confidence = ${decision.classificationConfidence},
-            quantity = ${decision.quantity ?? null},
-            unit_price_original = ${decision.unitPriceOriginal ?? null},
-            needs_review = ${decision.needsReview},
-            review_reason = ${decision.reviewReason ?? null},
-            llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
-            updated_at = ${new Date().toISOString()}
-        where id = ${currentCandidate.id}
-          and user_id = ${userId}
-        returning ${transactionColumnsSql(sql)}
-      `;
-      const afterTransaction = mapFromSql<Transaction>(after[0]);
-      const auditEvent = createAuditEvent(
-        "worker",
-        "job:review_propagation",
-        "transactions.review_propagate",
-        "transaction",
-        currentCandidate.id,
-        currentCandidate as unknown as Record<string, unknown>,
-        after[0],
-      );
-      await sql`
-        insert into public.audit_events ${sql({
-          actor_type: auditEvent.actorType,
-          actor_id: auditEvent.actorId,
-          actor_name: auditEvent.actorName,
-          source_channel: auditEvent.sourceChannel,
-          command_name: auditEvent.commandName,
-          object_type: auditEvent.objectType,
-          object_id: auditEvent.objectId,
-          before_json: auditEvent.beforeJson,
-          after_json: auditEvent.afterJson,
-          created_at: auditEvent.createdAt,
-          notes:
-            "Re-ran LLM classification for a similar unresolved transaction using a resolved precedent from the same investment account.",
-        } as Record<string, unknown>)}
-      `;
+      if (!candidateResult.afterTransaction) {
+        skippedCount += 1;
+        continue;
+      }
 
-      dataset = replaceTransactionInDataset(dataset, afterTransaction);
-      appliedTransactionIds.push(afterTransaction.id);
+      dataset = replaceTransactionInDataset(
+        dataset,
+        candidateResult.afterTransaction,
+      );
+      appliedTransactionIds.push(candidateResult.afterTransaction.id);
       appliedCount += 1;
-      // Once a resolved source fans out to a similar unresolved candidate,
-      // always follow through with rebuild and metric refresh even if the
-      // propagated analyzer output only restates the same instrument metadata.
-      shouldRunInvestmentRebuild = true;
-      shouldQueueMetricRefresh = true;
+      shouldRunInvestmentRebuild ||= candidateResult.shouldRunInvestmentRebuild;
+      shouldQueueMetricRefresh ||= candidateResult.shouldQueueMetricRefresh;
     } catch (candidateError) {
       skippedCount += 1;
       failedTransactionIds.push({
@@ -1666,6 +1837,127 @@ function createAuditEvent(
     createdAt: new Date().toISOString(),
     notes: null,
   };
+}
+
+async function insertAuditEventRecord(
+  sql: SqlClient,
+  auditEvent: AuditEvent,
+  notes: string | null = auditEvent.notes ?? null,
+) {
+  await sql`
+    insert into public.audit_events ${sql({
+      actor_type: auditEvent.actorType,
+      actor_id: auditEvent.actorId,
+      actor_name: auditEvent.actorName,
+      source_channel: auditEvent.sourceChannel,
+      command_name: auditEvent.commandName,
+      object_type: auditEvent.objectType,
+      object_id: auditEvent.objectId,
+      before_json: auditEvent.beforeJson,
+      after_json: auditEvent.afterJson,
+      created_at: auditEvent.createdAt,
+      notes,
+    } as Record<string, unknown>)}
+  `;
+}
+
+async function updateTransactionRecord(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    transactionId: string;
+    updatePayload: Record<string, unknown>;
+    llmPayload?: Record<string, unknown>;
+    returning?: boolean;
+  },
+): Promise<Record<string, unknown> | null> {
+  if (input.returning === false) {
+    if (input.llmPayload !== undefined) {
+      await sql`
+        update public.transactions
+        set ${sql(input.updatePayload)},
+            llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb
+        where id = ${input.transactionId}
+          and user_id = ${input.userId}
+      `;
+      return null;
+    }
+
+    await sql`
+      update public.transactions
+      set ${sql(input.updatePayload)}
+      where id = ${input.transactionId}
+        and user_id = ${input.userId}
+    `;
+    return null;
+  }
+
+  if (input.llmPayload !== undefined) {
+    const rows = await sql`
+      update public.transactions
+      set ${sql(input.updatePayload)},
+          llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb
+      where id = ${input.transactionId}
+        and user_id = ${input.userId}
+      returning ${transactionColumnsSql(sql)}
+    `;
+    if (!rows[0]) {
+      throw new Error(
+        `Transaction ${input.transactionId} was not found for update.`,
+      );
+    }
+    return rows[0];
+  }
+
+  const rows = await sql`
+    update public.transactions
+    set ${sql(input.updatePayload)}
+    where id = ${input.transactionId}
+      and user_id = ${input.userId}
+    returning ${transactionColumnsSql(sql)}
+  `;
+  if (!rows[0]) {
+    throw new Error(
+      `Transaction ${input.transactionId} was not found for update.`,
+    );
+  }
+  return rows[0];
+}
+
+async function updateTransactionFromEnrichmentDecision(
+  sql: SqlClient,
+  userId: string,
+  transactionId: string,
+  decision: TransactionEnrichmentDecision,
+  options: {
+    manualNotes?: string | null;
+  } = {},
+) {
+  const updatePayload: Record<string, unknown> = {
+    transaction_class: decision.transactionClass,
+    category_code: decision.categoryCode ?? null,
+    merchant_normalized: decision.merchantNormalized ?? null,
+    counterparty_name: decision.counterpartyName ?? null,
+    economic_entity_id: decision.economicEntityId,
+    classification_status: decision.classificationStatus,
+    classification_source: decision.classificationSource,
+    classification_confidence: decision.classificationConfidence,
+    quantity: decision.quantity ?? null,
+    unit_price_original: decision.unitPriceOriginal ?? null,
+    needs_review: decision.needsReview,
+    review_reason: decision.reviewReason ?? null,
+    updated_at: new Date().toISOString(),
+  };
+  if (options.manualNotes !== undefined) {
+    updatePayload.manual_notes = options.manualNotes;
+  }
+
+  return updateTransactionRecord(sql, {
+    userId,
+    transactionId,
+    updatePayload,
+    llmPayload: decision.llmPayload,
+  });
 }
 
 function isUniqueViolation(error: unknown): error is { code: string } {
@@ -1810,9 +2102,7 @@ async function applyInvestmentRebuild(
   sql: SqlClient,
   userId: string,
   options?: {
-    onProgress?: (
-      progress: InvestmentRebuildProgress,
-    ) => Promise<void> | void;
+    onProgress?: (progress: InvestmentRebuildProgress) => Promise<void> | void;
     historicalLookupTransactionIds?: readonly string[];
   },
 ) {
@@ -1823,7 +2113,10 @@ async function applyInvestmentRebuild(
     historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
   });
   const latestTransactionsById = new Map(
-    latestDataset.transactions.map((transaction) => [transaction.id, transaction]),
+    latestDataset.transactions.map((transaction) => [
+      transaction.id,
+      transaction,
+    ]),
   );
 
   for (const security of rebuilt.insertedSecurities) {
@@ -1939,8 +2232,9 @@ async function applyInvestmentRebuild(
             ...(patch.rebuildEvidence
               ? {
                   rebuildEvidence: {
-                    ...(readOptionalRecord(existingLlmPayload.rebuildEvidence) ??
-                      {}),
+                    ...(readOptionalRecord(
+                      existingLlmPayload.rebuildEvidence,
+                    ) ?? {}),
                     ...patch.rebuildEvidence,
                   },
                 }
@@ -1948,20 +2242,20 @@ async function applyInvestmentRebuild(
           }
         : null;
     if (nextLlmPayload) {
-      await sql`
-        update public.transactions
-        set ${sql(updatePayload)},
-            llm_payload = ${serializeJson(sql, nextLlmPayload)}::jsonb
-        where id = ${patch.id}
-          and user_id = ${userId}
-      `;
+      await updateTransactionRecord(sql, {
+        userId,
+        transactionId: patch.id,
+        updatePayload,
+        llmPayload: nextLlmPayload,
+        returning: false,
+      });
     } else {
-      await sql`
-        update public.transactions
-        set ${sql(updatePayload)}
-        where id = ${patch.id}
-          and user_id = ${userId}
-      `;
+      await updateTransactionRecord(sql, {
+        userId,
+        transactionId: patch.id,
+        updatePayload,
+        returning: false,
+      });
     }
   }
 
@@ -2029,6 +2323,7 @@ export interface ReanalyzeTransactionReviewInput {
   reviewContext: string;
   actorName: string;
   sourceChannel: AuditEvent["sourceChannel"];
+  reviewMode?: ReviewReanalysisMode;
   onProgress?: (progress: ReviewReanalysisProgress) => Promise<void> | void;
 }
 
@@ -2070,6 +2365,103 @@ function getReviewReanalyzeChangedFields(
   );
 }
 
+async function loadSimilarResolvedTransactionsForResolvedReview(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    sourceTransaction: Transaction;
+    dataset: DomainDataset;
+  },
+): Promise<SimilarAccountTransactionPromptContext[]> {
+  const candidateSeedRowsRaw = await sql`
+    select id, description_raw, description_embedding
+    from public.transactions
+    where user_id = ${input.userId}
+      and account_id = ${input.sourceTransaction.accountId}
+      and id <> ${input.sourceTransaction.id}
+      and coalesce(needs_review, false) = false
+      and voided_at is null
+  `;
+  if (candidateSeedRowsRaw.length === 0) {
+    return [];
+  }
+
+  const sourceSeedRows = await sql`
+    select id, description_raw, description_embedding
+    from public.transactions
+    where id = ${input.sourceTransaction.id}
+      and user_id = ${input.userId}
+    limit 1
+  `;
+  const sourceSeedRow = sourceSeedRows[0]
+    ? parseTransactionEmbeddingSeedRow(
+        sourceSeedRows[0] as Record<string, unknown>,
+      )
+    : null;
+  if (!sourceSeedRow) {
+    return [];
+  }
+
+  const candidateSeedRows = candidateSeedRowsRaw.map((row) =>
+    parseTransactionEmbeddingSeedRow(row as Record<string, unknown>),
+  );
+  try {
+    await ensureTransactionDescriptionEmbeddings(sql, input.userId, [
+      sourceSeedRow,
+    ]);
+    await ensureTransactionDescriptionEmbeddings(
+      sql,
+      input.userId,
+      candidateSeedRows,
+    );
+  } catch {
+    return [];
+  }
+
+  const sourceEmbeddingRows = await sql`
+    select description_embedding
+    from public.transactions
+    where id = ${input.sourceTransaction.id}
+      and user_id = ${input.userId}
+    limit 1
+  `;
+  const sourceEmbedding = normalizeStoredVectorLiteral(
+    sourceEmbeddingRows[0]?.description_embedding,
+  );
+  if (!sourceEmbedding) {
+    return [];
+  }
+
+  const matches = await findSimilarResolvedTransactionsByDescriptionEmbedding(
+    sql,
+    {
+      userId: input.userId,
+      sourceTransactionId: input.sourceTransaction.id,
+      accountId: input.sourceTransaction.accountId,
+      sourceEmbedding,
+      threshold: RESOLVED_REVIEW_SIMILARITY_THRESHOLD,
+      limit: MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT,
+    },
+  );
+
+  return matches
+    .map((match) => {
+      const transaction =
+        input.dataset.transactions.find(
+          (candidate) => candidate.id === match.transactionId,
+        ) ?? null;
+      return transaction
+        ? buildResolvedReviewSimilarTransactionContext(
+            transaction,
+            match.similarity,
+          )
+        : null;
+    })
+    .filter((match): match is SimilarAccountTransactionPromptContext =>
+      Boolean(match),
+    );
+}
+
 export async function reanalyzeTransactionReview(
   input: ReanalyzeTransactionReviewInput,
 ) {
@@ -2104,31 +2496,63 @@ export async function reanalyzeTransactionReview(
     if (!normalizedReviewContext) {
       throw new Error("Review context cannot be empty.");
     }
+    const reviewMode =
+      input.reviewMode ??
+      (beforeTransaction.needsReview
+        ? "manual_review_update"
+        : "manual_resolved_review");
     const promptOverrides = await loadPromptOverrides(sql, userId);
     const wasPendingReview = beforeTransaction.needsReview;
     const followUpJobs: ReviewReanalysisFollowUpJobRef[] = [];
+    const analysisTransaction =
+      reviewMode === "manual_resolved_review"
+        ? buildResolvedReviewSeedTransaction(
+            beforeTransaction,
+            account.assetDomain,
+          )
+        : beforeTransaction;
+    const similarResolvedTransactions =
+      reviewMode === "manual_resolved_review"
+        ? await loadSimilarResolvedTransactionsForResolvedReview(sql, {
+            userId,
+            sourceTransaction: beforeTransaction,
+            dataset,
+          })
+        : undefined;
 
     await input.onProgress?.({
       stage: "llm_reanalysis",
-      message: "Running transaction analyzer with your review context.",
+      message:
+        reviewMode === "manual_resolved_review"
+          ? "Running a clean transaction reanalysis with similar resolved history."
+          : "Running transaction analyzer with your review context.",
     });
     const decision = await enrichImportedTransaction(
       dataset,
       account,
-      beforeTransaction,
+      analysisTransaction,
       {
-        trigger: "manual_review_update",
+        trigger: reviewMode,
         reviewContext: {
           userProvidedContext: normalizedReviewContext,
-          previousReviewReason: beforeTransaction.reviewReason ?? null,
-          previousUserContext: beforeTransaction.manualNotes ?? null,
+          previousReviewReason:
+            reviewMode === "manual_resolved_review"
+              ? null
+              : (beforeTransaction.reviewReason ?? null),
+          previousUserContext:
+            reviewMode === "manual_resolved_review"
+              ? null
+              : (beforeTransaction.manualNotes ?? null),
           previousLlmPayload:
-            beforeTransaction.llmPayload &&
-            typeof beforeTransaction.llmPayload === "object"
-              ? (beforeTransaction.llmPayload as Record<string, unknown>)
-              : null,
+            reviewMode === "manual_resolved_review"
+              ? null
+              : beforeTransaction.llmPayload &&
+                  typeof beforeTransaction.llmPayload === "object"
+                ? (beforeTransaction.llmPayload as Record<string, unknown>)
+                : null,
         },
         promptOverrides,
+        similarAccountTransactions: similarResolvedTransactions,
       },
     );
 
@@ -2136,27 +2560,15 @@ export async function reanalyzeTransactionReview(
       stage: "apply_transaction_update",
       message: "Applying analyzer results to the transaction.",
     });
-    const after = await sql`
-      update public.transactions
-      set transaction_class = ${decision.transactionClass},
-          category_code = ${decision.categoryCode ?? null},
-          merchant_normalized = ${decision.merchantNormalized ?? null},
-          counterparty_name = ${decision.counterpartyName ?? null},
-          economic_entity_id = ${decision.economicEntityId},
-          classification_status = ${decision.classificationStatus},
-          classification_source = ${decision.classificationSource},
-          classification_confidence = ${decision.classificationConfidence},
-          quantity = ${decision.quantity ?? null},
-          unit_price_original = ${decision.unitPriceOriginal ?? null},
-          needs_review = ${decision.needsReview},
-          review_reason = ${decision.reviewReason ?? null},
-          manual_notes = ${normalizedReviewContext},
-          llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
-          updated_at = ${new Date().toISOString()}
-      where id = ${input.transactionId}
-        and user_id = ${userId}
-      returning ${transactionColumnsSql(sql)}
-    `;
+    const after = await updateTransactionFromEnrichmentDecision(
+      sql,
+      userId,
+      input.transactionId,
+      decision,
+      {
+        manualNotes: normalizedReviewContext,
+      },
+    );
 
     if (account.assetDomain === "investment") {
       await input.onProgress?.({
@@ -2173,7 +2585,7 @@ export async function reanalyzeTransactionReview(
       message: "Refreshing portfolio metrics.",
     });
     const metricRefreshJobId = await queueJob(sql, "metric_refresh", {
-      trigger: "manual_review_update",
+      trigger: reviewMode,
       transactionId: input.transactionId,
       accountId: beforeTransaction.accountId,
     });
@@ -2204,30 +2616,23 @@ export async function reanalyzeTransactionReview(
       "transaction",
       input.transactionId,
       beforeRow,
-      after[0],
+      after,
     );
-    await sql`
-      insert into public.audit_events ${sql({
-        actor_type: auditEvent.actorType,
-        actor_id: auditEvent.actorId,
-        actor_name: auditEvent.actorName,
-        source_channel: auditEvent.sourceChannel,
-        command_name: auditEvent.commandName,
-        object_type: auditEvent.objectType,
-        object_id: auditEvent.objectId,
-        before_json: auditEvent.beforeJson,
-        after_json: auditEvent.afterJson,
-        created_at: auditEvent.createdAt,
-        notes: "Re-ran LLM classification for a single transaction with manual review context.",
-      } as Record<string, unknown>)}
-    `;
+    await insertAuditEventRecord(
+      sql,
+      auditEvent,
+      reviewMode === "manual_resolved_review"
+        ? "Re-ran LLM classification for a previously resolved transaction from a clean baseline with similar resolved precedent context."
+        : "Re-ran LLM classification for a single transaction with manual review context.",
+    );
     if (
       wasPendingReview &&
       shouldQueueReviewPropagationAfterManualReview(account, beforeTransaction)
     ) {
       await input.onProgress?.({
         stage: "review_propagation",
-        message: "Propagating the correction to similar unresolved transactions.",
+        message:
+          "Propagating the correction to similar unresolved transactions.",
       });
       const reviewPropagationPayload = {
         sourceTransactionId: afterTransaction.id,
@@ -2277,8 +2682,7 @@ export interface ReviewReanalysisFollowUpJobRef {
   jobType: "metric_refresh" | "review_propagation";
 }
 
-export interface ReviewReanalysisFollowUpJobStatus
-  extends ReviewReanalysisFollowUpJobRef {
+export interface ReviewReanalysisFollowUpJobStatus extends ReviewReanalysisFollowUpJobRef {
   status: "queued" | "running" | "completed" | "failed";
   createdAt: string;
   startedAt?: string | null;
@@ -2347,9 +2751,7 @@ function normalizeReviewReanalysisFollowUpJobs(
 ): ReviewReanalysisFollowUpJobRef[] {
   return (readUnknownArray(value) ?? [])
     .map((entry) => normalizeReviewReanalysisFollowUpJobRef(entry))
-    .filter(
-      (entry): entry is ReviewReanalysisFollowUpJobRef => Boolean(entry),
-    );
+    .filter((entry): entry is ReviewReanalysisFollowUpJobRef => Boolean(entry));
 }
 
 async function readJobById(sql: SqlClient, jobId: string) {
@@ -2407,15 +2809,20 @@ export async function queueTransactionReviewReanalysis(
 
   return withSeededUserContext(async (sql) => {
     const transactionRows = await sql`
-      select id, account_id
+      select id, account_id, needs_review
       from public.transactions
       where id = ${input.transactionId}
         and user_id = ${userId}
       limit 1
     `;
-    if (!transactionRows[0]) {
+    const transactionRow = transactionRows[0];
+    if (!transactionRow) {
       throw new Error(`Transaction ${input.transactionId} not found.`);
     }
+    const reviewMode: ReviewReanalysisMode =
+      transactionRow.needs_review === true
+        ? "manual_review_update"
+        : "manual_resolved_review";
 
     const normalizedReviewContext = input.reviewContext.trim();
     if (!normalizedReviewContext) {
@@ -2428,7 +2835,7 @@ export async function queueTransactionReviewReanalysis(
       select *
       from public.jobs
       where job_type = ${"review_reanalyze"}
-        and status in (${ "queued" }, ${ "running" })
+        and status in (${"queued"}, ${"running"})
         and payload_json->>'transactionId' = ${input.transactionId}
       order by created_at desc
       limit 1
@@ -2459,6 +2866,7 @@ export async function queueTransactionReviewReanalysis(
         ${serializeJson(sql, {
           transactionId: input.transactionId,
           reviewContext: normalizedReviewContext,
+          reviewMode,
           actorName: input.actorName,
           sourceChannel: input.sourceChannel,
         })}::jsonb,
@@ -3722,29 +4130,15 @@ class SqlFinanceRepository implements FinanceRepository {
                     transaction,
                     { promptOverrides },
                   );
-                  const after = await sql`
-                    update public.transactions
-                    set transaction_class = ${decision.transactionClass},
-                        category_code = ${decision.categoryCode ?? null},
-                        merchant_normalized = ${decision.merchantNormalized ?? null},
-                        counterparty_name = ${decision.counterpartyName ?? null},
-                        economic_entity_id = ${decision.economicEntityId},
-                        classification_status = ${decision.classificationStatus},
-                        classification_source = ${decision.classificationSource},
-                        classification_confidence = ${decision.classificationConfidence},
-                        quantity = ${decision.quantity ?? null},
-                        unit_price_original = ${decision.unitPriceOriginal ?? null},
-                        needs_review = ${decision.needsReview},
-                        review_reason = ${decision.reviewReason ?? null},
-                        llm_payload = ${serializeJson(sql, decision.llmPayload)}::jsonb,
-                        updated_at = ${new Date().toISOString()}
-                    where id = ${transaction.id}
-                      and user_id = ${this.userId}
-                    returning ${transactionColumnsSql(sql)}
-                  `;
+                  const after = await updateTransactionFromEnrichmentDecision(
+                    sql,
+                    this.userId,
+                    transaction.id,
+                    decision,
+                  );
                   latestDataset = replaceTransactionInDataset(
                     latestDataset,
-                    mapFromSql<Transaction>(after[0]),
+                    mapFromSql<Transaction>(after),
                   );
                 } catch (transactionError) {
                   failedTransactions += 1;
@@ -3844,11 +4238,16 @@ class SqlFinanceRepository implements FinanceRepository {
                 typeof payloadJson.actorName === "string"
                   ? payloadJson.actorName
                   : "worker-review-editor";
+              const reviewMode =
+                payloadJson.reviewMode === "manual_resolved_review" ||
+                payloadJson.reviewMode === "manual_review_update"
+                  ? (payloadJson.reviewMode as ReviewReanalysisMode)
+                  : undefined;
               const sourceChannel =
-                typeof payloadJson.sourceChannel === "string"
-                  && ["web", "cli", "worker", "system"].includes(
-                    payloadJson.sourceChannel,
-                  )
+                typeof payloadJson.sourceChannel === "string" &&
+                ["web", "cli", "worker", "system"].includes(
+                  payloadJson.sourceChannel,
+                )
                   ? (payloadJson.sourceChannel as
                       | "web"
                       | "cli"
@@ -3884,6 +4283,7 @@ class SqlFinanceRepository implements FinanceRepository {
                 reviewContext,
                 actorName,
                 sourceChannel,
+                reviewMode,
                 onProgress: reportProgress,
               });
               await completeJob(sql, job.id, startedAt, {

@@ -308,7 +308,11 @@ export function InvestmentAllocationCard({
       </div>
       <div className="investment-allocation-layout">
         <div className="investment-allocation-donut">
-          <svg viewBox="0 0 100 100" role="img" aria-label="Portfolio allocation">
+          <svg
+            viewBox="0 0 100 100"
+            role="img"
+            aria-label="Portfolio allocation"
+          >
             <circle
               cx="50"
               cy="50"
@@ -628,8 +632,8 @@ export function ReviewStateCell({
     (llmPayload as { timing: { durationMs?: unknown } }).timing &&
     typeof (llmPayload as { timing: { durationMs?: unknown } }).timing
       .durationMs === "number"
-      ? ((llmPayload as { timing: { durationMs: number } }).timing
-          .durationMs ?? null)
+      ? ((llmPayload as { timing: { durationMs: number } }).timing.durationMs ??
+        null)
       : null;
   const llmTrigger =
     llmPayload &&
@@ -638,8 +642,8 @@ export function ReviewStateCell({
     typeof (llmPayload as { reviewContext?: unknown }).reviewContext ===
       "object" &&
     (llmPayload as { reviewContext: { trigger?: unknown } }).reviewContext &&
-    typeof (llmPayload as { reviewContext: { trigger?: unknown } }).reviewContext
-      .trigger === "string"
+    typeof (llmPayload as { reviewContext: { trigger?: unknown } })
+      .reviewContext.trigger === "string"
       ? ((llmPayload as { reviewContext: { trigger: string } }).reviewContext
           .trigger ?? null)
       : null;
@@ -648,9 +652,11 @@ export function ReviewStateCell({
       ? [
           llmTrigger === "manual_review_update"
             ? "manual re-review"
-            : llmTrigger === "import_classification"
-              ? "import enrichment"
-              : null,
+            : llmTrigger === "manual_resolved_review"
+              ? "resolved re-review"
+              : llmTrigger === "import_classification"
+                ? "import enrichment"
+                : null,
           llmModel,
           llmCompletedAt
             ? new Intl.DateTimeFormat("en-US", {
@@ -717,9 +723,7 @@ export function ReviewStateCell({
           {explanation}
         </span>
       ) : null}
-      {llmReason &&
-      llmReason !== reviewReason &&
-      llmReason !== explanation ? (
+      {llmReason && llmReason !== reviewReason && llmReason !== explanation ? (
         <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
           Latest analyzer: {llmReason}
         </span>

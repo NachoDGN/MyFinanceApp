@@ -1454,6 +1454,15 @@ function normalizeQuantityValue(quantity: string | null | undefined) {
   return value.eq(0) ? null : value.toFixed(8);
 }
 
+function isInvestmentTradeTransaction(
+  transactionClass: Transaction["transactionClass"],
+) {
+  return (
+    transactionClass === "investment_trade_buy" ||
+    transactionClass === "investment_trade_sell"
+  );
+}
+
 function normalizeTradeQuantity(
   transactionClass: Transaction["transactionClass"],
   quantity: string | null | undefined,
@@ -1524,6 +1533,20 @@ function buildQuantityReviewReason(
   }
 
   return `Mapped to ${resolvedSecurity.displaySymbol}, but Twelve Data did not return a usable historical price to derive quantity for "${hint}".`;
+}
+
+function buildUnresolvedSecurityReviewReason(
+  reviewHint: string,
+  resolutionContext: SecurityResolutionContext,
+  apiKeyAvailable: boolean,
+) {
+  if (shouldUseWebResolvedSecurity(resolutionContext)) {
+    return `Security mapping unresolved after analyzer web search for "${reviewHint}".`;
+  }
+  if (apiKeyAvailable) {
+    return `Security mapping unresolved after Twelve Data symbol search for "${reviewHint}".`;
+  }
+  return `Security mapping unresolved for "${reviewHint}".`;
 }
 
 function scoreStoredPriceCandidate(price: SecurityPrice) {
@@ -1680,11 +1703,7 @@ function shouldClearReview(
     return false;
   }
 
-  if (
-    !["investment_trade_buy", "investment_trade_sell"].includes(
-      transaction.transactionClass,
-    )
-  ) {
+  if (!isInvestmentTradeTransaction(transaction.transactionClass)) {
     return false;
   }
 
@@ -1700,6 +1719,102 @@ function shouldClearDeterministicNonTradeReview(
     parsedTransactionClass === transaction.transactionClass &&
     ["interest", "dividend", "fee"].includes(transaction.transactionClass)
   );
+}
+
+type RebuildReviewDecision = {
+  needsReview: boolean;
+  reviewReason: string | null;
+};
+
+function resolveRebuildReviewDecision(input: {
+  transaction: Transaction;
+  parsedTransactionClass: Transaction["transactionClass"];
+  reviewHint: string;
+  resolutionContext: SecurityResolutionContext;
+  resolvedSecurityId: string | null;
+  resolvedSecurity: Security | null;
+  quantity: string | null;
+  marketPriceReviewReason: string | null;
+  apiKeyAvailable: boolean;
+}): RebuildReviewDecision | null {
+  if (input.marketPriceReviewReason) {
+    return {
+      needsReview: true,
+      reviewReason: input.marketPriceReviewReason,
+    };
+  }
+
+  if (
+    shouldClearDeterministicNonTradeReview(
+      input.transaction,
+      input.parsedTransactionClass,
+    ) ||
+    shouldClearReview(
+      input.transaction,
+      input.resolvedSecurityId,
+      input.quantity,
+    )
+  ) {
+    return {
+      needsReview: false,
+      reviewReason: null,
+    };
+  }
+
+  if (
+    isInvestmentTradeTransaction(input.transaction.transactionClass) &&
+    input.resolvedSecurityId &&
+    !input.quantity
+  ) {
+    return {
+      needsReview: true,
+      reviewReason: buildQuantityReviewReason(
+        input.reviewHint,
+        input.resolvedSecurity,
+        input.apiKeyAvailable,
+      ),
+    };
+  }
+
+  if (
+    isInvestmentTradeTransaction(input.transaction.transactionClass) &&
+    !input.resolvedSecurityId &&
+    input.reviewHint
+  ) {
+    return {
+      needsReview: true,
+      reviewReason: buildUnresolvedSecurityReviewReason(
+        input.reviewHint,
+        input.resolutionContext,
+        input.apiKeyAvailable,
+      ),
+    };
+  }
+
+  return null;
+}
+
+function setTransactionReviewState(
+  transaction: Transaction,
+  patch: ResolvedTransactionPatch,
+  decision: RebuildReviewDecision | null,
+) {
+  if (!decision) {
+    return false;
+  }
+
+  if (
+    transaction.needsReview === decision.needsReview &&
+    (transaction.reviewReason ?? null) === decision.reviewReason
+  ) {
+    return false;
+  }
+
+  transaction.needsReview = decision.needsReview;
+  transaction.reviewReason = decision.reviewReason;
+  patch.needsReview = decision.needsReview;
+  patch.reviewReason = decision.reviewReason;
+  return true;
 }
 
 function upsertTransactionPatch(
@@ -1734,6 +1849,51 @@ function categoryCodeForInvestmentClass(
       return "stock_buy";
     default:
       return "uncategorized_investment";
+  }
+}
+
+function applyParsedInvestmentClassificationFallback(
+  transaction: Transaction,
+  parsedTransactionClass: Transaction["transactionClass"],
+) {
+  if (
+    transaction.transactionClass !== "unknown" ||
+    parsedTransactionClass === "unknown"
+  ) {
+    return;
+  }
+
+  transaction.transactionClass = parsedTransactionClass;
+  transaction.categoryCode = categoryCodeForInvestmentClass(parsedTransactionClass);
+  transaction.classificationStatus = "investment_parser";
+  transaction.classificationSource = "investment_parser";
+  transaction.classificationConfidence = "0.96";
+}
+
+function syncConfirmedSecurityAliases(input: {
+  dataset: DomainDataset;
+  insertedAliases: SecurityAlias[];
+  transaction: Transaction;
+  resolvedSecurityId: string | null;
+  resolutionContext: SecurityResolutionContext;
+}) {
+  for (const alias of buildConfirmedSecurityAliases({
+    transaction: input.transaction,
+    resolvedSecurityId: input.resolvedSecurityId,
+    resolutionContext: input.resolutionContext,
+  })) {
+    const alreadyExists = input.dataset.securityAliases.some(
+      (candidate) =>
+        candidate.securityId === alias.securityId &&
+        normalizeSecurityText(candidate.aliasTextNormalized) ===
+          normalizeSecurityText(alias.aliasTextNormalized),
+    );
+    if (alreadyExists) {
+      continue;
+    }
+
+    input.insertedAliases.push(alias);
+    input.dataset.securityAliases.unshift(alias);
   }
 }
 
@@ -1920,7 +2080,7 @@ export async function prepareInvestmentRebuild(
       ),
     );
 
-  for (const transaction of investmentTransactions) {
+  const rebuildInvestmentTransaction = async (transaction: Transaction) => {
     const parsed = parseInvestmentEvent(transaction);
     const originalTransactionClass = transaction.transactionClass;
     const originalCategoryCode = transaction.categoryCode ?? null;
@@ -1930,18 +2090,10 @@ export async function prepareInvestmentRebuild(
       transaction.classificationConfidence;
     const originalQuantity = transaction.quantity ?? null;
     const originalUnitPriceOriginal = transaction.unitPriceOriginal ?? null;
-    if (
-      transaction.transactionClass === "unknown" &&
-      parsed.transactionClass !== "unknown"
-    ) {
-      transaction.transactionClass = parsed.transactionClass;
-      transaction.categoryCode = categoryCodeForInvestmentClass(
-        parsed.transactionClass,
-      );
-      transaction.classificationStatus = "investment_parser";
-      transaction.classificationSource = "investment_parser";
-      transaction.classificationConfidence = "0.96";
-    }
+    applyParsedInvestmentClassificationFallback(
+      transaction,
+      parsed.transactionClass,
+    );
 
     let resolvedSecurityId = transaction.securityId ?? null;
     let quantity = normalizeQuantityValue(
@@ -1964,7 +2116,6 @@ export async function prepareInvestmentRebuild(
           (security) => security.id === resolvedSecurityId,
         ) ?? null)
       : null;
-
     if (
       hint &&
       currentResolvedSecurity &&
@@ -2000,29 +2151,17 @@ export async function prepareInvestmentRebuild(
           (security) => security.id === resolvedSecurityId,
         ) ?? null)
       : null;
-    for (const alias of buildConfirmedSecurityAliases({
+    syncConfirmedSecurityAliases({
+      dataset: workingDataset,
+      insertedAliases,
       transaction,
       resolvedSecurityId,
       resolutionContext,
-    })) {
-      const alreadyExists = workingDataset.securityAliases.some(
-        (candidate) =>
-          candidate.securityId === alias.securityId &&
-          normalizeSecurityText(candidate.aliasTextNormalized) ===
-            normalizeSecurityText(alias.aliasTextNormalized),
-      );
-      if (alreadyExists) {
-        continue;
-      }
+    });
 
-      insertedAliases.push(alias);
-      workingDataset.securityAliases.unshift(alias);
-    }
     const isTrade =
-      resolvedSecurity &&
-      ["investment_trade_buy", "investment_trade_sell"].includes(
-        transaction.transactionClass,
-      );
+      Boolean(resolvedSecurity) &&
+      isInvestmentTradeTransaction(transaction.transactionClass);
     const latestWebResolvedPrice = resolvedSecurity
       ? buildWebResolvedLatestPrice(
           resolvedSecurity,
@@ -2036,8 +2175,7 @@ export async function prepareInvestmentRebuild(
     }
 
     const historicalPrice =
-      isTrade &&
-      resolvedSecurity
+      isTrade && resolvedSecurity
         ? await loadHistoricalPrice(
             resolvedSecurity,
             transaction.transactionDate,
@@ -2061,10 +2199,7 @@ export async function prepareInvestmentRebuild(
       unitPriceOriginal = unitPriceOriginal ?? historicalPrice.price;
     }
 
-    if (
-      transaction.transactionClass === "investment_trade_buy" ||
-      transaction.transactionClass === "investment_trade_sell"
-    ) {
+    if (isInvestmentTradeTransaction(transaction.transactionClass)) {
       quantity = normalizeTradeQuantity(transaction.transactionClass, quantity);
     } else {
       quantity = null;
@@ -2120,6 +2255,7 @@ export async function prepareInvestmentRebuild(
       patch.securityId = resolvedSecurityId;
       changed = true;
     }
+
     const normalizedOriginalQuantity = normalizeQuantityValue(originalQuantity);
     if (
       quantity !== normalizedOriginalQuantity ||
@@ -2145,103 +2281,35 @@ export async function prepareInvestmentRebuild(
     }
 
     const reviewHint = hint ?? parsed.securityHint ?? "trade";
-
-    if (marketPriceReviewReason) {
-      if (
-        transaction.needsReview !== true ||
-        transaction.reviewReason !== marketPriceReviewReason
-      ) {
-        transaction.needsReview = true;
-        transaction.reviewReason = marketPriceReviewReason;
-        patch.needsReview = true;
-        patch.reviewReason = marketPriceReviewReason;
-        changed = true;
-      }
-    } else if (
-      shouldClearDeterministicNonTradeReview(
+    const reviewStateChanged = setTransactionReviewState(
+      transaction,
+      patch,
+      resolveRebuildReviewDecision({
         transaction,
-        parsed.transactionClass,
-      )
-    ) {
-      transaction.needsReview = false;
-      transaction.reviewReason = null;
-      patch.needsReview = false;
-      patch.reviewReason = null;
-      changed = true;
-    } else if (shouldClearReview(transaction, resolvedSecurityId, quantity)) {
-      transaction.needsReview = false;
-      transaction.reviewReason = null;
-      patch.needsReview = false;
-      patch.reviewReason = null;
-      changed = true;
-    } else if (
-      ["investment_trade_buy", "investment_trade_sell"].includes(
-        transaction.transactionClass,
-      ) &&
-      resolvedSecurityId &&
-      !quantity
-    ) {
-      const clearerReason = buildQuantityReviewReason(
+        parsedTransactionClass: parsed.transactionClass,
         reviewHint,
+        resolutionContext,
+        resolvedSecurityId,
         resolvedSecurity,
-        Boolean(apiKey),
-      );
-      if (
-        transaction.needsReview !== true ||
-        transaction.reviewReason !== clearerReason
-      ) {
-        transaction.needsReview = true;
-        transaction.reviewReason = clearerReason;
-        patch.needsReview = true;
-        patch.reviewReason = clearerReason;
-        changed = true;
-      }
-    } else if (
-      ["investment_trade_buy", "investment_trade_sell"].includes(
-        transaction.transactionClass,
-      ) &&
-      !resolvedSecurityId &&
-      reviewHint
-    ) {
-      const clearerReason = shouldUseWebResolvedSecurity(resolutionContext)
-        ? `Security mapping unresolved after analyzer web search for "${reviewHint}".`
-        : apiKey
-          ? `Security mapping unresolved after Twelve Data symbol search for "${reviewHint}".`
-          : `Security mapping unresolved for "${reviewHint}".`;
-      if (transaction.reviewReason !== clearerReason) {
-        transaction.reviewReason = clearerReason;
-        patch.reviewReason = clearerReason;
-        patch.needsReview = true;
-        changed = true;
-      }
-    }
+        quantity,
+        marketPriceReviewReason,
+        apiKeyAvailable: Boolean(apiKey),
+      }),
+    );
+    changed = reviewStateChanged || changed;
 
     if (changed) {
       upsertTransactionPatch(transactionPatches, patch);
     }
-  }
+  };
 
-  for (const transaction of workingDataset.transactions) {
-    const account = workingDataset.accounts.find(
-      (candidate) => candidate.id === transaction.accountId,
-    );
-    if (
-      account?.assetDomain !== "investment" ||
-      transaction.transactionDate > referenceDate ||
-      !["investment_trade_buy", "investment_trade_sell"].includes(
-        transaction.transactionClass,
-      ) ||
-      !transaction.securityId
-    ) {
-      continue;
-    }
-
+  const reconcileTradeMarketPriceReview = async (transaction: Transaction) => {
     const security = workingDataset.securities.find(
       (candidate) => candidate.id === transaction.securityId,
     );
     const normalizedQuantity = normalizeQuantityValue(transaction.quantity);
     if (!security || !normalizedQuantity) {
-      continue;
+      return;
     }
 
     const historicalPrice = await loadHistoricalPrice(
@@ -2257,37 +2325,44 @@ export async function prepareInvestmentRebuild(
       normalizedQuantity,
       historicalPrice,
     );
-
-    if (marketPriceReviewReason) {
-      if (
-        transaction.needsReview !== true ||
-        transaction.reviewReason !== marketPriceReviewReason
-      ) {
-        transaction.needsReview = true;
-        transaction.reviewReason = marketPriceReviewReason;
-        upsertTransactionPatch(transactionPatches, {
-          id: transaction.id,
+    const reviewDecision: RebuildReviewDecision | null = marketPriceReviewReason
+      ? {
           needsReview: true,
           reviewReason: marketPriceReviewReason,
-        });
-      }
+        }
+      : transaction.needsReview &&
+          /diverges from available market data/i.test(
+            transaction.reviewReason ?? "",
+          )
+        ? {
+            needsReview: false,
+            reviewReason: null,
+          }
+        : null;
+    const patch: ResolvedTransactionPatch = { id: transaction.id };
+    if (setTransactionReviewState(transaction, patch, reviewDecision)) {
+      upsertTransactionPatch(transactionPatches, patch);
+    }
+  };
+
+  for (const transaction of investmentTransactions) {
+    await rebuildInvestmentTransaction(transaction);
+  }
+
+  for (const transaction of workingDataset.transactions) {
+    const account = workingDataset.accounts.find(
+      (candidate) => candidate.id === transaction.accountId,
+    );
+    if (
+      account?.assetDomain !== "investment" ||
+      transaction.transactionDate > referenceDate ||
+      !isInvestmentTradeTransaction(transaction.transactionClass) ||
+      !transaction.securityId
+    ) {
       continue;
     }
 
-    if (
-      transaction.needsReview &&
-      /diverges from available market data/i.test(
-        transaction.reviewReason ?? "",
-      )
-    ) {
-      transaction.needsReview = false;
-      transaction.reviewReason = null;
-      upsertTransactionPatch(transactionPatches, {
-        id: transaction.id,
-        needsReview: false,
-        reviewReason: null,
-      });
-    }
+    await reconcileTradeMarketPriceReview(transaction);
   }
 
   if (apiKey) {
@@ -2295,9 +2370,8 @@ export async function prepareInvestmentRebuild(
       workingDataset.transactions
         .filter(
           (transaction) =>
-            ["investment_trade_buy", "investment_trade_sell"].includes(
-              transaction.transactionClass,
-            ) && transaction.securityId,
+            isInvestmentTradeTransaction(transaction.transactionClass) &&
+            transaction.securityId,
         )
         .map((transaction) => transaction.securityId as string),
     );

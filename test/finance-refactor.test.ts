@@ -35,6 +35,7 @@ import {
   buildResolvedSourcePrecedent,
   buildResolvedSourcePropagatedContextEntry,
   buildUnresolvedSourcePropagatedContextEntry,
+  findSimilarResolvedTransactionsByDescriptionEmbedding,
   findSimilarUnresolvedTransactionsByDescriptionEmbedding,
   mergePropagatedContextHistory,
   shouldRunInvestmentRebuildAfterReviewPropagation,
@@ -72,14 +73,14 @@ function createSimilaritySql(
     descriptionEmbedding: string | null;
   }>,
 ) {
-  const sql = (async (
-    strings: TemplateStringsArray,
-    ...values: unknown[]
-  ) => {
+  const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join(" ");
     if (!query.includes("from public.transactions")) {
       throw new Error(`Unexpected SQL query: ${query}`);
     }
+    const matchResolvedTransactions = query.includes(
+      "coalesce(needs_review, false) = false",
+    );
 
     const [
       sourceEmbeddingLiteral,
@@ -97,7 +98,9 @@ function createSimilaritySql(
       .filter((row) => row.userId === userId)
       .filter((row) => row.accountId === accountId)
       .filter((row) => row.id !== sourceTransactionId)
-      .filter((row) => row.needsReview)
+      .filter((row) =>
+        matchResolvedTransactions ? row.needsReview === false : row.needsReview,
+      )
       .filter((row) => row.voidedAt === null)
       .filter((row) => typeof row.descriptionEmbedding === "string")
       .map((row) => ({
@@ -558,6 +561,10 @@ test("investment review routes import and follow-up models separately", () => {
       "gpt-5.4",
     );
     assert.equal(
+      getInvestmentTransactionClassifierConfig("manual_resolved_review").model,
+      "gpt-5.4-mini",
+    );
+    assert.equal(
       getInvestmentTransactionClassifierConfig("review_propagation").model,
       "gpt-5.4",
     );
@@ -570,8 +577,7 @@ test("investment review routes import and follow-up models separately", () => {
     if (previousFollowup === undefined) {
       delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
     } else {
-      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
-        previousFollowup;
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = previousFollowup;
     }
   }
 });
@@ -677,7 +683,8 @@ test("review propagation user context includes resolved instrument evidence from
     llmPayload: {
       llm: {
         rawOutput: {
-          resolved_instrument_name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+          resolved_instrument_name:
+            "Vanguard U.S. 500 Stock Index Fund EUR Acc",
           resolved_instrument_isin: "IE0032126645",
           current_price: 69.39,
           current_price_currency: "EUR",
@@ -700,59 +707,112 @@ test("review propagation user context includes resolved instrument evidence from
 });
 
 test("vector similarity candidate lookup returns same-account unresolved transactions above threshold", async () => {
-  const matches =
-    await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
-      createSimilaritySql([
-        {
-          id: "candidate-high-similarity",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: true,
-          voidedAt: null,
-          descriptionEmbedding: "[1,0]",
-        },
-        {
-          id: "candidate-low-similarity",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: true,
-          voidedAt: null,
-          descriptionEmbedding: "[0.4,0.6]",
-        },
-        {
-          id: "candidate-other-account",
-          userId: "user-1",
-          accountId: "broker-2",
-          needsReview: true,
-          voidedAt: null,
-          descriptionEmbedding: "[1,0]",
-        },
-        {
-          id: "candidate-resolved",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: false,
-          voidedAt: null,
-          descriptionEmbedding: "[1,0]",
-        },
-        {
-          id: "candidate-voided",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: true,
-          voidedAt: "2026-04-01T00:00:00Z",
-          descriptionEmbedding: "[1,0]",
-        },
-      ]),
+  const matches = await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
+    createSimilaritySql([
       {
+        id: "candidate-high-similarity",
         userId: "user-1",
-        sourceTransactionId: "source-1",
         accountId: "broker-1",
-        sourceEmbedding: "[1,0]",
-        threshold: 0.95,
-        limit: 25,
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[1,0]",
       },
-    );
+      {
+        id: "candidate-low-similarity",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[0.4,0.6]",
+      },
+      {
+        id: "candidate-other-account",
+        userId: "user-1",
+        accountId: "broker-2",
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[1,0]",
+      },
+      {
+        id: "candidate-resolved",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: false,
+        voidedAt: null,
+        descriptionEmbedding: "[1,0]",
+      },
+      {
+        id: "candidate-voided",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: true,
+        voidedAt: "2026-04-01T00:00:00Z",
+        descriptionEmbedding: "[1,0]",
+      },
+    ]),
+    {
+      userId: "user-1",
+      sourceTransactionId: "source-1",
+      accountId: "broker-1",
+      sourceEmbedding: "[1,0]",
+      threshold: 0.95,
+      limit: 25,
+    },
+  );
+
+  assert.deepEqual(matches, [
+    {
+      transactionId: "candidate-high-similarity",
+      similarity: 1,
+    },
+  ]);
+});
+
+test("resolved review similarity lookup returns same-account resolved transactions above threshold", async () => {
+  const matches = await findSimilarResolvedTransactionsByDescriptionEmbedding(
+    createSimilaritySql([
+      {
+        id: "candidate-high-similarity",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: false,
+        voidedAt: null,
+        descriptionEmbedding: "[1,0]",
+      },
+      {
+        id: "candidate-still-unresolved",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[1,0]",
+      },
+      {
+        id: "candidate-other-account",
+        userId: "user-1",
+        accountId: "broker-2",
+        needsReview: false,
+        voidedAt: null,
+        descriptionEmbedding: "[1,0]",
+      },
+      {
+        id: "candidate-low-similarity",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: false,
+        voidedAt: null,
+        descriptionEmbedding: "[0.4,0.6]",
+      },
+    ]),
+    {
+      userId: "user-1",
+      sourceTransactionId: "source-1",
+      accountId: "broker-1",
+      sourceEmbedding: "[1,0]",
+      threshold: 0.95,
+      limit: 5,
+    },
+  );
 
   assert.deepEqual(matches, [
     {
@@ -818,16 +878,15 @@ test("default review propagation lookup does not cap unresolved matches at 25", 
     descriptionEmbedding: "[1,0]",
   }));
 
-  const matches =
-    await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
-      createSimilaritySql(rows),
-      {
-        userId: "user-1",
-        sourceTransactionId: "source-1",
-        accountId: "broker-1",
-        sourceEmbedding: "[1,0]",
-      },
-    );
+  const matches = await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
+    createSimilaritySql(rows),
+    {
+      userId: "user-1",
+      sourceTransactionId: "source-1",
+      accountId: "broker-1",
+      sourceEmbedding: "[1,0]",
+    },
+  );
 
   assert.equal(matches.length, 30);
   assert.deepEqual(
@@ -837,43 +896,42 @@ test("default review propagation lookup does not cap unresolved matches at 25", 
 });
 
 test("vector similarity propagation does not filter out buy sell or fee variants when embeddings are close", async () => {
-  const matches =
-    await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
-      createSimilaritySql([
-        {
-          id: "buy-variant",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: true,
-          voidedAt: null,
-          descriptionEmbedding: "[0.99,0.01]",
-        },
-        {
-          id: "sell-variant",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: true,
-          voidedAt: null,
-          descriptionEmbedding: "[0.985,0.015]",
-        },
-        {
-          id: "fee-variant",
-          userId: "user-1",
-          accountId: "broker-1",
-          needsReview: true,
-          voidedAt: null,
-          descriptionEmbedding: "[0.98,0.02]",
-        },
-      ]),
+  const matches = await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
+    createSimilaritySql([
       {
+        id: "buy-variant",
         userId: "user-1",
-        sourceTransactionId: "source-1",
         accountId: "broker-1",
-        sourceEmbedding: "[1,0]",
-        threshold: 0.95,
-        limit: 25,
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[0.99,0.01]",
       },
-    );
+      {
+        id: "sell-variant",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[0.985,0.015]",
+      },
+      {
+        id: "fee-variant",
+        userId: "user-1",
+        accountId: "broker-1",
+        needsReview: true,
+        voidedAt: null,
+        descriptionEmbedding: "[0.98,0.02]",
+      },
+    ]),
+    {
+      userId: "user-1",
+      sourceTransactionId: "source-1",
+      accountId: "broker-1",
+      sourceEmbedding: "[1,0]",
+      threshold: 0.95,
+      limit: 25,
+    },
+  );
 
   assert.deepEqual(
     matches.map((match) => match.transactionId),
@@ -979,13 +1037,18 @@ test("source precedent includes resolution_process and rebuild evidence when qua
   );
 
   assert.equal(precedent.sourceAuditEventId, "audit-source");
-  assert.equal(precedent.finalTransaction.securityId, "security-vanguard-eurozone");
+  assert.equal(
+    precedent.finalTransaction.securityId,
+    "security-vanguard-eurozone",
+  );
   assert.equal(precedent.finalTransaction.quantity, "2.00000000");
   assert.match(precedent.llm.resolutionProcess ?? "", /IE0032126645/);
   assert.equal(
-    (precedent.rebuildEvidence as {
-      quantityDerivedFromHistoricalPrice?: boolean;
-    } | null)?.quantityDerivedFromHistoricalPrice,
+    (
+      precedent.rebuildEvidence as {
+        quantityDerivedFromHistoricalPrice?: boolean;
+      } | null
+    )?.quantityDerivedFromHistoricalPrice,
     true,
   );
 });
@@ -1001,12 +1064,7 @@ test("historical fund NAV lookup prompt prefers official issuer price-history pa
       async generateText() {
         throw new Error("Not used in this test.");
       },
-      async generateJson({
-        systemPrompt,
-        userPrompt,
-        tools,
-        toolChoice,
-      }) {
+      async generateJson({ systemPrompt, userPrompt, tools, toolChoice }) {
         capturedSystemPrompt = systemPrompt;
         capturedUserPrompt = userPrompt;
         capturedTools = tools;
@@ -2866,29 +2924,35 @@ test("investment rebuild derives quantity from stored NAV history for exact fund
     assert.equal(patch?.needsReview, false);
     assert.equal(patch?.reviewReason, null);
     assert.equal(
-      (patch?.rebuildEvidence as {
-        historicalPriceUsed?: {
-          sourceName?: string | null;
-          priceDate?: string | null;
-        } | null;
-        quantityDerivedFromHistoricalPrice?: boolean;
-      } | null)?.historicalPriceUsed?.sourceName,
+      (
+        patch?.rebuildEvidence as {
+          historicalPriceUsed?: {
+            sourceName?: string | null;
+            priceDate?: string | null;
+          } | null;
+          quantityDerivedFromHistoricalPrice?: boolean;
+        } | null
+      )?.historicalPriceUsed?.sourceName,
       "manual_nav_import",
     );
     assert.equal(
-      (patch?.rebuildEvidence as {
-        historicalPriceUsed?: {
-          sourceName?: string | null;
-          priceDate?: string | null;
-        } | null;
-        quantityDerivedFromHistoricalPrice?: boolean;
-      } | null)?.historicalPriceUsed?.priceDate,
+      (
+        patch?.rebuildEvidence as {
+          historicalPriceUsed?: {
+            sourceName?: string | null;
+            priceDate?: string | null;
+          } | null;
+          quantityDerivedFromHistoricalPrice?: boolean;
+        } | null
+      )?.historicalPriceUsed?.priceDate,
       "2026-03-03",
     );
     assert.equal(
-      (patch?.rebuildEvidence as {
-        quantityDerivedFromHistoricalPrice?: boolean;
-      } | null)?.quantityDerivedFromHistoricalPrice,
+      (
+        patch?.rebuildEvidence as {
+          quantityDerivedFromHistoricalPrice?: boolean;
+        } | null
+      )?.quantityDerivedFromHistoricalPrice,
       true,
     );
   } finally {
@@ -3547,7 +3611,8 @@ test("investment review includes portfolio state and can override commission-lik
       tool_choice?: string;
       input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
     };
-    capturedModel = typeof requestBody.model === "string" ? requestBody.model : "";
+    capturedModel =
+      typeof requestBody.model === "string" ? requestBody.model : "";
     capturedTools = Array.isArray(requestBody.tools) ? requestBody.tools : null;
     capturedToolChoice =
       typeof requestBody.tool_choice === "string"
@@ -3668,7 +3733,8 @@ test("investment review includes portfolio state and can override commission-lik
             reviewReason: "Needs user confirmation.",
             llmPayload: {
               model: "gpt-4.1-mini",
-              explanation: "No deterministic classifier matched the imported row.",
+              explanation:
+                "No deterministic classifier matched the imported row.",
               reason: "The row might be interest, but the context is thin.",
             },
           },
@@ -3887,10 +3953,7 @@ test("investment review includes portfolio state and can override commission-lik
       capturedUserPrompt,
       /"descriptionRaw":"ALPHABET INC CL C @ 5"/,
     );
-    assert.doesNotMatch(
-      capturedUserPrompt,
-      /ALPHABET INC CL C PENDING REVIEW/,
-    );
+    assert.doesNotMatch(capturedUserPrompt, /ALPHABET INC CL C PENDING REVIEW/);
     assert.doesNotMatch(
       capturedUserPrompt,
       /ALPHABET INC CL C FROM OTHER ACCOUNT/,
@@ -3899,10 +3962,7 @@ test("investment review includes portfolio state and can override commission-lik
     assert.match(capturedUserPrompt, /"quantity":"45\.00000000"/);
     assert.match(capturedUserPrompt, /"impliedUnitPrice":"0\.13"/);
     assert.match(capturedUserPrompt, /"latestHoldingPrice":"215\.40"/);
-    assert.match(
-      capturedUserPrompt,
-      /Examples from prior user corrections:/,
-    );
+    assert.match(capturedUserPrompt, /Examples from prior user corrections:/);
     assert.match(
       capturedUserPrompt,
       /Example 1 transaction metadata: .*"descriptionRaw":"PERIODO 19\/02\/2026 19\/03\/2026"/,
@@ -3989,6 +4049,186 @@ test("investment review includes portfolio state and can override commission-lik
   }
 });
 
+test("manual resolved review uses gpt-5.4-mini and includes similar resolved embedding context", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousImportModel = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  const previousFollowupModel =
+    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+  const previousResolvedReviewModel =
+    process.env.RESOLVED_TRANSACTION_REVIEW_LLM;
+  const previousFetch = globalThis.fetch;
+  let capturedUserPrompt = "";
+  let capturedModel = "";
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-4.1-mini";
+  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
+  process.env.RESOLVED_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, "https://api.openai.com/v1/responses");
+    const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
+      input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
+    };
+    capturedModel =
+      typeof requestBody.model === "string" ? requestBody.model : "";
+    capturedUserPrompt =
+      requestBody.input?.find((item) => item.role === "user")?.content?.[0]
+        ?.text ?? "";
+
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "investment_trade_buy",
+          category_code: "stock_buy",
+          merchant_normalized: "MyInvestor",
+          counterparty_name: "MyInvestor",
+          economic_entity_override: null,
+          security_hint: "VANGUARD S&P 500 UCITS ETF",
+          resolved_instrument_name:
+            "Vanguard S&P 500 UCITS ETF (USD) Distributing",
+          resolved_instrument_isin: "IE00B3XXRP09",
+          resolved_instrument_ticker: "VUSA",
+          resolved_instrument_exchange: "XLON",
+          current_price: 77.65,
+          current_price_currency: "EUR",
+          current_price_timestamp: "2026-04-04T16:00:00Z",
+          current_price_source: "Official exchange quote",
+          current_price_type: "delayed",
+          resolution_process:
+            "Matched the exact VUSA listing from a similar resolved transaction and confirmed the distributing UCITS ETF share class.",
+          confidence: 0.93,
+          explanation: "This is a Vanguard S&P 500 UCITS ETF purchase.",
+          reason:
+            "A highly similar resolved brokerage transaction points to the exact VUSA listing.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-resolved-review",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "MyInvestor",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "resolved-review-target",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-04-02",
+      postedDate: "2026-04-02",
+      amountOriginal: "-1397.70",
+      amountBaseEur: "-1397.70",
+      currencyOriginal: "EUR",
+      descriptionRaw: "VUSA Vanguard S&P 500 UCITS ETF",
+      descriptionClean: "VUSA VANGUARD S&P 500 UCITS ETF",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.99",
+      needsReview: false,
+      reviewReason: null,
+      securityId: "security-previously-wrong",
+      quantity: "18.00000000",
+      unitPriceOriginal: "77.65000000",
+      llmPayload: {
+        llm: {
+          model: "gpt-5.4",
+          rawOutput: {
+            resolved_instrument_name: "Some previously assumed Vanguard fund",
+          },
+        },
+      },
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    await enrichImportedTransaction(dataset, account, transaction, {
+      trigger: "manual_resolved_review",
+      reviewContext: {
+        userProvidedContext:
+          "This resolved row looks wrong. Reanalyze it from scratch.",
+      },
+      similarAccountTransactions: [
+        {
+          transactionDate: "2026-03-15",
+          postedDate: "2026-03-15",
+          amountOriginal: "-776.50",
+          currencyOriginal: "EUR",
+          descriptionRaw: "VANGUARD S&P 500 UCITS ETF VUSA",
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          merchantNormalized: "MyInvestor",
+          counterpartyName: "MyInvestor",
+          securityId: "security-vusa",
+          quantity: "10.00000000",
+          unitPriceOriginal: "77.65000000",
+          reviewReason: null,
+          similarityScore: "0.99",
+          userProvidedContext:
+            "Confirmed this exact ETF is VUSA on the London listing.",
+          resolvedInstrumentName:
+            "Vanguard S&P 500 UCITS ETF (USD) Distributing",
+          resolvedInstrumentIsin: "IE00B3XXRP09",
+          resolvedInstrumentTicker: "VUSA",
+          resolvedInstrumentExchange: "XLON",
+          currentPrice: 77.65,
+          currentPriceCurrency: "EUR",
+          currentPriceTimestamp: "2026-04-04T16:00:00Z",
+          currentPriceSource: "Official exchange quote",
+          currentPriceType: "delayed",
+          resolutionProcess:
+            "Resolved from the exact VUSA ticker and distributing ETF share class.",
+          model: "gpt-5.4-mini",
+        },
+      ],
+    });
+
+    assert.equal(capturedModel, "gpt-5.4-mini");
+    assert.match(capturedUserPrompt, /Review trigger: manual_resolved_review/);
+    assert.match(capturedUserPrompt, /Similar same-account resolved history:/);
+    assert.match(capturedUserPrompt, /"resolvedInstrumentTicker":"VUSA"/);
+    assert.match(capturedUserPrompt, /"resolvedInstrumentIsin":"IE00B3XXRP09"/);
+    assert.match(
+      capturedUserPrompt,
+      /"userProvidedContext":"Confirmed this exact ETF is VUSA on the London listing\."/,
+    );
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    if (previousImportModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImportModel;
+    }
+    if (previousFollowupModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
+        previousFollowupModel;
+    }
+    if (previousResolvedReviewModel === undefined) {
+      delete process.env.RESOLVED_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.RESOLVED_TRANSACTION_REVIEW_LLM = previousResolvedReviewModel;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test("investment review includes persisted confirmed security mappings from stored aliases", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
@@ -4024,7 +4264,8 @@ test("investment review includes persisted confirmed security mappings from stor
           resolution_process: null,
           confidence: 0.82,
           explanation: "This is a fund purchase.",
-          reason: "A stored confirmed mapping exists for this fund description.",
+          reason:
+            "A stored confirmed mapping exists for this fund description.",
         }),
       }),
       {
@@ -4108,11 +4349,11 @@ test("investment review includes persisted confirmed security mappings from stor
       trigger: "import_classification",
     });
 
+    assert.match(capturedUserPrompt, /Persisted confirmed security mappings:/);
     assert.match(
       capturedUserPrompt,
-      /Persisted confirmed security mappings:/,
+      /"matchedAlias":"VANGUARD US 500 STOCK INDEX EU"/,
     );
-    assert.match(capturedUserPrompt, /"matchedAlias":"VANGUARD US 500 STOCK INDEX EU"/);
     assert.match(capturedUserPrompt, /"isin":"IE0032126645"/);
     assert.match(capturedUserPrompt, /"aliasSource":"manual"/);
   } finally {
@@ -4142,7 +4383,8 @@ test("resolved-source propagation passes full resolved transaction data and llm 
       model?: string;
       input?: Array<{ role?: string; content?: Array<{ text?: string }> }>;
     };
-    capturedModel = typeof requestBody.model === "string" ? requestBody.model : "";
+    capturedModel =
+      typeof requestBody.model === "string" ? requestBody.model : "";
     capturedUserPrompt =
       requestBody.input?.find((item) => item.role === "user")?.content?.[0]
         ?.text ?? "";
@@ -4156,7 +4398,8 @@ test("resolved-source propagation passes full resolved transaction data and llm 
           counterparty_name: null,
           economic_entity_override: null,
           security_hint: "VANGUARD EUROZONE STOCK INDEX",
-          resolved_instrument_name: "Vanguard Eurozone Stock Index Fund EUR Acc",
+          resolved_instrument_name:
+            "Vanguard Eurozone Stock Index Fund EUR Acc",
           resolved_instrument_isin: "IE0032126645",
           resolved_instrument_ticker: null,
           resolved_instrument_exchange: null,
@@ -4167,8 +4410,10 @@ test("resolved-source propagation passes full resolved transaction data and llm 
           current_price_type: "NAV",
           resolution_process: null,
           confidence: 0.62,
-          explanation: "The source precedent helps, but the quantity remains unresolved.",
-          reason: "The description likely refers to the same fund, but the quantity is still missing.",
+          explanation:
+            "The source precedent helps, but the quantity remains unresolved.",
+          reason:
+            "The description likely refers to the same fund, but the quantity is still missing.",
         }),
       }),
       {
@@ -4214,7 +4459,8 @@ test("resolved-source propagation passes full resolved transaction data and llm 
         llm: {
           model: "gpt-5.4-mini",
           explanation: "Resolved the exact fund from the ISIN.",
-          reason: "Exact ISIN match; NAV retrieved from Vanguard official fund page.",
+          reason:
+            "Exact ISIN match; NAV retrieved from Vanguard official fund page.",
           rawOutput: {
             resolution_process:
               "Matched the exact ISIN IE0032126645 from user context, verified the official Vanguard fund page, and confirmed the EUR Acc share class.",
@@ -4303,7 +4549,10 @@ test("resolved-source propagation passes full resolved transaction data and llm 
       capturedUserPrompt,
       /"finalTransaction":\{"transactionClass":"investment_trade_buy","securityId":"security-vanguard-eurozone","quantity":"2\.00000000","unitPriceOriginal":"49\.79000000"/,
     );
-    assert.match(capturedUserPrompt, /"resolutionProcess":"Matched the exact ISIN IE0032126645/);
+    assert.match(
+      capturedUserPrompt,
+      /"resolutionProcess":"Matched the exact ISIN IE0032126645/,
+    );
     assert.match(
       capturedUserPrompt,
       /"rawOutput":\{"resolution_process":"Matched the exact ISIN IE0032126645.*"resolved_instrument_isin":"IE0032126645"/,
@@ -4353,23 +4602,28 @@ test("resolved-source propagation passes full resolved transaction data and llm 
       "resolved-source",
     );
     assert.equal(
-      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction?.securityId,
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction
+        ?.securityId,
       "security-vanguard-eurozone",
     );
     assert.equal(
-      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction?.quantity,
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction
+        ?.quantity,
       "2.00000000",
     );
     assert.equal(
-      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction?.unitPriceOriginal,
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction
+        ?.unitPriceOriginal,
       "49.79000000",
     );
     assert.equal(
-      llmPayload.reviewContext?.resolvedSourcePrecedent?.llm?.rawOutput?.resolved_instrument_isin,
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.llm?.rawOutput
+        ?.resolved_instrument_isin,
       "IE0032126645",
     );
     assert.equal(
-      llmPayload.reviewContext?.resolvedSourcePrecedent?.rebuildEvidence?.quantityDerivedFromHistoricalPrice,
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.rebuildEvidence
+        ?.quantityDerivedFromHistoricalPrice,
       true,
     );
     assert.equal(
@@ -4721,7 +4975,8 @@ test("transaction enrichment request schema keeps nullable quantity fields requi
           security_hint: "EMERGING MARKETS STOCK EUR ACC",
           quantity: null,
           unit_price_original: null,
-          resolved_instrument_name: "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+          resolved_instrument_name:
+            "Vanguard Emerging Markets Stock Index Fund EUR Acc",
           resolved_instrument_isin: "IE0031786696",
           resolved_instrument_ticker: null,
           resolved_instrument_exchange: null,
@@ -4794,10 +5049,9 @@ test("transaction enrichment request schema keeps nullable quantity fields requi
     );
 
     assert.equal(result.analysisStatus, "done");
-    const format = (
+    const format =
       (capturedBody?.text as { format?: { schema?: { required?: unknown } } })
-        ?.format ?? null
-    );
+        ?.format ?? null;
     const required = Array.isArray(format?.schema?.required)
       ? format.schema.required
       : [];

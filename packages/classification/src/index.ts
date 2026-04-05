@@ -270,7 +270,7 @@ export function parseInvestmentEvent(transaction: Transaction): {
       quantity:
         quantity === "0"
           ? undefined
-          : normalizeTradeQuantity(transactionClass, quantity) ?? undefined,
+          : (normalizeTradeQuantity(transactionClass, quantity) ?? undefined),
       securityHint,
       unitPriceOriginal,
     };
@@ -278,9 +278,7 @@ export function parseInvestmentEvent(transaction: Transaction): {
 
   if (buyMatch) {
     const transactionClass =
-      buyMatch[1] === "BUY"
-        ? "investment_trade_buy"
-        : "investment_trade_sell";
+      buyMatch[1] === "BUY" ? "investment_trade_buy" : "investment_trade_sell";
     return {
       transactionClass,
       quantity:
@@ -403,13 +401,44 @@ export interface TransactionReviewContextInput {
   persistedSecurityMappings?: unknown[];
 }
 
+export interface SimilarAccountTransactionPromptContext {
+  transactionDate: string;
+  postedDate: string | null;
+  amountOriginal: string;
+  currencyOriginal: string;
+  descriptionRaw: string;
+  transactionClass: string;
+  categoryCode: string | null;
+  merchantNormalized: string | null;
+  counterpartyName: string | null;
+  securityId: string | null;
+  quantity: string | null;
+  unitPriceOriginal: string | null;
+  reviewReason: string | null;
+  similarityScore: string;
+  userProvidedContext?: string | null;
+  resolvedInstrumentName?: string | null;
+  resolvedInstrumentIsin?: string | null;
+  resolvedInstrumentTicker?: string | null;
+  resolvedInstrumentExchange?: string | null;
+  currentPrice?: number | null;
+  currentPriceCurrency?: string | null;
+  currentPriceTimestamp?: string | null;
+  currentPriceSource?: string | null;
+  currentPriceType?: string | null;
+  resolutionProcess?: string | null;
+  model?: string | null;
+}
+
 export interface TransactionEnrichmentOptions {
   trigger?:
     | "import_classification"
     | "manual_review_update"
+    | "manual_resolved_review"
     | "review_propagation";
   reviewContext?: TransactionReviewContextInput;
   promptOverrides?: PromptProfileOverrides;
+  similarAccountTransactions?: SimilarAccountTransactionPromptContext[];
 }
 
 type TransactionEnrichmentTrigger = NonNullable<
@@ -474,8 +503,7 @@ export interface SimilarAccountTransactionMatch {
   score: number;
 }
 
-export interface ReviewPropagationTransactionMatch
-  extends SimilarAccountTransactionMatch {
+export interface ReviewPropagationTransactionMatch extends SimilarAccountTransactionMatch {
   semanticSimilarity: number | null;
   lexicalScore: number;
   exactMatch: boolean;
@@ -599,7 +627,10 @@ function tokenizePromptText(value: string | null | undefined) {
 }
 
 export function getReviewPropagationEmbeddingModel() {
-  return process.env.REVIEW_PROPAGATION_EMBEDDING_MODEL?.trim() || "gemini-embedding-001";
+  return (
+    process.env.REVIEW_PROPAGATION_EMBEDDING_MODEL?.trim() ||
+    "gemini-embedding-001"
+  );
 }
 
 export function normalizeInvestmentMatchingText(
@@ -641,14 +672,18 @@ function tokenizeInvestmentMatchingText(
     normalized
       .split(/[^A-Z0-9]+/)
       .filter((token) => token.length >= 2)
-      .filter((token) => (options.distinctiveOnly ? !stopwords.has(token) : true)),
+      .filter((token) =>
+        options.distinctiveOnly ? !stopwords.has(token) : true,
+      ),
   );
 }
 
 function extractIsinFromText(...values: Array<string | null | undefined>) {
   const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}\d\b/i;
   for (const value of values) {
-    const match = String(value ?? "").toUpperCase().match(isinPattern);
+    const match = String(value ?? "")
+      .toUpperCase()
+      .match(isinPattern);
     if (match?.[0]) {
       return match[0].replace(/\s+/g, "").toUpperCase();
     }
@@ -731,15 +766,18 @@ function buildReviewPropagationEvidence(transaction: Transaction) {
   );
   const exactIsin = extractTransactionIsinEvidence(transaction);
   const explicitEtf =
-    /\bETF\b/.test(combinedText) && !/\bNOT AN ETF\b|\bNOT ETF\b/.test(combinedText);
-  const explicitMutualFund =
-    /\b(MUTUAL FUND|INDEX FUND|OEIC|NAV)\b/.test(combinedText);
+    /\bETF\b/.test(combinedText) &&
+    !/\bNOT AN ETF\b|\bNOT ETF\b/.test(combinedText);
+  const explicitMutualFund = /\b(MUTUAL FUND|INDEX FUND|OEIC|NAV)\b/.test(
+    combinedText,
+  );
 
   return {
     normalizedDescription,
     allTokens,
     distinctiveTokens,
-    embeddingText: normalizedDescription || normalizeInvestmentMatchingText(contextText),
+    embeddingText:
+      normalizedDescription || normalizeInvestmentMatchingText(contextText),
     exactIsin,
     explicitEtf,
     explicitMutualFund,
@@ -766,7 +804,10 @@ function extractHistoricalReviewExample(
       typeof afterReviewContext?.userProvidedContext === "string"
         ? afterReviewContext.userProvidedContext
         : null,
-    ) ?? normalizeOptionalText(typeof after.manualNotes === "string" ? after.manualNotes : null);
+    ) ??
+    normalizeOptionalText(
+      typeof after.manualNotes === "string" ? after.manualNotes : null,
+    );
   if (!userFeedback) {
     return null;
   }
@@ -774,8 +815,12 @@ function extractHistoricalReviewExample(
   const beforeLlmPayload = readOptionalRecord(before.llmPayload);
   const beforeLlm = readOptionalRecord(beforeLlmPayload?.llm);
   const afterAccountId =
-    normalizeOptionalText(typeof after.accountId === "string" ? after.accountId : null) ??
-    normalizeOptionalText(typeof before.accountId === "string" ? before.accountId : null);
+    normalizeOptionalText(
+      typeof after.accountId === "string" ? after.accountId : null,
+    ) ??
+    normalizeOptionalText(
+      typeof before.accountId === "string" ? before.accountId : null,
+    );
 
   return {
     auditEventId: auditEvent.id,
@@ -783,23 +828,33 @@ function extractHistoricalReviewExample(
     createdAt: auditEvent.createdAt,
     accountId: afterAccountId,
     institutionName: normalizeOptionalText(
-      typeof after.counterpartyName === "string" ? after.counterpartyName : null,
+      typeof after.counterpartyName === "string"
+        ? after.counterpartyName
+        : null,
     ),
     transaction: {
       transactionDate: normalizeOptionalText(
-        typeof before.transactionDate === "string" ? before.transactionDate : null,
+        typeof before.transactionDate === "string"
+          ? before.transactionDate
+          : null,
       ),
       postedDate: normalizeOptionalText(
         typeof before.postedDate === "string" ? before.postedDate : null,
       ),
       amountOriginal: normalizeOptionalText(
-        typeof before.amountOriginal === "string" ? before.amountOriginal : null,
+        typeof before.amountOriginal === "string"
+          ? before.amountOriginal
+          : null,
       ),
       currencyOriginal: normalizeOptionalText(
-        typeof before.currencyOriginal === "string" ? before.currencyOriginal : null,
+        typeof before.currencyOriginal === "string"
+          ? before.currencyOriginal
+          : null,
       ),
       descriptionRaw: normalizeOptionalText(
-        typeof before.descriptionRaw === "string" ? before.descriptionRaw : null,
+        typeof before.descriptionRaw === "string"
+          ? before.descriptionRaw
+          : null,
       ),
       merchantNormalized: normalizeOptionalText(
         typeof before.merchantNormalized === "string"
@@ -807,7 +862,9 @@ function extractHistoricalReviewExample(
           : null,
       ),
       counterpartyName: normalizeOptionalText(
-        typeof before.counterpartyName === "string" ? before.counterpartyName : null,
+        typeof before.counterpartyName === "string"
+          ? before.counterpartyName
+          : null,
       ),
       securityId: normalizeOptionalText(
         typeof before.securityId === "string" ? before.securityId : null,
@@ -823,7 +880,9 @@ function extractHistoricalReviewExample(
     },
     initialInference: {
       transactionClass: normalizeOptionalText(
-        typeof before.transactionClass === "string" ? before.transactionClass : null,
+        typeof before.transactionClass === "string"
+          ? before.transactionClass
+          : null,
       ),
       categoryCode: normalizeOptionalText(
         typeof before.categoryCode === "string" ? before.categoryCode : null,
@@ -852,7 +911,9 @@ function extractHistoricalReviewExample(
           typeof beforeLlm?.model === "string" ? beforeLlm.model : null,
         ) ??
         normalizeOptionalText(
-          typeof beforeLlmPayload?.model === "string" ? beforeLlmPayload.model : null,
+          typeof beforeLlmPayload?.model === "string"
+            ? beforeLlmPayload.model
+            : null,
         ),
       explanation:
         normalizeOptionalText(
@@ -878,7 +939,9 @@ function extractHistoricalReviewExample(
     userFeedback,
     correctedOutcome: {
       transactionClass: normalizeOptionalText(
-        typeof after.transactionClass === "string" ? after.transactionClass : null,
+        typeof after.transactionClass === "string"
+          ? after.transactionClass
+          : null,
       ),
       categoryCode: normalizeOptionalText(
         typeof after.categoryCode === "string" ? after.categoryCode : null,
@@ -889,7 +952,9 @@ function extractHistoricalReviewExample(
           : null,
       ),
       counterpartyName: normalizeOptionalText(
-        typeof after.counterpartyName === "string" ? after.counterpartyName : null,
+        typeof after.counterpartyName === "string"
+          ? after.counterpartyName
+          : null,
       ),
       quantity: normalizeOptionalText(
         typeof after.quantity === "string" ? after.quantity : null,
@@ -912,7 +977,9 @@ function buildHistoricalReviewExamples(
   transaction: Transaction,
   limit = 5,
 ) {
-  const accountById = new Map(dataset.accounts.map((candidate) => [candidate.id, candidate]));
+  const accountById = new Map(
+    dataset.accounts.map((candidate) => [candidate.id, candidate]),
+  );
   const targetTokens = tokenizePromptText(transaction.descriptionRaw);
 
   return dataset.auditEvents
@@ -927,8 +994,12 @@ function buildHistoricalReviewExamples(
       return exampleAccount?.assetDomain === account.assetDomain;
     })
     .sort((left, right) => {
-      const leftAccount = left.accountId ? accountById.get(left.accountId) : null;
-      const rightAccount = right.accountId ? accountById.get(right.accountId) : null;
+      const leftAccount = left.accountId
+        ? accountById.get(left.accountId)
+        : null;
+      const rightAccount = right.accountId
+        ? accountById.get(right.accountId)
+        : null;
 
       const scoreExample = (
         example: HistoricalReviewExample,
@@ -938,10 +1009,15 @@ function buildHistoricalReviewExamples(
         if (exampleAccount?.institutionName === account.institutionName) {
           score += 20;
         }
-        if (transaction.securityId && example.transaction.securityId === transaction.securityId) {
+        if (
+          transaction.securityId &&
+          example.transaction.securityId === transaction.securityId
+        ) {
           score += 30;
         }
-        const exampleTokens = tokenizePromptText(example.transaction.descriptionRaw);
+        const exampleTokens = tokenizePromptText(
+          example.transaction.descriptionRaw,
+        );
         for (const token of targetTokens) {
           if (exampleTokens.has(token)) {
             score += 2;
@@ -1096,7 +1172,9 @@ export async function rankReviewPropagationTransactions(
     )
     .filter((candidate) => {
       const candidateSign = Math.sign(Number(candidate.amountOriginal));
-      return candidateSign === 0 || sourceSign === 0 || candidateSign === sourceSign;
+      return (
+        candidateSign === 0 || sourceSign === 0 || candidateSign === sourceSign
+      );
     })
     .filter((candidate) => {
       if (
@@ -1391,7 +1469,9 @@ function buildInvestmentPortfolioState(
   const quantity = Number(normalizedTradeQuantity ?? 0);
   const impliedUnitPrice =
     Number.isFinite(quantity) && Math.abs(quantity) > 0
-      ? (Math.abs(Number(transaction.amountOriginal)) / Math.abs(quantity)).toFixed(2)
+      ? (
+          Math.abs(Number(transaction.amountOriginal)) / Math.abs(quantity)
+        ).toFixed(2)
       : null;
   const latestHoldingPrice = matchedHolding?.currentPrice ?? null;
   const sameCurrency =
@@ -1478,8 +1558,9 @@ function buildPersistedInvestmentSecurityMappings(
     }
 
     const security =
-      dataset.securities.find((candidate) => candidate.id === alias.securityId) ??
-      null;
+      dataset.securities.find(
+        (candidate) => candidate.id === alias.securityId,
+      ) ?? null;
     if (!security || seenSecurityIds.has(security.id)) {
       continue;
     }
@@ -1653,15 +1734,22 @@ export function getTransactionClassifierConfig() {
   };
 }
 
+function getResolvedTransactionReviewModel() {
+  return process.env.RESOLVED_TRANSACTION_REVIEW_LLM?.trim() || "gpt-5.4-mini";
+}
+
 export function getInvestmentTransactionClassifierConfig(
   trigger?: TransactionEnrichmentOptions["trigger"],
 ) {
   const base = getTransactionClassifierConfig();
-  const model = isFollowupInvestmentReviewTrigger(trigger)
-    ? (process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM?.trim() ||
-        process.env.INVESTMENT_TRANSACTION_MANUAL_REVIEW_LLM?.trim() ||
-        "gpt-5.4")
-    : (process.env.INVESTMENT_TRANSACTION_REVIEW_LLM ?? "gpt-5.4-mini");
+  const model =
+    trigger === "manual_resolved_review"
+      ? getResolvedTransactionReviewModel()
+      : isFollowupInvestmentReviewTrigger(trigger)
+        ? process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM?.trim() ||
+          process.env.INVESTMENT_TRANSACTION_MANUAL_REVIEW_LLM?.trim() ||
+          "gpt-5.4"
+        : (process.env.INVESTMENT_TRANSACTION_REVIEW_LLM ?? "gpt-5.4-mini");
   return {
     ...base,
     model,
@@ -1671,15 +1759,26 @@ export function getInvestmentTransactionClassifierConfig(
 function isFollowupInvestmentReviewTrigger(
   trigger?: TransactionEnrichmentOptions["trigger"],
 ): trigger is Exclude<TransactionEnrichmentTrigger, "import_classification"> {
-  return (
-    trigger === "manual_review_update" || trigger === "review_propagation"
-  );
+  return trigger === "manual_review_update" || trigger === "review_propagation";
 }
 
 function getInvestmentReviewModel(
   trigger?: TransactionEnrichmentOptions["trigger"],
 ) {
   return getInvestmentTransactionClassifierConfig(trigger).model;
+}
+
+function getTransactionReviewModel(
+  account: Account,
+  trigger?: TransactionEnrichmentOptions["trigger"],
+) {
+  if (trigger === "manual_resolved_review") {
+    return getResolvedTransactionReviewModel();
+  }
+
+  return account.assetDomain === "investment"
+    ? getInvestmentReviewModel(trigger)
+    : getTransactionClassifierConfig().model;
 }
 
 export function isTransactionClassifierConfigured() {
@@ -1724,26 +1823,35 @@ async function requestLlmClassification(
     transaction,
     deterministic,
   );
-  const { model } =
-    account.assetDomain === "investment"
-      ? { model: getInvestmentReviewModel(options?.trigger) }
-      : getTransactionClassifierConfig();
+  const model = getTransactionReviewModel(account, options?.trigger);
   const reviewExamples = buildHistoricalReviewExamples(
     dataset,
     account,
     transaction,
   );
-  const similarAccountTransactions = rankSimilarAccountTransactions(
-    dataset,
-    account,
-    transaction,
-    {
+  const similarAccountTransactions =
+    options?.similarAccountTransactions ??
+    rankSimilarAccountTransactions(dataset, account, transaction, {
       limit: 5,
       minScore: 6,
       includeNeedsReview: false,
       requireEarlierDate: true,
-    },
-  );
+    }).map((match) => ({
+      transactionDate: match.transaction.transactionDate,
+      postedDate: match.transaction.postedDate ?? null,
+      amountOriginal: match.transaction.amountOriginal,
+      currencyOriginal: match.transaction.currencyOriginal,
+      descriptionRaw: match.transaction.descriptionRaw,
+      transactionClass: match.transaction.transactionClass,
+      categoryCode: match.transaction.categoryCode ?? null,
+      merchantNormalized: match.transaction.merchantNormalized ?? null,
+      counterpartyName: match.transaction.counterpartyName ?? null,
+      securityId: match.transaction.securityId ?? null,
+      quantity: match.transaction.quantity ?? null,
+      unitPriceOriginal: match.transaction.unitPriceOriginal ?? null,
+      reviewReason: match.transaction.reviewReason ?? null,
+      similarityScore: match.score.toFixed(2),
+    }));
   const requestedAt = new Date().toISOString();
   if (!isModelConfigured(model)) {
     const completedAt = new Date().toISOString();
@@ -1817,22 +1925,7 @@ async function requestLlmClassification(
         transaction,
         deterministic,
       ),
-      similarAccountTransactions: similarAccountTransactions.map((match) => ({
-        transactionDate: match.transaction.transactionDate,
-        postedDate: match.transaction.postedDate ?? null,
-        amountOriginal: match.transaction.amountOriginal,
-        currencyOriginal: match.transaction.currencyOriginal,
-        descriptionRaw: match.transaction.descriptionRaw,
-        transactionClass: match.transaction.transactionClass,
-        categoryCode: match.transaction.categoryCode ?? null,
-        merchantNormalized: match.transaction.merchantNormalized ?? null,
-        counterpartyName: match.transaction.counterpartyName ?? null,
-        securityId: match.transaction.securityId ?? null,
-        quantity: match.transaction.quantity ?? null,
-        unitPriceOriginal: match.transaction.unitPriceOriginal ?? null,
-        reviewReason: match.transaction.reviewReason ?? null,
-        similarityScore: match.score.toFixed(2),
-      })),
+      similarAccountTransactions,
       reviewExamples: reviewExamples.map((example) => ({
         transaction: example.transaction,
         initialInference: example.initialInference,
@@ -1859,7 +1952,10 @@ async function requestLlmClassification(
           options?.reviewContext?.userProvidedContext ?? null,
         previousLlmPayload:
           options?.reviewContext?.previousLlmPayload ??
-          (transaction.llmPayload as Record<string, unknown> | null | undefined) ??
+          (transaction.llmPayload as
+            | Record<string, unknown>
+            | null
+            | undefined) ??
           null,
         propagatedContexts:
           options?.reviewContext?.propagatedContexts ??

@@ -75,6 +75,7 @@ export function ReviewEditorCell({
   const [isRefreshing, startRefresh] = useTransition();
 
   const trimmedDraft = draft.trim();
+  const isResolvedReview = !needsReview;
 
   const formatChangedField = (field: string) =>
     ({
@@ -126,15 +127,15 @@ export function ReviewEditorCell({
           cache: "no-store",
         });
         if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as
-            | { error?: string }
-            | null;
+          const payload = (await response.json().catch(() => null)) as {
+            error?: string;
+          } | null;
           throw new Error(payload?.error || "Review job lookup failed.");
         }
 
-        const payload = (await response.json().catch(() => null)) as
-          | ReviewJobStatusPayload
-          | null;
+        const payload = (await response
+          .json()
+          .catch(() => null)) as ReviewJobStatusPayload | null;
         if (cancelled || !payload?.status) {
           return;
         }
@@ -163,13 +164,21 @@ export function ReviewEditorCell({
           setActiveJobStatus(null);
           setActiveJobCreatedAt(null);
           setActiveJobProgressMessage(null);
-          const changedFields = Array.isArray(payload.payloadJson?.changedFields)
+          const changedFields = Array.isArray(
+            payload.payloadJson?.changedFields,
+          )
             ? payload.payloadJson.changedFields
             : [];
           if (!payload.payloadJson?.changed && changedFields.length === 0) {
-            setFeedback("Transaction re-reviewed. No visible changes were applied.");
+            setFeedback(
+              "Transaction re-reviewed. No visible changes were applied.",
+            );
           } else if (payload.payloadJson?.transaction?.needsReview === false) {
-            setFeedback("Transaction re-reviewed and resolved.");
+            setFeedback(
+              isResolvedReview
+                ? "Resolved transaction re-reviewed."
+                : "Transaction re-reviewed and resolved.",
+            );
           } else {
             setFeedback(
               `Transaction re-reviewed. Updated ${changedFields
@@ -213,9 +222,7 @@ export function ReviewEditorCell({
           return;
         }
         setFeedback(
-          error instanceof Error
-            ? error.message
-            : "Review job polling failed.",
+          error instanceof Error ? error.message : "Review job polling failed.",
         );
         setActiveJobStatus(null);
         setActiveJobCreatedAt(null);
@@ -232,7 +239,7 @@ export function ReviewEditorCell({
         clearTimeout(timeoutId);
       }
     };
-  }, [activeJobId, router, startRefresh]);
+  }, [activeJobId, isResolvedReview, router, startRefresh]);
 
   async function handleUpdate() {
     if (!trimmedDraft) {
@@ -243,43 +250,42 @@ export function ReviewEditorCell({
     setFeedback(null);
     setIsSubmitting(true);
     try {
-      const response = await fetch(`/api/transactions/${transactionId}/review`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      const response = await fetch(
+        `/api/transactions/${transactionId}/review`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            reviewContext: trimmedDraft,
+          }),
         },
-        body: JSON.stringify({
-          reviewContext: trimmedDraft,
-        }),
-      });
+      );
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null;
+        const payload = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(payload?.error || "Review update failed.");
       }
 
-      const payload = (await response.json().catch(() => null)) as
-        | {
-            queued?: boolean;
-            jobId?: string;
-            status?: string;
-          }
-        | null;
+      const payload = (await response.json().catch(() => null)) as {
+        queued?: boolean;
+        jobId?: string;
+        status?: string;
+      } | null;
       if (!payload?.jobId) {
         throw new Error("Review job was queued without a job id.");
       }
 
       setActiveJobId(payload.jobId);
-      setActiveJobStatus(
-        payload.status === "running" ? "running" : "queued",
-      );
+      setActiveJobStatus(payload.status === "running" ? "running" : "queued");
       setActiveJobCreatedAt(null);
       setActiveJobProgressMessage(null);
       setFeedback(
         payload.queued === false
-          ? "Review already queued. Waiting for the worker to finish."
-          : "Review queued. Waiting for the worker to finish.",
+          ? `${isResolvedReview ? "Resolved review" : "Review"} already queued. Waiting for the worker to finish.`
+          : `${isResolvedReview ? "Resolved review" : "Review"} queued. Waiting for the worker to finish.`,
       );
     } catch (error) {
       setFeedback(
@@ -297,12 +303,12 @@ export function ReviewEditorCell({
       : 0;
   const progressMessage =
     activeJobStatus === "queued"
-      ? activeJobProgressMessage ??
+      ? (activeJobProgressMessage ??
         (queuedForMs >= WORKER_QUEUE_WARNING_MS
           ? "Queued for a while. The worker may not be running yet."
-          : "Queued. Waiting for the worker to pick it up.")
+          : "Queued. Waiting for the worker to pick it up."))
       : activeJobStatus === "running"
-        ? activeJobProgressMessage ?? "Running analyzer and rebuild steps."
+        ? (activeJobProgressMessage ?? "Running analyzer and rebuild steps.")
         : null;
 
   return (
@@ -322,9 +328,11 @@ export function ReviewEditorCell({
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         placeholder={
-          reviewReason
-            ? `Explain the correction. Current review: ${reviewReason}`
-            : "Add context for the next LLM review."
+          isResolvedReview
+            ? "Explain why this resolved transaction should be reanalyzed from scratch."
+            : reviewReason
+              ? `Explain the correction. Current review: ${reviewReason}`
+              : "Add context for the next LLM review."
         }
         style={{ minWidth: 260 }}
       />
@@ -341,7 +349,9 @@ export function ReviewEditorCell({
             ? "Queueing…"
             : activeJobId
               ? "Updating…"
-              : "Update"}
+              : isResolvedReview
+                ? "Reanalyze"
+                : "Update"}
         </button>
         {feedback ? (
           <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>

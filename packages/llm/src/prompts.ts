@@ -25,8 +25,10 @@ export interface PromptProfileDefinition {
   editableSections: PromptSectionDefinition[];
 }
 
-export interface PromptProfileResolvedSection
-  extends Omit<PromptSectionDefinition, "defaultValue"> {
+export interface PromptProfileResolvedSection extends Omit<
+  PromptSectionDefinition,
+  "defaultValue"
+> {
   value: string;
 }
 
@@ -97,7 +99,10 @@ const reviewContextPlaceholders = [
   "resolved_source_precedent",
 ] as const;
 
-const spreadsheetTableStartPlaceholders = ["file_kind", "sheet_previews_block"] as const;
+const spreadsheetTableStartPlaceholders = [
+  "file_kind",
+  "sheet_previews_block",
+] as const;
 const spreadsheetTableStartPreviewPlaceholders = [
   "sheet_index",
   "sheet_name",
@@ -147,6 +152,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Do not claim that quantity or price was derived from a later rebuild step unless that derivation is explicitly present in the transaction input.",
           "Never invent merchants, counterparties, or categories.",
           "When similar same-account history is provided, use it as supporting precedent rather than a hard rule.",
+          "When the review trigger is manual_resolved_review, treat it as a clean reanalysis of a previously resolved transaction and do not anchor on any prior inferred structured fields unless the current review context explicitly reintroduces them.",
         ].join(" "),
         requiredPlaceholders: [],
       },
@@ -252,6 +258,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "When persisted security mappings from prior confirmed resolutions are provided, treat them as the strongest internal precedent, but only reuse them when the current transaction wording and context are consistent with that mapping.",
           "Use the latest portfolio snapshot when provided to sanity-check whether the row can realistically be a buy, sell, or fee.",
           "When similar same-account history is provided, use it as supporting precedent rather than a hard rule.",
+          "When the review trigger is manual_resolved_review, treat it as a clean reanalysis of a previously resolved transaction and do not anchor on any prior inferred structured fields unless the current review context explicitly reintroduces them.",
           "Broker commissions can mention a security name and quantity without being a real disposal.",
           "If a positive row implies a per-share price that is far below the latest quote for a still-held security, classify it as fee instead of investment_trade_sell unless the row clearly states a real sale.",
           "You are a financial instrument identification expert. When you receive a partial asset name or description, do not provide a single best-guess ISIN or ticker unless the identification is totally clear.",
@@ -267,7 +274,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "When you have an exact or near-exact resolution, populate the structured fields explicitly instead of leaving them only in explanation or reason. Put the exact fund or ETF name in resolved_instrument_name, the identifier in resolved_instrument_isin or the relevant ticker and exchange fields, and the retrieved quote or NAV in current_price, current_price_currency, current_price_timestamp, current_price_source, and current_price_type whenever those values are known.",
           "For mutual funds and non-exchange-traded index funds, use an explicit two-step workflow: first resolve identity, then stop at the exact ISIN and share class. When an exact ISIN is present, treat it as definitive for identity resolution and query issuer-originated pages, factsheets, product pages, KIIDs/KIDs, and regulator-grade listings that explicitly mention that ISIN to lock the exact fund and share class. Leave quantity and unit_price_original null unless the input or review context already provides exact trade-date NAV or share count. You may return a latest published NAV in the current_price fields when confidently available, but do not search the web for the transaction-date NAV because rebuild derives that from internal price history.",
           "When searching the internet, follow a disciplined sequence. Start with the exact raw description in quotes. Then search a normalized form of the description. Then search combinations of issuer name, index phrase, and likely security terms such as ETF, fund, mutual fund, index fund, tracker, OEIC, UCITS, Acc, Inc, distributing, accumulating, Class A, Class C, institutional, investor, Admiral, and exchange-specific tickers. Prefer official issuer pages, prospectuses, factsheets, KIIDs/KIDs, exchange listings, and regulator filings. Use secondary market-data sites only as cross-checks or when official sources do not provide the needed quote. Ignore low-quality pages, discussion forums, and pages that only repeat index wording without identifying a specific tradable product.",
-          "Be especially careful with transactions that mention only a brand plus an index phrase, such as \"VANGUARD GLOB SMALL CAP INDEX.\" That kind of text often narrows the strategy but not the exact product. In those cases, search for all official funds under that issuer that plausibly match the phrase, then eliminate candidates using share class, domicile, currency, listing, trade-date existence, implied trade price, broker availability, and jurisdiction. Do not collapse multiple plausible funds into a single answer without disambiguating evidence.",
+          'Be especially careful with transactions that mention only a brand plus an index phrase, such as "VANGUARD GLOB SMALL CAP INDEX." That kind of text often narrows the strategy but not the exact product. In those cases, search for all official funds under that issuer that plausibly match the phrase, then eliminate candidates using share class, domicile, currency, listing, trade-date existence, implied trade price, broker availability, and jurisdiction. Do not collapse multiple plausible funds into a single answer without disambiguating evidence.',
           "For cross-listed ETFs, remember that one fund may have multiple tickers across multiple exchanges and currencies. Use ISIN to identify the underlying instrument, then use ticker plus exchange to identify the correct listing for pricing. Select the listing most consistent with transaction currency, broker region, and user jurisdiction. Do not price a USD listing when the transaction strongly suggests a GBP or EUR listing unless the evidence clearly shows a foreign-currency trade.",
           "Only call a match exact when the transaction can be tied to a specific tradable instrument with strong evidence. Strong evidence means either one unique identifier, such as ISIN, CUSIP, SEDOL, or ticker plus exchange, or at least two independent non-unique clues that converge on the same security, such as issuer plus exact official fund name, or issuer plus index phrase plus matching share class and currency, or issuer plus index phrase plus trade-date price consistency. If you cannot isolate a single exact instrument, do not guess. Mark the result as ambiguous or probable and return the best candidates with reasons.",
           "After, and only after, you have identified the exact instrument, retrieve its current price. For exchange-traded funds, return the most recent market quote and specify whether it is live, delayed, or last close. For mutual funds and non-exchange-traded index funds, return the latest published NAV, not an ETF-style market quote. Always return the quote currency, timestamp, pricing source, and price type. If the match is not exact, set current_price to null. If the exact instrument is known but a reliable current quote or NAV cannot be retrieved from a credible source, set current_price to null rather than estimating.",
@@ -374,8 +381,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
       {
         id: "user_prompt_template",
         label: "User Prompt Template",
-        description:
-          "Workbook preview wrapper. Keep every placeholder token.",
+        description: "Workbook preview wrapper. Keep every placeholder token.",
         defaultValue: [
           "File kind: {{file_kind}}.",
           "Workbook previews:",
@@ -386,8 +392,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
       {
         id: "sheet_preview_template",
         label: "Sheet Preview Template",
-        description:
-          "How each sheet preview is rendered inside the prompt.",
+        description: "How each sheet preview is rendered inside the prompt.",
         defaultValue: [
           "Sheet {{sheet_index}}: {{sheet_name}}",
           "{{preview_csv}}",
@@ -422,8 +427,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
       {
         id: "user_prompt_template",
         label: "User Prompt Template",
-        description:
-          "Table-preview wrapper. Keep every placeholder token.",
+        description: "Table-preview wrapper. Keep every placeholder token.",
         defaultValue: [
           "File kind: {{file_kind}}.",
           "Sheet name: {{sheet_name}}.",
@@ -462,8 +466,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
       {
         id: "user_prompt_template",
         label: "User Prompt Template",
-        description:
-          "Rule-parser context. Keep every placeholder token.",
+        description: "Rule-parser context. Keep every placeholder token.",
         defaultValue: [
           "Supported condition keys: {{supported_condition_keys}}",
           "Supported output keys: {{supported_output_keys}}",
@@ -521,9 +524,7 @@ function validateRequiredPlaceholders(
   for (const placeholder of section.requiredPlaceholders) {
     const token = `{{${placeholder}}}`;
     if (!value.includes(token)) {
-      throw new Error(
-        `${section.label} must keep the placeholder ${token}.`,
-      );
+      throw new Error(`${section.label} must keep the placeholder ${token}.`);
     }
   }
 }
@@ -553,16 +554,16 @@ function renderTransactionPrompt(
         })
       : "";
   const reviewContextBlock = reviewContext
-      ? interpolateTemplate(sections.review_context_template, {
-          review_trigger: reviewContext.trigger,
-          previous_review_reason: reviewContext.previousReviewReason,
-          previous_user_review_context: reviewContext.previousUserContext,
-          new_user_review_context: reviewContext.userProvidedContext,
-          previous_llm_analysis: reviewContext.previousLlmPayload,
-          propagated_contexts: reviewContext.propagatedContexts,
-          persisted_security_mappings: reviewContext.persistedSecurityMappings,
-          resolved_source_precedent: reviewContext.resolvedSourcePrecedent,
-        })
+    ? interpolateTemplate(sections.review_context_template, {
+        review_trigger: reviewContext.trigger,
+        previous_review_reason: reviewContext.previousReviewReason,
+        previous_user_review_context: reviewContext.previousUserContext,
+        new_user_review_context: reviewContext.userProvidedContext,
+        previous_llm_analysis: reviewContext.previousLlmPayload,
+        propagated_contexts: reviewContext.propagatedContexts,
+        persisted_security_mappings: reviewContext.persistedSecurityMappings,
+        resolved_source_precedent: reviewContext.resolvedSourcePrecedent,
+      })
     : "";
 
   return {
@@ -855,13 +856,11 @@ export function renderTransactionAnalyzerPrompt(
   );
 }
 
-export function renderSpreadsheetTableStartPromptFromInput(
-  input: {
-    fileKind: string;
-    sheetPreviews: Array<{ sheetName: string; previewCsv: string }>;
-    promptOverrides?: Record<string, unknown> | null;
-  },
-) {
+export function renderSpreadsheetTableStartPromptFromInput(input: {
+  fileKind: string;
+  sheetPreviews: Array<{ sheetName: string; previewCsv: string }>;
+  promptOverrides?: Record<string, unknown> | null;
+}) {
   return renderSpreadsheetTableStartPrompt(input.promptOverrides, {
     fileKind: input.fileKind,
     sheetPreviews: input.sheetPreviews.map((preview) => ({
@@ -871,19 +870,17 @@ export function renderSpreadsheetTableStartPromptFromInput(
   });
 }
 
-export function renderSpreadsheetLayoutPromptFromInput(
-  input: {
-    fileKind: string;
-    sheetName: string;
-    accountType: string;
-    defaultCurrency: string;
-    referenceDate: string;
-    canonicalFields: string;
-    detectedHeaders: string;
-    tablePreviewCsv: string;
-    promptOverrides?: Record<string, unknown> | null;
-  },
-) {
+export function renderSpreadsheetLayoutPromptFromInput(input: {
+  fileKind: string;
+  sheetName: string;
+  accountType: string;
+  defaultCurrency: string;
+  referenceDate: string;
+  canonicalFields: string;
+  detectedHeaders: string;
+  tablePreviewCsv: string;
+  promptOverrides?: Record<string, unknown> | null;
+}) {
   return renderSpreadsheetLayoutPrompt(input.promptOverrides, {
     file_kind: input.fileKind,
     sheet_name: input.sheetName,
@@ -896,18 +893,16 @@ export function renderSpreadsheetLayoutPromptFromInput(
   });
 }
 
-export function renderRuleDraftParserPromptFromInput(
-  input: {
-    supportedConditionKeys: string;
-    supportedOutputKeys: string;
-    allowedTransactionClasses: string;
-    allowedCategoryCodes: string;
-    entities: string;
-    accounts: string;
-    requestText: string;
-    promptOverrides?: Record<string, unknown> | null;
-  },
-) {
+export function renderRuleDraftParserPromptFromInput(input: {
+  supportedConditionKeys: string;
+  supportedOutputKeys: string;
+  allowedTransactionClasses: string;
+  allowedCategoryCodes: string;
+  entities: string;
+  accounts: string;
+  requestText: string;
+  promptOverrides?: Record<string, unknown> | null;
+}) {
   return renderRuleDraftParserPrompt(input.promptOverrides, {
     supported_condition_keys: input.supportedConditionKeys,
     supported_output_keys: input.supportedOutputKeys,
