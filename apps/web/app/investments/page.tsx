@@ -149,7 +149,7 @@ export default async function InvestmentsPage({
   const processedLedgerColumns =
     "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)";
   const unresolvedLedgerColumns =
-    "100px 240px 160px 110px minmax(320px, 1fr)";
+    "100px 240px 70px 160px 110px minmax(320px, 1fr)";
 
   return (
     <AppShell
@@ -439,12 +439,14 @@ export default async function InvestmentsPage({
                   className="investment-review-grid-head"
                   style={{ gridTemplateColumns: unresolvedLedgerColumns }}
                 >
-                  {["Date", "Description", "Security", "Amount", "Review"].map(
+                  {["Date", "Description", "Qty", "Security", "Amount", "Review"].map(
                     (header, index) => (
                       <div
                         className={
-                          index === 3
+                          index === 4
                             ? "investment-review-head-cell amount"
+                            : index === 2
+                              ? "investment-review-head-cell centered"
                             : "investment-review-head-cell"
                         }
                         key={header}
@@ -470,6 +472,9 @@ export default async function InvestmentsPage({
                       </div>
                       <div className="investment-review-description">
                         {row.descriptionRaw}
+                      </div>
+                      <div className="investment-review-copy centered">
+                        {formatQuantity(row.quantity)}
                       </div>
                       <div className="investment-review-copy breakable">
                         {securityLabel}

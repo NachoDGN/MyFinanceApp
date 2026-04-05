@@ -9,7 +9,7 @@ import {
   enrichImportedTransaction,
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
-  rankSimilarAccountTransactions,
+  rankReviewPropagationTransactions,
 } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
@@ -48,7 +48,10 @@ import {
   type PromptProfileId,
   type PromptProfileOverrides,
 } from "@myfinance/llm";
-import { prepareInvestmentRebuild } from "./investment-rebuild";
+import {
+  prepareInvestmentRebuild,
+  type InvestmentRebuildProgress,
+} from "./investment-rebuild";
 
 const DEFAULT_APP_USER_ID = "00000000-0000-0000-0000-000000000001";
 const DEFAULT_LOCAL_DATABASE_URL =
@@ -289,6 +292,19 @@ async function withSeededUserContext<T>(
       await transactionSql`select set_config('app.current_user_id', ${seededUserId}, true)`;
       return runner(transactionSql);
     });
+  } finally {
+    await sql.end({ timeout: 1 });
+  }
+}
+
+async function withSeededUserSession<T>(
+  runner: (sql: SqlClient) => Promise<T>,
+): Promise<T> {
+  const sql = createSqlClient();
+  const { seededUserId } = getDbRuntimeConfig();
+  try {
+    await sql`select set_config('app.current_user_id', ${seededUserId}, false)`;
+    return await runner(sql);
   } finally {
     await sql.end({ timeout: 1 });
   }
@@ -568,6 +584,19 @@ async function failJob(
   `;
 }
 
+async function updateRunningJobPayload(
+  sql: SqlClient,
+  jobId: string,
+  payloadJson: Record<string, unknown>,
+) {
+  await sql`
+    update public.jobs
+    set payload_json = ${serializeJson(sql, payloadJson)}::jsonb
+    where id = ${jobId}
+      and status = 'running'
+  `;
+}
+
 async function processReviewPropagationJob(
   sql: SqlClient,
   userId: string,
@@ -615,17 +644,14 @@ async function processReviewPropagationJob(
     };
   }
 
-  const candidateMatches = rankSimilarAccountTransactions(
+  const candidateMatches = await rankReviewPropagationTransactions(
     dataset,
     account,
     sourceTransaction,
     {
-      includeNeedsReview: true,
-      requireEarlierDate: false,
       limit: Math.max(dataset.transactions.length, 1),
-      minScore: 6,
     },
-  ).filter((match) => match.transaction.needsReview);
+  );
 
   const appliedTransactionIds: string[] = [];
   const failedTransactionIds: Array<{ transactionId: string; error: string }> =
@@ -918,10 +944,22 @@ async function loadDatasetForUser(
   };
 }
 
-async function applyInvestmentRebuild(sql: SqlClient, userId: string) {
+async function applyInvestmentRebuild(
+  sql: SqlClient,
+  userId: string,
+  options?: {
+    onProgress?: (
+      progress: InvestmentRebuildProgress,
+    ) => Promise<void> | void;
+    historicalLookupTransactionIds?: readonly string[];
+  },
+) {
   const latestDataset = await loadDatasetForUser(sql, userId);
   const referenceDate = getDatasetLatestDate(latestDataset);
-  const rebuilt = await prepareInvestmentRebuild(latestDataset, referenceDate);
+  const rebuilt = await prepareInvestmentRebuild(latestDataset, referenceDate, {
+    onProgress: options?.onProgress,
+    historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
+  });
 
   for (const security of rebuilt.insertedSecurities) {
     await sql`
@@ -1097,6 +1135,20 @@ export interface ReanalyzeTransactionReviewInput {
   reviewContext: string;
   actorName: string;
   sourceChannel: AuditEvent["sourceChannel"];
+  onProgress?: (progress: ReviewReanalysisProgress) => Promise<void> | void;
+}
+
+export interface ReviewReanalysisProgress {
+  stage:
+    | "load_context"
+    | "llm_reanalysis"
+    | "apply_transaction_update"
+    | "investment_rebuild"
+    | "historical_price_lookup"
+    | "metric_refresh"
+    | "review_propagation";
+  message: string;
+  updatedAt?: string;
 }
 
 const REVIEW_REANALYZE_COMPARISON_FIELDS = [
@@ -1128,6 +1180,10 @@ export async function reanalyzeTransactionReview(
   input: ReanalyzeTransactionReviewInput,
 ) {
   const userId = getDbRuntimeConfig().seededUserId;
+  await input.onProgress?.({
+    stage: "load_context",
+    message: "Loading transaction context.",
+  });
 
   return withSeededUserContext(async (sql) => {
     const before = await sql`
@@ -1159,6 +1215,10 @@ export async function reanalyzeTransactionReview(
     const promptOverrides = await loadPromptOverrides(sql, userId);
     const wasPendingReview = beforeTransaction.needsReview;
 
+    await input.onProgress?.({
+      stage: "llm_reanalysis",
+      message: "Running transaction analyzer with your review context.",
+    });
     const decision = await enrichImportedTransaction(
       dataset,
       account,
@@ -1179,6 +1239,10 @@ export async function reanalyzeTransactionReview(
       },
     );
 
+    await input.onProgress?.({
+      stage: "apply_transaction_update",
+      message: "Applying analyzer results to the transaction.",
+    });
     const after = await sql`
       update public.transactions
       set transaction_class = ${decision.transactionClass},
@@ -1202,8 +1266,19 @@ export async function reanalyzeTransactionReview(
     `;
 
     if (account.assetDomain === "investment") {
-      await applyInvestmentRebuild(sql, userId);
+      await input.onProgress?.({
+        stage: "investment_rebuild",
+        message: "Rebuilding investment positions and fetching dated prices.",
+      });
+      await applyInvestmentRebuild(sql, userId, {
+        onProgress: input.onProgress,
+        historicalLookupTransactionIds: [input.transactionId],
+      });
     }
+    await input.onProgress?.({
+      stage: "metric_refresh",
+      message: "Refreshing portfolio metrics.",
+    });
     await queueJob(sql, "metric_refresh", {
       trigger: "manual_review_update",
       transactionId: input.transactionId,
@@ -1255,6 +1330,10 @@ export async function reanalyzeTransactionReview(
       wasPendingReview &&
       canSeedReviewPropagationFromTransaction(account, afterTransaction)
     ) {
+      await input.onProgress?.({
+        stage: "review_propagation",
+        message: "Propagating the correction to similar unresolved transactions.",
+      });
       const reviewPropagationPayload = {
         sourceTransactionId: afterTransaction.id,
         accountId: afterTransaction.accountId,
@@ -1279,6 +1358,163 @@ export async function reanalyzeTransactionReview(
       transaction: afterTransaction,
       auditEvent,
     };
+  });
+}
+
+export interface QueueTransactionReviewReanalysisInput {
+  transactionId: string;
+  reviewContext: string;
+  actorName: string;
+  sourceChannel: "web" | "cli" | "worker" | "system";
+}
+
+export interface ReviewReanalysisJobStatus {
+  id: string;
+  jobType: string;
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  lastError?: string | null;
+  payloadJson: Record<string, unknown>;
+}
+
+function normalizeJobProgress(value: unknown): ReviewReanalysisProgress | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const stage = typeof record.stage === "string" ? record.stage : null;
+  const message = typeof record.message === "string" ? record.message : null;
+  if (!stage || !message) {
+    return null;
+  }
+
+  return {
+    stage: stage as ReviewReanalysisProgress["stage"],
+    message,
+    updatedAt:
+      typeof record.updatedAt === "string" ? record.updatedAt : undefined,
+  };
+}
+
+export async function queueTransactionReviewReanalysis(
+  input: QueueTransactionReviewReanalysisInput,
+) {
+  const userId = getDbRuntimeConfig().seededUserId;
+
+  return withSeededUserContext(async (sql) => {
+    const transactionRows = await sql`
+      select id, account_id
+      from public.transactions
+      where id = ${input.transactionId}
+        and user_id = ${userId}
+      limit 1
+    `;
+    if (!transactionRows[0]) {
+      throw new Error(`Transaction ${input.transactionId} not found.`);
+    }
+
+    const normalizedReviewContext = input.reviewContext.trim();
+    if (!normalizedReviewContext) {
+      throw new Error("Review context cannot be empty.");
+    }
+
+    const existingRows = await sql`
+      select *
+      from public.jobs
+      where job_type = ${"review_reanalyze"}
+        and status in (${ "queued" }, ${ "running" })
+        and payload_json->>'transactionId' = ${input.transactionId}
+      order by created_at desc
+      limit 1
+    `;
+    const existingJob = existingRows[0]
+      ? mapFromSql<DomainDataset["jobs"]>(existingRows)[0]
+      : null;
+    if (existingJob) {
+      return {
+        queued: false,
+        jobId: existingJob.id,
+        status: existingJob.status,
+      };
+    }
+
+    const jobId = randomUUID();
+    await sql`
+      insert into public.jobs (
+        id,
+        job_type,
+        payload_json,
+        status,
+        attempts,
+        available_at
+      ) values (
+        ${jobId},
+        ${"review_reanalyze"},
+        ${serializeJson(sql, {
+          transactionId: input.transactionId,
+          reviewContext: normalizedReviewContext,
+          actorName: input.actorName,
+          sourceChannel: input.sourceChannel,
+        })}::jsonb,
+        ${"queued"},
+        0,
+        ${new Date().toISOString()}
+      )
+    `;
+
+    return {
+      queued: true,
+      jobId,
+      status: "queued" as const,
+    };
+  });
+}
+
+export async function getReviewReanalysisJobStatus(jobId: string) {
+  const userId = getDbRuntimeConfig().seededUserId;
+
+  return withSeededUserContext(async (sql) => {
+    const rows = await sql`
+      select *
+      from public.jobs
+      where id = ${jobId}
+        and job_type = ${"review_reanalyze"}
+      limit 1
+    `;
+    const job = rows[0] ? mapFromSql<DomainDataset["jobs"]>(rows)[0] : null;
+    if (!job) {
+      throw new Error(`Review job ${jobId} not found.`);
+    }
+
+    const transactionId =
+      typeof job.payloadJson.transactionId === "string"
+        ? job.payloadJson.transactionId
+        : null;
+    if (!transactionId) {
+      throw new Error(`Review job ${jobId} is missing transaction context.`);
+    }
+
+    const transactionRows = await sql`
+      select id
+      from public.transactions
+      where id = ${transactionId}
+        and user_id = ${userId}
+      limit 1
+    `;
+    if (!transactionRows[0]) {
+      throw new Error(`Review job ${jobId} is not available for this user.`);
+    }
+
+    return {
+      ...job,
+      payloadJson: {
+        ...job.payloadJson,
+        progress: normalizeJobProgress(job.payloadJson.progress),
+      },
+    } satisfies ReviewReanalysisJobStatus;
   });
 }
 
@@ -2381,7 +2617,7 @@ class SqlFinanceRepository implements FinanceRepository {
   }
 
   async runPendingJobs(apply: boolean): Promise<JobRunResult> {
-    const result = await withSeededUserContext(async (sql) => {
+    const result = await withSeededUserSession(async (sql) => {
       const queued = await sql`
         select * from public.jobs
         where status = 'queued'
@@ -2582,6 +2818,73 @@ class SqlFinanceRepository implements FinanceRepository {
               processedJobs.push({
                 id: job.id,
                 jobType: "metric_refresh",
+                status: "completed",
+              });
+              continue;
+            }
+
+            if (job.job_type === "review_reanalyze") {
+              const transactionId =
+                typeof payloadJson.transactionId === "string"
+                  ? payloadJson.transactionId
+                  : "";
+              const reviewContext =
+                typeof payloadJson.reviewContext === "string"
+                  ? payloadJson.reviewContext
+                  : "";
+              const actorName =
+                typeof payloadJson.actorName === "string"
+                  ? payloadJson.actorName
+                  : "worker-review-editor";
+              const sourceChannel =
+                typeof payloadJson.sourceChannel === "string"
+                  && ["web", "cli", "worker", "system"].includes(
+                    payloadJson.sourceChannel,
+                  )
+                  ? (payloadJson.sourceChannel as
+                      | "web"
+                      | "cli"
+                      | "worker"
+                      | "system")
+                  : "worker";
+              if (!transactionId || !reviewContext) {
+                throw new Error(
+                  "Review reanalysis job is missing transactionId or reviewContext.",
+                );
+              }
+              const reportProgress = async (
+                progress: ReviewReanalysisProgress,
+              ) => {
+                const nextPayloadJson = {
+                  ...payloadJson,
+                  progress: {
+                    ...progress,
+                    updatedAt: new Date().toISOString(),
+                  },
+                };
+                console.log(
+                  `[review_reanalyze] ${job.id} ${progress.stage}: ${progress.message}`,
+                );
+                await updateRunningJobPayload(sql, job.id, nextPayloadJson);
+              };
+              await reportProgress({
+                stage: "load_context",
+                message: "Loading transaction context.",
+              });
+              const resultPayload = await reanalyzeTransactionReview({
+                transactionId,
+                reviewContext,
+                actorName,
+                sourceChannel,
+                onProgress: reportProgress,
+              });
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                ...resultPayload,
+              });
+              processedJobs.push({
+                id: job.id,
+                jobType: "review_reanalyze",
                 status: "completed",
               });
               continue;

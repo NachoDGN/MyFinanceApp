@@ -11,6 +11,7 @@ import {
   enrichImportedTransaction,
   getInvestmentTransactionClassifierConfig,
   parseInvestmentEvent,
+  rankReviewPropagationTransactions,
 } from "../packages/classification/src/index.ts";
 import { prepareInvestmentRebuild } from "../packages/db/src/investment-rebuild.ts";
 import {
@@ -548,6 +549,111 @@ test("review propagation user context includes resolved instrument evidence from
   assert.match(reviewContext, /IE0032126645/);
   assert.match(reviewContext, /69\.39 EUR/);
   assert.match(reviewContext, /NAV/);
+});
+
+test("investment review propagation ranking rejects semantically nearby but different Vanguard funds", async () => {
+  const account = createAccount({
+    id: "broker-review-propagation-ranking",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const source = createTransaction({
+    id: "source-eurozone-fund",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2026-03-03",
+    postedDate: "2026-03-03",
+    amountOriginal: "-47.90",
+    amountBaseEur: "-47.90",
+    currencyOriginal: "EUR",
+    descriptionRaw: "VANGUARD EUROZONE STOCK INDEX",
+    descriptionClean: "VANGUARD EUROZONE STOCK INDEX",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.94",
+    securityId: "security-vanguard-eurozone",
+    needsReview: false,
+    llmPayload: {
+      llm: {
+        rawOutput: {
+          resolved_instrument_name:
+            "Vanguard Eurozone Stock Index Fund EUR Acc",
+          resolved_instrument_isin: "IE0032126645",
+          current_price_type: "NAV",
+        },
+      },
+    },
+  });
+  const trueCandidate = createTransaction({
+    id: "candidate-eurozone-variant",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2026-03-10",
+    postedDate: "2026-03-10",
+    amountOriginal: "-48.10",
+    amountBaseEur: "-48.10",
+    currencyOriginal: "EUR",
+    descriptionRaw: "VANGUARD EUROZONE STOCK INDEX EUR ACC",
+    descriptionClean: "VANGUARD EUROZONE STOCK INDEX EUR ACC",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.60",
+    needsReview: true,
+    reviewReason: "Still ambiguous.",
+  });
+  const falseCandidate = createTransaction({
+    id: "candidate-global-small-cap",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2026-03-04",
+    postedDate: "2026-03-04",
+    amountOriginal: "-47.43",
+    amountBaseEur: "-47.43",
+    currencyOriginal: "EUR",
+    descriptionRaw: "VANGUARD GLOB SMALL CAP INDEX",
+    descriptionClean: "VANGUARD GLOB SMALL CAP INDEX",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.60",
+    needsReview: true,
+    reviewReason: "Still ambiguous.",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [source, trueCandidate, falseCandidate],
+  });
+
+  const matches = await rankReviewPropagationTransactions(
+    dataset,
+    account,
+    source,
+    {
+      embeddingClient: {
+        async embedTexts() {
+          return [
+            [1, 0],
+            [0.995, 0.005],
+            [0.28, 0.72],
+          ];
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(
+    matches.map((match) => match.transaction.id),
+    ["candidate-eurozone-variant"],
+  );
+  assert.ok((matches[0]?.semanticSimilarity ?? 0) > 0.9);
 });
 
 test("investment parser recognizes named fund purchases even without explicit quantity", () => {
@@ -1474,9 +1580,11 @@ test("investment rebuild remaps stale EU fund aliases away from USD OTC securiti
 
 test("manual review notes can remap an ETF security to a mutual fund candidate", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
   const searchQueries: string[] = [];
   process.env.TWELVE_DATA_API_KEY = "test-key";
+  delete process.env.OPENAI_API_KEY;
   globalThis.fetch = async (input) => {
     const requestUrl =
       typeof input === "string"
@@ -1601,14 +1709,21 @@ test("manual review notes can remap an ETF security to a mutual fund candidate",
     } else {
       process.env.TWELVE_DATA_API_KEY = previousApiKey;
     }
+    if (previousOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiKey;
+    }
   }
 });
 
 test("exact ISIN from a manual re-review can remap a mismatched ETF security", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
   const searchQueries: string[] = [];
   process.env.TWELVE_DATA_API_KEY = "test-key";
+  delete process.env.OPENAI_API_KEY;
   globalThis.fetch = async (input) => {
     const requestUrl =
       typeof input === "string"
@@ -1766,14 +1881,21 @@ test("exact ISIN from a manual re-review can remap a mismatched ETF security", a
     } else {
       process.env.TWELVE_DATA_API_KEY = previousApiKey;
     }
+    if (previousOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiKey;
+    }
   }
 });
 
 test("manual review ISIN fallback resolves web-mapped fund security even when structured instrument fields are sparse", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
   const previousFetch = globalThis.fetch;
   const searchQueries: string[] = [];
   process.env.TWELVE_DATA_API_KEY = "test-key";
+  delete process.env.OPENAI_API_KEY;
   globalThis.fetch = async (input) => {
     const requestUrl =
       typeof input === "string"
@@ -1878,6 +2000,151 @@ test("manual review ISIN fallback resolves web-mapped fund security even when st
       delete process.env.TWELVE_DATA_API_KEY;
     } else {
       process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+    if (previousOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiKey;
+    }
+  }
+});
+
+test("investment rebuild derives quantity from historical NAV for exact fund ISIN matches", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  delete process.env.TWELVE_DATA_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+
+    if (url.origin === "https://api.openai.com" && url.pathname === "/v1/responses") {
+      return new Response(
+        JSON.stringify({
+          output_text: JSON.stringify({
+            isin: "IE0032126645",
+            target_date: "2026-03-03",
+            security: "Vanguard Eurozone Stock Index Fund EUR Acc",
+            security_type: "open-ended fund",
+            share_class: "EUR Acc",
+            currency: "EUR",
+            historical_nav: 49.79,
+            historical_nav_date: "2026-03-03",
+            match_status: "exact",
+            identity_source: {
+              name: "Vanguard official fund page",
+              url: "https://www.example.com/identity",
+            },
+            historical_price_source: {
+              name: "Vanguard historical prices",
+              url: "https://www.example.com/historical-nav",
+            },
+            explanation:
+              "Resolved the exact fund from the ISIN and retrieved the published EUR NAV for the requested date.",
+          }),
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-historical-nav-fund",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "eurozone-fund-buy",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-03",
+      postedDate: "2026-03-03",
+      amountOriginal: "-99.58",
+      amountBaseEur: "-99.58",
+      currencyOriginal: "EUR",
+      descriptionRaw: "VANGUARD EUROZONE STOCK INDEX",
+      descriptionClean: "VANGUARD EUROZONE STOCK INDEX",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.94",
+      securityId: null,
+      quantity: null,
+      unitPriceOriginal: null,
+      needsReview: true,
+      reviewReason:
+        'Security mapping unresolved for "VANGUARD EUROZONE STOCK INDEX".',
+      llmPayload: {
+        llm: {
+          rawOutput: {
+            resolved_instrument_name:
+              "Vanguard Eurozone Stock Index Fund EUR Acc",
+            resolved_instrument_isin: "IE0032126645",
+            current_price: 61.11,
+            current_price_currency: "EUR",
+            current_price_timestamp: "2026-04-04T09:00:00Z",
+            current_price_source: "Official Vanguard factsheet",
+            current_price_type: "NAV",
+          },
+        },
+        reviewContext: {
+          trigger: "manual_review_update",
+          userProvidedContext:
+            "Exact ISIN is IE0032126645 for the Vanguard Eurozone Stock Index Fund EUR Acc purchase.",
+        },
+      },
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-03");
+    const patch = rebuilt.transactionPatches.find(
+      (candidate) => candidate.id === "eurozone-fund-buy",
+    );
+    const historicalNavPrice = rebuilt.upsertedPrices.find(
+      (price) => price.sourceName === "llm_historical_nav",
+    );
+
+    assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "IE0032126645");
+    assert.equal(historicalNavPrice?.price, "49.79000000");
+    assert.equal(historicalNavPrice?.priceDate, "2026-03-03");
+    assert.equal(patch?.quantity, "2.00000000");
+    assert.equal(patch?.unitPriceOriginal, "49.79000000");
+    assert.equal(patch?.needsReview, false);
+    assert.equal(patch?.reviewReason, null);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+    if (previousOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiKey;
     }
   }
 });

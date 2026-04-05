@@ -1,9 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 import { ReviewStateCell } from "./primitives";
+
+const REVIEW_JOB_POLL_INTERVAL_MS = 2_000;
+const WORKER_QUEUE_WARNING_MS = 20_000;
 
 type ReviewEditorCellProps = {
   transactionId: string;
@@ -15,6 +18,24 @@ type ReviewEditorCellProps = {
   securitySymbol?: string | null;
   quantity?: string | null;
   llmPayload?: unknown;
+};
+
+type ReviewJobStatusPayload = {
+  status?: "queued" | "running" | "completed" | "failed";
+  createdAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  lastError?: string | null;
+  payloadJson?: {
+    changed?: boolean;
+    changedFields?: string[];
+    transaction?: { needsReview?: boolean | null } | null;
+    progress?: {
+      stage?: string;
+      message?: string;
+      updatedAt?: string;
+    } | null;
+  };
 };
 
 export function ReviewEditorCell({
@@ -31,7 +52,18 @@ export function ReviewEditorCell({
   const router = useRouter();
   const [draft, setDraft] = useState(manualNotes ?? "");
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJobStatus, setActiveJobStatus] = useState<
+    "queued" | "running" | null
+  >(null);
+  const [activeJobCreatedAt, setActiveJobCreatedAt] = useState<string | null>(
+    null,
+  );
+  const [activeJobProgressMessage, setActiveJobProgressMessage] = useState<
+    string | null
+  >(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRefreshing, startRefresh] = useTransition();
 
   const trimmedDraft = draft.trim();
 
@@ -52,65 +84,177 @@ export function ReviewEditorCell({
       reviewReason: "review reason",
     })[field] ?? field;
 
-  function handleUpdate() {
+  useEffect(() => {
+    if (!activeJobId) {
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/review-jobs/${activeJobId}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(payload?.error || "Review job lookup failed.");
+        }
+
+        const payload = (await response.json().catch(() => null)) as
+          | ReviewJobStatusPayload
+          | null;
+        if (cancelled || !payload?.status) {
+          return;
+        }
+
+        if (payload.status === "completed") {
+          setActiveJobStatus(null);
+          setActiveJobCreatedAt(null);
+          setActiveJobProgressMessage(null);
+          const changedFields = Array.isArray(payload.payloadJson?.changedFields)
+            ? payload.payloadJson.changedFields
+            : [];
+          if (!payload.payloadJson?.changed && changedFields.length === 0) {
+            setFeedback("Transaction re-reviewed. No visible changes were applied.");
+          } else if (payload.payloadJson?.transaction?.needsReview === false) {
+            setFeedback("Transaction re-reviewed and resolved.");
+          } else {
+            setFeedback(
+              `Transaction re-reviewed. Updated ${changedFields
+                .slice(0, 3)
+                .map(formatChangedField)
+                .join(", ")}${changedFields.length > 3 ? ", …" : ""}.`,
+            );
+          }
+          setActiveJobId(null);
+          startRefresh(() => {
+            router.refresh();
+          });
+          return;
+        }
+
+        if (payload.status === "failed") {
+          setActiveJobStatus(null);
+          setActiveJobCreatedAt(null);
+          setActiveJobProgressMessage(null);
+          setFeedback(payload.lastError || "Review update failed.");
+          setActiveJobId(null);
+          startRefresh(() => {
+            router.refresh();
+          });
+          return;
+        }
+
+        setActiveJobStatus(payload.status);
+        setActiveJobCreatedAt(payload.createdAt ?? null);
+        setActiveJobProgressMessage(
+          typeof payload.payloadJson?.progress?.message === "string"
+            ? payload.payloadJson.progress.message
+            : null,
+        );
+
+        timeoutId = setTimeout(() => {
+          void poll();
+        }, REVIEW_JOB_POLL_INTERVAL_MS);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setFeedback(
+          error instanceof Error
+            ? error.message
+            : "Review job polling failed.",
+        );
+        setActiveJobStatus(null);
+        setActiveJobCreatedAt(null);
+        setActiveJobProgressMessage(null);
+        setActiveJobId(null);
+      }
+    };
+
+    void poll();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [activeJobId, router, startRefresh]);
+
+  async function handleUpdate() {
     if (!trimmedDraft) {
       setFeedback("Add review context before updating.");
       return;
     }
 
-    startTransition(async () => {
-      setFeedback(null);
-      try {
-        const response = await fetch(
-          `/api/transactions/${transactionId}/review`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              reviewContext: trimmedDraft,
-            }),
-          },
-        );
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as
-            | { error?: string }
-            | null;
-          throw new Error(payload?.error || "Review update failed.");
-        }
-
+    setFeedback(null);
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(`/api/transactions/${transactionId}/review`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          reviewContext: trimmedDraft,
+        }),
+      });
+      if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as
-          | {
-              changed?: boolean;
-              changedFields?: string[];
-              transaction?: { needsReview?: boolean | null } | null;
-            }
+          | { error?: string }
           | null;
-        const changedFields = Array.isArray(payload?.changedFields)
-          ? payload.changedFields
-          : [];
-
-        if (!payload?.changed && changedFields.length === 0) {
-          setFeedback("Transaction re-reviewed. No visible changes were applied.");
-        } else if (payload?.transaction?.needsReview === false) {
-          setFeedback("Transaction re-reviewed and resolved.");
-        } else {
-          setFeedback(
-            `Transaction re-reviewed. Updated ${changedFields
-              .slice(0, 3)
-              .map(formatChangedField)
-              .join(", ")}${changedFields.length > 3 ? ", …" : ""}.`,
-          );
-        }
-        router.refresh();
-      } catch (error) {
-        setFeedback(
-          error instanceof Error ? error.message : "Review update failed.",
-        );
+        throw new Error(payload?.error || "Review update failed.");
       }
-    });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            queued?: boolean;
+            jobId?: string;
+            status?: string;
+          }
+        | null;
+      if (!payload?.jobId) {
+        throw new Error("Review job was queued without a job id.");
+      }
+
+      setActiveJobId(payload.jobId);
+      setActiveJobStatus(
+        payload.status === "running" ? "running" : "queued",
+      );
+      setActiveJobCreatedAt(null);
+      setActiveJobProgressMessage(null);
+      setFeedback(
+        payload.queued === false
+          ? "Review already queued. Waiting for the worker to finish."
+          : "Review queued. Waiting for the worker to finish.",
+      );
+    } catch (error) {
+      setFeedback(
+        error instanceof Error ? error.message : "Review update failed.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   }
+
+  const isBusy = isSubmitting || Boolean(activeJobId) || isRefreshing;
+  const queuedForMs =
+    activeJobStatus === "queued" && activeJobCreatedAt
+      ? Date.now() - new Date(activeJobCreatedAt).getTime()
+      : 0;
+  const progressMessage =
+    activeJobStatus === "queued"
+      ? queuedForMs >= WORKER_QUEUE_WARNING_MS
+        ? "Queued for a while. The worker may not be running yet."
+        : "Queued. Waiting for the worker to pick it up."
+      : activeJobStatus === "running"
+        ? activeJobProgressMessage ?? "Running analyzer and rebuild steps."
+        : null;
 
   return (
     <div style={{ display: "grid", gap: 8, minWidth: 260 }}>
@@ -139,10 +283,16 @@ export function ReviewEditorCell({
         <button
           className="btn-pill"
           type="button"
-          onClick={handleUpdate}
-          disabled={isPending || !trimmedDraft}
+          onClick={() => {
+            void handleUpdate();
+          }}
+          disabled={isBusy || !trimmedDraft}
         >
-          {isPending ? "Updating…" : "Update"}
+          {isSubmitting
+            ? "Queueing…"
+            : activeJobId
+              ? "Updating…"
+              : "Update"}
         </button>
         {feedback ? (
           <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
@@ -150,6 +300,11 @@ export function ReviewEditorCell({
           </span>
         ) : null}
       </div>
+      {progressMessage ? (
+        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          {progressMessage}
+        </span>
+      ) : null}
     </div>
   );
 }

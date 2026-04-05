@@ -2,9 +2,12 @@ import { z } from "zod";
 
 import {
   analyzeBankTransaction,
+  createTextEmbeddingClient,
   createLLMClient,
   isModelConfigured,
+  isTextEmbeddingConfigured,
   type PromptProfileOverrides,
+  type TextEmbeddingClient,
 } from "@myfinance/llm";
 import type {
   Account,
@@ -451,6 +454,59 @@ export interface SimilarAccountTransactionMatch {
   score: number;
 }
 
+export interface ReviewPropagationTransactionMatch
+  extends SimilarAccountTransactionMatch {
+  semanticSimilarity: number | null;
+  lexicalScore: number;
+  exactMatch: boolean;
+}
+
+const INVESTMENT_DESCRIPTOR_STOPWORDS = new Set([
+  "BUY",
+  "SELL",
+  "FUND",
+  "FUNDS",
+  "ETF",
+  "ETFS",
+  "INDEX",
+  "STOCK",
+  "STOCKS",
+  "SHARE",
+  "SHARES",
+  "UCITS",
+  "OEIC",
+  "ACC",
+  "ACCU",
+  "ACCUMULATION",
+  "ACCUMULATING",
+  "DIST",
+  "DISTRIBUTION",
+  "DISTRIBUTING",
+  "CLASS",
+  "CL",
+  "EUR",
+  "USD",
+  "GBP",
+  "NAV",
+]);
+
+const FUND_BRAND_TOKENS = new Set([
+  "VANGUARD",
+  "ISHARES",
+  "AMUNDI",
+  "BLACKROCK",
+  "INVESCO",
+  "FIDELITY",
+  "JPMORGAN",
+  "SPDR",
+  "XTRACKERS",
+  "HSBC",
+  "LYXOR",
+  "UBS",
+  "DWS",
+  "FRANKLIN",
+]);
+
 function normalizeOptionalText(value: string | null | undefined) {
   const text = value?.trim() ?? "";
   return text || null;
@@ -462,6 +518,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readOptionalBoolean(value: unknown) {
   return typeof value === "boolean" ? value : null;
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function readOptionalRecord(value: unknown) {
@@ -479,6 +539,152 @@ function tokenizePromptText(value: string | null | undefined) {
       .comparison.split(/[^A-Z0-9]+/)
       .filter((token) => token.length >= 3),
   );
+}
+
+function getReviewPropagationEmbeddingModel() {
+  return process.env.REVIEW_PROPAGATION_EMBEDDING_MODEL?.trim() || "gemini-embedding-001";
+}
+
+function normalizeInvestmentMatchingText(value: string | null | undefined) {
+  return normalizeDescription(value ?? "")
+    .comparison.replace(/\bGLOB\b/g, "GLOBAL")
+    .replace(/\bSM[\s-]?CAP\b/g, "SMALL CAP")
+    .replace(/\bSMALLCAP\b/g, "SMALL CAP")
+    .replace(/\bIDX\b/g, "INDEX")
+    .replace(/\bU\s*S\b/g, "US")
+    .replace(/\bS\s*&\s*P\b/g, "SP")
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeFundDescriptor(normalizedText: string) {
+  return /\b(FUND|ETF|INDEX|UCITS|OEIC|NAV)\b/.test(normalizedText);
+}
+
+function tokenizeInvestmentMatchingText(
+  value: string | null | undefined,
+  options: { distinctiveOnly?: boolean } = {},
+) {
+  const normalized = normalizeInvestmentMatchingText(value);
+  if (!normalized) {
+    return new Set<string>();
+  }
+
+  const stopwords = new Set(INVESTMENT_DESCRIPTOR_STOPWORDS);
+  if (options.distinctiveOnly && looksLikeFundDescriptor(normalized)) {
+    for (const token of FUND_BRAND_TOKENS) {
+      stopwords.add(token);
+    }
+  }
+
+  return new Set(
+    normalized
+      .split(/[^A-Z0-9]+/)
+      .filter((token) => token.length >= 2)
+      .filter((token) => (options.distinctiveOnly ? !stopwords.has(token) : true)),
+  );
+}
+
+function extractIsinFromText(...values: Array<string | null | undefined>) {
+  const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}\d\b/i;
+  for (const value of values) {
+    const match = String(value ?? "").toUpperCase().match(isinPattern);
+    if (match?.[0]) {
+      return match[0].replace(/\s+/g, "").toUpperCase();
+    }
+  }
+  return null;
+}
+
+function buildReviewPropagationContextText(transaction: Transaction) {
+  const llmPayload = readOptionalRecord(transaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+  const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
+
+  return [
+    transaction.descriptionRaw,
+    transaction.manualNotes,
+    readOptionalString(reviewContext?.previousUserContext),
+    readOptionalString(reviewContext?.userProvidedContext),
+    readOptionalString(rawOutput?.resolved_instrument_name),
+    readOptionalString(rawOutput?.resolved_instrument_isin),
+    readOptionalString(rawOutput?.current_price_type),
+    readOptionalString(rawOutput?.reason),
+    readOptionalString(rawOutput?.explanation),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
+function extractTransactionIsinEvidence(transaction: Transaction) {
+  const llmPayload = readOptionalRecord(transaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+  const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
+
+  return extractIsinFromText(
+    readOptionalString(rawOutput?.resolved_instrument_isin),
+    transaction.manualNotes,
+    readOptionalString(reviewContext?.previousUserContext),
+    readOptionalString(reviewContext?.userProvidedContext),
+    readOptionalString(rawOutput?.reason),
+    readOptionalString(rawOutput?.explanation),
+  );
+}
+
+function countOverlappingTokens(left: Set<string>, right: Set<string>) {
+  return [...left].filter((token) => right.has(token)).length;
+}
+
+function calculateJaccardScore(left: Set<string>, right: Set<string>) {
+  const union = new Set([...left, ...right]).size;
+  if (union === 0) {
+    return 0;
+  }
+  return countOverlappingTokens(left, right) / union;
+}
+
+function calculateCosineSimilarity(left: number[], right: number[]) {
+  const length = Math.min(left.length, right.length);
+  if (length === 0) {
+    return 0;
+  }
+
+  let score = 0;
+  for (let index = 0; index < length; index += 1) {
+    score += left[index]! * right[index]!;
+  }
+  return score;
+}
+
+function buildReviewPropagationEvidence(transaction: Transaction) {
+  const normalizedDescription = normalizeInvestmentMatchingText(
+    transaction.descriptionRaw,
+  );
+  const contextText = buildReviewPropagationContextText(transaction);
+  const combinedText = normalizeInvestmentMatchingText(contextText);
+  const allTokens = tokenizeInvestmentMatchingText(transaction.descriptionRaw);
+  const distinctiveTokens = tokenizeInvestmentMatchingText(
+    transaction.descriptionRaw,
+    { distinctiveOnly: true },
+  );
+  const exactIsin = extractTransactionIsinEvidence(transaction);
+  const explicitEtf =
+    /\bETF\b/.test(combinedText) && !/\bNOT AN ETF\b|\bNOT ETF\b/.test(combinedText);
+  const explicitMutualFund =
+    /\b(MUTUAL FUND|INDEX FUND|OEIC|NAV)\b/.test(combinedText);
+
+  return {
+    normalizedDescription,
+    allTokens,
+    distinctiveTokens,
+    embeddingText: normalizedDescription || normalizeInvestmentMatchingText(contextText),
+    exactIsin,
+    explicitEtf,
+    explicitMutualFund,
+  };
 }
 
 function extractHistoricalReviewExample(
@@ -788,6 +994,220 @@ export function rankSimilarAccountTransactions(
       );
     })
     .slice(0, limit);
+}
+
+export async function rankReviewPropagationTransactions(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  options: {
+    limit?: number;
+    embeddingClient?: TextEmbeddingClient | null;
+  } = {},
+): Promise<ReviewPropagationTransactionMatch[]> {
+  const limit = options.limit ?? 25;
+
+  if (account.assetDomain !== "investment") {
+    return rankSimilarAccountTransactions(dataset, account, transaction, {
+      includeNeedsReview: true,
+      requireEarlierDate: false,
+      limit,
+      minScore: 6,
+    })
+      .filter((match) => match.transaction.needsReview)
+      .map((match) => ({
+        ...match,
+        semanticSimilarity: null,
+        lexicalScore: match.score,
+        exactMatch: false,
+      }));
+  }
+
+  const sourceEvidence = buildReviewPropagationEvidence(transaction);
+  const sourceMagnitude = Math.abs(Number(transaction.amountOriginal));
+  const sourceSign = Math.sign(Number(transaction.amountOriginal));
+  const candidateMatches = dataset.transactions
+    .filter((candidate) => candidate.id !== transaction.id)
+    .filter((candidate) => candidate.accountId === account.id)
+    .filter((candidate) => candidate.needsReview)
+    .filter((candidate) => !candidate.voidedAt)
+    .filter(
+      (candidate) =>
+        candidate.currencyOriginal === transaction.currencyOriginal,
+    )
+    .filter((candidate) => {
+      const candidateSign = Math.sign(Number(candidate.amountOriginal));
+      return candidateSign === 0 || sourceSign === 0 || candidateSign === sourceSign;
+    })
+    .filter((candidate) => {
+      if (
+        transaction.transactionClass === "unknown" ||
+        candidate.transactionClass === "unknown"
+      ) {
+        return true;
+      }
+      return candidate.transactionClass === transaction.transactionClass;
+    })
+    .map((candidate) => {
+      const candidateEvidence = buildReviewPropagationEvidence(candidate);
+      if (
+        sourceEvidence.exactIsin &&
+        candidateEvidence.exactIsin &&
+        sourceEvidence.exactIsin !== candidateEvidence.exactIsin
+      ) {
+        return null;
+      }
+      if (sourceEvidence.explicitMutualFund && candidateEvidence.explicitEtf) {
+        return null;
+      }
+      if (sourceEvidence.explicitEtf && candidateEvidence.explicitMutualFund) {
+        return null;
+      }
+
+      const commonTokenCount = countOverlappingTokens(
+        sourceEvidence.allTokens,
+        candidateEvidence.allTokens,
+      );
+      const distinctiveOverlapCount = countOverlappingTokens(
+        sourceEvidence.distinctiveTokens,
+        candidateEvidence.distinctiveTokens,
+      );
+      const distinctiveJaccard = calculateJaccardScore(
+        sourceEvidence.distinctiveTokens,
+        candidateEvidence.distinctiveTokens,
+      );
+      const exactIsinMatch =
+        Boolean(sourceEvidence.exactIsin) &&
+        sourceEvidence.exactIsin === candidateEvidence.exactIsin;
+      const exactSecurityIdMatch =
+        Boolean(transaction.securityId) &&
+        transaction.securityId === candidate.securityId;
+      const exactDescriptionMatch =
+        sourceEvidence.normalizedDescription.length > 0 &&
+        sourceEvidence.normalizedDescription ===
+          candidateEvidence.normalizedDescription;
+      const candidateMagnitude = Math.abs(Number(candidate.amountOriginal));
+      const amountRatio =
+        sourceMagnitude > 0 && candidateMagnitude > 0
+          ? Math.min(sourceMagnitude, candidateMagnitude) /
+            Math.max(sourceMagnitude, candidateMagnitude)
+          : 0;
+      const lexicalScore =
+        commonTokenCount * 2 +
+        distinctiveOverlapCount * 10 +
+        distinctiveJaccard * 20 +
+        (amountRatio >= 0.95 ? 4 : amountRatio >= 0.7 ? 2 : 0) +
+        (exactDescriptionMatch ? 40 : 0) +
+        (exactSecurityIdMatch ? 50 : 0) +
+        (exactIsinMatch ? 80 : 0);
+
+      const exactMatch =
+        exactIsinMatch || exactSecurityIdMatch || exactDescriptionMatch;
+
+      return {
+        transaction: candidate,
+        candidateEvidence,
+        lexicalScore,
+        exactMatch,
+        distinctiveOverlapCount,
+        distinctiveJaccard,
+      };
+    })
+    .filter(
+      (
+        match,
+      ): match is {
+        transaction: Transaction;
+        candidateEvidence: ReturnType<typeof buildReviewPropagationEvidence>;
+        lexicalScore: number;
+        exactMatch: boolean;
+        distinctiveOverlapCount: number;
+        distinctiveJaccard: number;
+      } => Boolean(match),
+    );
+
+  if (candidateMatches.length === 0) {
+    return [];
+  }
+
+  let embeddingClient = options.embeddingClient;
+  if (embeddingClient === undefined && isTextEmbeddingConfigured()) {
+    try {
+      embeddingClient = createTextEmbeddingClient(
+        getReviewPropagationEmbeddingModel(),
+      );
+    } catch {
+      embeddingClient = null;
+    }
+  }
+
+  const semanticSimilarityByTransactionId = new Map<string, number>();
+  if (embeddingClient) {
+    try {
+      const embeddingTexts = [
+        sourceEvidence.embeddingText || sourceEvidence.normalizedDescription,
+        ...candidateMatches.map(
+          (match) =>
+            match.candidateEvidence.embeddingText ??
+            match.candidateEvidence.normalizedDescription,
+        ),
+      ];
+      const embeddings = await embeddingClient.embedTexts({
+        texts: embeddingTexts,
+        taskType: "SEMANTIC_SIMILARITY",
+        outputDimensionality: 768,
+      });
+      const sourceVector = embeddings[0] ?? [];
+      candidateMatches.forEach((match, index) => {
+        const candidateVector = embeddings[index + 1] ?? [];
+        semanticSimilarityByTransactionId.set(
+          match.transaction.id,
+          calculateCosineSimilarity(sourceVector, candidateVector),
+        );
+      });
+    } catch {
+      semanticSimilarityByTransactionId.clear();
+    }
+  }
+
+  return candidateMatches
+    .map((match) => {
+      const semanticSimilarity =
+        semanticSimilarityByTransactionId.get(match.transaction.id) ?? null;
+      const passesThreshold =
+        match.exactMatch ||
+        (semanticSimilarity !== null &&
+          (semanticSimilarity >= 0.97 ||
+            (semanticSimilarity >= 0.9 &&
+              (match.distinctiveOverlapCount >= 1 ||
+                match.distinctiveJaccard >= 0.5)))) ||
+        (semanticSimilarity === null &&
+          (match.distinctiveOverlapCount >= 2 ||
+            match.distinctiveJaccard >= 0.67));
+
+      return {
+        transaction: match.transaction,
+        score:
+          match.lexicalScore +
+          (semanticSimilarity !== null ? semanticSimilarity * 100 : 0),
+        lexicalScore: match.lexicalScore,
+        semanticSimilarity,
+        exactMatch: match.exactMatch,
+        passesThreshold,
+      };
+    })
+    .filter((match) => match.passesThreshold)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return (
+        new Date(right.transaction.createdAt).getTime() -
+        new Date(left.transaction.createdAt).getTime()
+      );
+    })
+    .slice(0, limit)
+    .map(({ passesThreshold: _passesThreshold, ...match }) => match);
 }
 
 function resolveValidEconomicEntityOverride(
