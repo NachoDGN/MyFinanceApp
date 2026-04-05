@@ -12,7 +12,6 @@ import {
 } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
-  buildHref,
   formatCurrency,
   formatDate,
   formatQuantity,
@@ -62,6 +61,28 @@ function getTransactionSecurityLabel(
   );
 }
 
+function matchesTransactionSecurityFilter(
+  model: Awaited<ReturnType<typeof getInvestmentsModel>>,
+  row: (typeof model.processedRows)[number],
+  query: string,
+) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+
+  const security = model.dataset.securities.find(
+    (candidate) => candidate.id === row.securityId,
+  );
+  const securityLabel = getTransactionSecurityLabel(model, row);
+
+  return [
+    security?.displaySymbol,
+    security?.name,
+    security?.isin,
+    securityLabel,
+    row.descriptionRaw,
+  ].some((value) => value?.toLowerCase().includes(normalizedQuery));
+}
+
 export default async function InvestmentsPage({
   searchParams,
 }: {
@@ -70,14 +91,23 @@ export default async function InvestmentsPage({
   const params = await searchParams;
   const model = await getInvestmentsModel(params);
   const pageParam = Array.isArray(params.page) ? params.page[0] : params.page;
+  const securityParam = Array.isArray(params.security)
+    ? params.security[0]
+    : params.security;
+  const securityFilter =
+    typeof securityParam === "string" ? securityParam.trim() : "";
   const requestedPage = Number.parseInt(String(pageParam ?? "1"), 10);
   const currentPage =
     Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const pageSize = 10;
-  const totalProcessedRows = model.processedRows.length;
+  const filteredProcessedRows = model.processedRows.filter((row) =>
+    matchesTransactionSecurityFilter(model, row, securityFilter),
+  );
+  const totalProcessedRows = filteredProcessedRows.length;
+  const totalProcessedRowsOverall = model.processedRows.length;
   const totalPages = Math.max(1, Math.ceil(totalProcessedRows / pageSize));
   const safePage = Math.min(currentPage, totalPages);
-  const processedRows = model.processedRows.slice(
+  const processedRows = filteredProcessedRows.slice(
     (safePage - 1) * pageSize,
     safePage * pageSize,
   );
@@ -135,17 +165,30 @@ export default async function InvestmentsPage({
     };
   };
 
-  const buildInvestmentsPageHref = (page: number) =>
-    `${buildHref(
-      "/investments",
-      {
-        scopeParam: model.scopeParam,
-        currency: model.currency,
-        period: model.period.preset,
-        referenceDate: model.referenceDate,
-      },
-      {},
-    )}&page=${page}`;
+  const buildInvestmentsPageHref = (
+    page: number,
+    nextSecurityFilter = securityFilter,
+  ) => {
+    const query = new URLSearchParams({
+      scope: model.scopeParam,
+      currency: model.currency,
+      period: model.period.preset,
+    });
+    if (model.referenceDate) {
+      query.set("asOf", model.referenceDate);
+    }
+    if (model.period.preset === "custom") {
+      query.set("start", model.period.start);
+      query.set("end", model.period.end);
+    }
+    if (nextSecurityFilter.trim()) {
+      query.set("security", nextSecurityFilter.trim());
+    }
+    if (page > 1) {
+      query.set("page", String(page));
+    }
+    return `/investments?${query.toString()}`;
+  };
   const processedLedgerColumns =
     "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)";
   const unresolvedLedgerColumns =
@@ -166,9 +209,9 @@ export default async function InvestmentsPage({
           <div>
             <h1 className="page-title">Investments</h1>
             <p className="page-subtitle">
-              Holdings are rebuilt from parsed investment rows plus explicit
-              opening adjustments. Cash remains cash; only priced securities
-              contribute to market value.
+              Holdings are rebuilt live from resolved investment rows plus
+              explicit opening adjustments. Cash remains cash; only priced
+              securities contribute to market value.
             </p>
           </div>
         </div>
@@ -305,39 +348,94 @@ export default async function InvestmentsPage({
           <div className="investment-review-header">
             <div>
               <span className="investment-review-kicker">
-                {totalProcessedRows} resolved rows
+                {securityFilter
+                  ? `${totalProcessedRows} of ${totalProcessedRowsOverall} resolved rows`
+                  : `${totalProcessedRows} resolved rows`}
               </span>
               <h2 className="investment-review-title">
                 Processed Investment Transactions
               </h2>
+              {securityFilter ? (
+                <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+                  Security filter: {securityFilter}
+                </p>
+              ) : null}
             </div>
-            {totalPages > 1 ? (
-              <div className="investment-review-pagination">
-                <span className="investment-review-page-pill">
-                  Page {safePage} of {totalPages}
-                </span>
-                {safePage > 1 ? (
-                  <a
-                    className="btn-ghost"
-                    href={buildInvestmentsPageHref(safePage - 1)}
-                  >
-                    Previous
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-end",
+                gap: 12,
+              }}
+            >
+              <form
+                action="/investments"
+                method="get"
+                className="inline-actions"
+                style={{ justifyContent: "flex-end" }}
+              >
+                <input type="hidden" name="scope" value={model.scopeParam} />
+                <input type="hidden" name="currency" value={model.currency} />
+                <input type="hidden" name="period" value={model.period.preset} />
+                {model.referenceDate ? (
+                  <input type="hidden" name="asOf" value={model.referenceDate} />
+                ) : null}
+                {model.period.preset === "custom" ? (
+                  <>
+                    <input type="hidden" name="start" value={model.period.start} />
+                    <input type="hidden" name="end" value={model.period.end} />
+                  </>
+                ) : null}
+                <label className="input-label" style={{ minWidth: 240 }}>
+                  <span>Filter by security</span>
+                  <input
+                    className="input-field"
+                    type="search"
+                    name="security"
+                    placeholder="Ticker, name, or ISIN"
+                    defaultValue={securityFilter}
+                  />
+                </label>
+                <button className="btn-ghost" type="submit">
+                  Filter
+                </button>
+                {securityFilter ? (
+                  <a className="btn-ghost" href={buildInvestmentsPageHref(1, "")}>
+                    Clear
                   </a>
                 ) : null}
-                {safePage < totalPages ? (
-                  <a
-                    className="btn-ghost"
-                    href={buildInvestmentsPageHref(safePage + 1)}
-                  >
-                    Next
-                  </a>
-                ) : null}
-              </div>
-            ) : null}
+              </form>
+              {totalPages > 1 ? (
+                <div className="investment-review-pagination">
+                  <span className="investment-review-page-pill">
+                    Page {safePage} of {totalPages}
+                  </span>
+                  {safePage > 1 ? (
+                    <a
+                      className="btn-ghost"
+                      href={buildInvestmentsPageHref(safePage - 1)}
+                    >
+                      Previous
+                    </a>
+                  ) : null}
+                  {safePage < totalPages ? (
+                    <a
+                      className="btn-ghost"
+                      href={buildInvestmentsPageHref(safePage + 1)}
+                    >
+                      Next
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
           {processedRows.length === 0 ? (
             <div className="table-empty-state">
-              No processed investment transactions are available for this scope.
+              {securityFilter
+                ? `No processed investment transactions match "${securityFilter}".`
+                : "No processed investment transactions are available for this scope."}
             </div>
           ) : (
             <div className="investment-review-scroll">

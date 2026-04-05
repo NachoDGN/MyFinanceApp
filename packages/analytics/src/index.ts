@@ -11,20 +11,19 @@ import type {
   Transaction,
 } from "@myfinance/domain";
 import {
-    buildHoldingRows,
-    filterTransactionsByPeriod,
-    filterTransactionsByScope,
-    getLatestBalanceSnapshots,
-    getLatestInvestmentCashBalances,
-    getPreviousComparablePeriod,
-    isTransactionResolvedForAnalytics,
-    getScopeLatestDate,
-    resolveFxRate,
-    resolvePeriodSelection,
-    resolveScopeEntityIds,
+  buildLiveHoldingRows,
+  filterTransactionsByPeriod,
+  filterTransactionsByScope,
+  getLatestBalanceSnapshots,
+  getLatestInvestmentCashBalances,
+  getPreviousComparablePeriod,
+  getScopeLatestDate,
+  isTransactionResolvedForAnalytics,
+  resolveFxRate,
+  resolvePeriodSelection,
+  resolveScopeEntityIds,
   shiftIsoDate,
   startOfMonthIso,
-  sumSnapshotField,
   todayIso,
 } from "@myfinance/domain";
 import { metricRegistry } from "./registry";
@@ -120,7 +119,11 @@ function currentCashTotal(
       const account = dataset.accounts.find(
         (row) => row.id === snapshot.accountId,
       );
-      return account && entityIds.has(account.entityId);
+      return (
+        account &&
+        entityIds.has(account.entityId) &&
+        (scope.kind !== "account" || account.id === scope.accountId)
+      );
     })
     .reduce(
       (sum, snapshot) => sum.plus(snapshot.balanceBaseEur),
@@ -135,7 +138,7 @@ function currentPortfolioValue(
   asOfDate: string,
 ) {
   return sumStrings(
-    buildHoldingRows(dataset, scope, asOfDate).map(
+    buildLiveHoldingRows(dataset, scope, asOfDate).map(
       (row) => row.currentValueEur,
     ),
   );
@@ -147,26 +150,9 @@ function currentPortfolioUnrealized(
   asOfDate: string,
 ) {
   return sumStrings(
-    buildHoldingRows(dataset, scope, asOfDate).map(
+    buildLiveHoldingRows(dataset, scope, asOfDate).map(
       (row) => row.unrealizedPnlEur,
     ),
-  );
-}
-
-function latestPortfolioSnapshotDate(
-  dataset: DomainDataset,
-  scope: Scope,
-  asOfDate: string,
-) {
-  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  return (
-    dataset.dailyPortfolioSnapshots
-      .filter(
-        (row) => entityIds.has(row.entityId) && row.snapshotDate <= asOfDate,
-      )
-      .map((row) => row.snapshotDate)
-      .sort()
-      .at(-1) ?? null
   );
 }
 
@@ -177,30 +163,20 @@ function currentValueComparison(
   referenceDate: string,
 ) {
   const previousMonthEnd = shiftIsoDate(startOfMonthIso(referenceDate), -1);
-  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const snapshotDate = latestPortfolioSnapshotDate(
+  const priorCash = currentCashTotal(dataset, scope, previousMonthEnd);
+  const priorPortfolio = currentPortfolioValue(dataset, scope, previousMonthEnd);
+  const priorUnrealized = currentPortfolioUnrealized(
     dataset,
     scope,
     previousMonthEnd,
   );
-  const snapshots = snapshotDate
-    ? dataset.dailyPortfolioSnapshots.filter(
-        (row) =>
-          row.snapshotDate === snapshotDate && entityIds.has(row.entityId),
-      )
-    : [];
-  const priorCash = currentCashTotal(dataset, scope, previousMonthEnd);
 
   if (selector === "cash") return priorCash;
-  if (selector === "portfolio") {
-    return new Decimal(sumSnapshotField(snapshots, "totalPortfolioValueEur"))
-      .minus(priorCash)
-      .toFixed(2);
-  }
+  if (selector === "portfolio") return priorPortfolio;
   if (selector === "networth") {
-    return sumSnapshotField(snapshots, "totalPortfolioValueEur");
+    return new Decimal(priorCash).plus(priorPortfolio).toFixed(2);
   }
-  return sumSnapshotField(snapshots, "unrealizedPnlEur");
+  return priorUnrealized;
 }
 
 function flowMetric(
@@ -485,7 +461,7 @@ export function buildInsights(
     },
   );
   const quality = qualitySummary(dataset, scope, referenceDate);
-  const holdings = buildHoldingRows(dataset, scope, referenceDate)
+  const holdings = buildLiveHoldingRows(dataset, scope, referenceDate)
     .filter((row) => row.currentValueEur)
     .sort(
       (left, right) =>
@@ -676,7 +652,7 @@ export function buildDashboardSummary(
     }))
     .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
 
-  const holdings = buildHoldingRows(dataset, input.scope, referenceDate).sort(
+  const holdings = buildLiveHoldingRows(dataset, input.scope, referenceDate).sort(
     (left, right) =>
       Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
   );
@@ -795,7 +771,7 @@ function buildHoldingsSnapshot(
   scope: Scope,
   referenceDate: string,
 ) {
-  const holdings = buildHoldingRows(dataset, scope, referenceDate);
+  const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
   const brokerageCashEur = getLatestInvestmentCashBalances(
     dataset,
@@ -806,7 +782,9 @@ function buildHoldingsSnapshot(
         (candidate) => candidate.id === snapshot.accountId,
       );
       return (
-        account?.assetDomain === "investment" && entityIds.has(account.entityId)
+        account?.assetDomain === "investment" &&
+        entityIds.has(account.entityId) &&
+        (scope.kind !== "account" || account.id === scope.accountId)
       );
     })
     .reduce(

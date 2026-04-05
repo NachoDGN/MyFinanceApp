@@ -3959,7 +3959,7 @@ test("investment review includes portfolio state and can override commission-lik
       /ALPHABET INC CL C FROM OTHER ACCOUNT/,
     );
     assert.match(capturedUserPrompt, /"symbol":"GOOG"/);
-    assert.match(capturedUserPrompt, /"quantity":"45\.00000000"/);
+    assert.match(capturedUserPrompt, /"quantity":"5\.00000000"/);
     assert.match(capturedUserPrompt, /"impliedUnitPrice":"0\.13"/);
     assert.match(capturedUserPrompt, /"latestHoldingPrice":"215\.40"/);
     assert.match(capturedUserPrompt, /Examples from prior user corrections:/);
@@ -5965,4 +5965,208 @@ test("unresolved investment rows do not contribute to rebuilt positions or YTD i
   assert.equal(rebuilt.positions.length, 0);
   assert.equal(model.dividendsYtd, "0.00");
   assert.equal(model.unresolved.length, 2);
+});
+
+test("investments read model derives holdings and KPI deltas from live resolved transactions instead of stale snapshots", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-live-holdings",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+  });
+  const liveSecurity = {
+    id: "security-live",
+    providerName: "manual",
+    providerSymbol: "LIVE",
+    canonicalSymbol: "LIVE",
+    displaySymbol: "LIVE",
+    name: "Live Security",
+    exchangeName: "XETRA",
+    micCode: "XETR",
+    assetType: "fund",
+    quoteCurrency: "EUR",
+    country: "DE",
+    isin: null,
+    figi: null,
+    active: true,
+    metadataJson: {},
+    lastPriceRefreshAt: null,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const staleSecurity = {
+    id: "security-stale",
+    providerName: "manual",
+    providerSymbol: "STALE",
+    canonicalSymbol: "STALE",
+    displaySymbol: "STALE",
+    name: "Stale Security",
+    exchangeName: "XETRA",
+    micCode: "XETR",
+    assetType: "fund",
+    quoteCurrency: "EUR",
+    country: "DE",
+    isin: null,
+    figi: null,
+    active: true,
+    metadataJson: {},
+    lastPriceRefreshAt: null,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [liveSecurity, staleSecurity],
+    securityPrices: [
+      {
+        securityId: "security-live",
+        priceDate: "2026-03-31",
+        quoteTimestamp: "2026-03-31T20:00:00Z",
+        price: "100.00",
+        currency: "EUR",
+        sourceName: "manual",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: { close: "100.00" },
+        createdAt: "2026-03-31T20:00:00Z",
+      },
+      {
+        securityId: "security-live",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T20:00:00Z",
+        price: "120.00",
+        currency: "EUR",
+        sourceName: "manual",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: { close: "120.00" },
+        createdAt: "2026-04-03T20:00:00Z",
+      },
+      {
+        securityId: "security-stale",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T20:00:00Z",
+        price: "999.00",
+        currency: "EUR",
+        sourceName: "manual",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: { close: "999.00" },
+        createdAt: "2026-04-03T20:00:00Z",
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "live-buy-1",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-15",
+        postedDate: "2026-03-15",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-100.00",
+        descriptionRaw: "LIVE FUND",
+        descriptionClean: "LIVE FUND",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "uncategorized_investment",
+        needsReview: false,
+        securityId: "security-live",
+        quantity: "1.00000000",
+        unitPriceOriginal: "100.00000000",
+      }),
+      createTransaction({
+        id: "live-buy-2",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-110.00",
+        amountBaseEur: "-110.00",
+        descriptionRaw: "LIVE FUND EXTRA",
+        descriptionClean: "LIVE FUND EXTRA",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "uncategorized_investment",
+        needsReview: false,
+        securityId: "security-live",
+        quantity: "1.00000000",
+        unitPriceOriginal: "110.00000000",
+      }),
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: investmentAccount.entityId,
+        accountId: investmentAccount.id,
+        securityId: "security-live",
+        openQuantity: "1.00000000",
+        openCostBasisEur: "100.00000000",
+        avgCostEur: "100.00000000",
+        realizedPnlEur: "0.00000000",
+        dividendsEur: "0.00000000",
+        interestEur: "0.00000000",
+        feesEur: "0.00000000",
+        lastTradeDate: "2026-03-15",
+        lastRebuiltAt: "2026-03-31T20:00:00Z",
+        provenanceJson: { source: "transactions" },
+        unrealizedComplete: true,
+      },
+      {
+        userId: "user-1",
+        entityId: investmentAccount.entityId,
+        accountId: investmentAccount.id,
+        securityId: "security-stale",
+        openQuantity: "4.00000000",
+        openCostBasisEur: "400.00000000",
+        avgCostEur: "100.00000000",
+        realizedPnlEur: "0.00000000",
+        dividendsEur: "0.00000000",
+        interestEur: "0.00000000",
+        feesEur: "0.00000000",
+        lastTradeDate: "2026-03-15",
+        lastRebuiltAt: "2026-03-31T20:00:00Z",
+        provenanceJson: { source: "transactions" },
+        unrealizedComplete: true,
+      },
+    ],
+    dailyPortfolioSnapshots: [
+      {
+        snapshotDate: "2026-03-31",
+        userId: "user-1",
+        entityId: investmentAccount.entityId,
+        accountId: investmentAccount.id,
+        securityId: null,
+        marketValueEur: "999.00000000",
+        costBasisEur: "999.00000000",
+        unrealizedPnlEur: "500.00000000",
+        cashBalanceEur: "0.00000000",
+        totalPortfolioValueEur: "999.00000000",
+        generatedAt: "2026-03-31T20:00:00Z",
+      },
+    ],
+  });
+
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-03",
+    }),
+    referenceDate: "2026-04-03",
+  });
+
+  assert.equal(model.holdings.holdings.length, 1);
+  assert.equal(model.holdings.holdings[0]?.securityId, "security-live");
+  assert.equal(model.holdings.holdings[0]?.quantity, "2.00000000");
+  assert.equal(model.holdings.holdings[0]?.currentValueEur, "240.00");
+  assert.equal(model.holdings.holdings[0]?.unrealizedPnlEur, "30.00");
+  assert.equal(model.accountAllocation[0]?.amountEur, "240.00");
+  assert.equal(model.metrics.portfolioValue.valueBaseEur, "240.00");
+  assert.equal(model.metrics.portfolioValue.comparisonValueBaseEur, "100.00");
+  assert.equal(model.metrics.portfolioValue.deltaDisplay, "140.00");
+  assert.equal(model.metrics.portfolioValue.deltaPercent, "140.00");
+  assert.equal(model.metrics.unrealized.valueBaseEur, "30.00");
+  assert.equal(model.metrics.unrealized.comparisonValueBaseEur, "0.00");
+  assert.equal(model.metrics.unrealized.deltaDisplay, "30.00");
 });

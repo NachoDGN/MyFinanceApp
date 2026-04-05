@@ -16,7 +16,7 @@ import type {
   DomainDataset,
   Transaction,
 } from "@myfinance/domain";
-import { buildHoldingRows, getDatasetLatestDate } from "@myfinance/domain";
+import { buildLiveHoldingRows, getDatasetLatestDate } from "@myfinance/domain";
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -1434,7 +1434,7 @@ function buildInvestmentPortfolioState(
   }
 
   const asOfDate = getDatasetLatestDate(dataset);
-  const holdings = buildHoldingRows(
+  const holdings = buildLiveHoldingRows(
     dataset,
     { kind: "account", accountId: account.id },
     asOfDate,

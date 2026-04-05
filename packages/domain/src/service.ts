@@ -21,7 +21,7 @@ import type {
 } from "./types";
 import type { FinanceRepository } from "./repository";
 import {
-  buildHoldingRows,
+  buildLiveHoldingRows,
   filterTransactionsByPeriod,
   filterTransactionsByScope,
   getLatestBalanceSnapshots,
@@ -197,7 +197,7 @@ export class FinanceDomainService {
     referenceDate = todayIso(),
   ): Promise<HoldingsResponse> {
     const dataset = await this.repository.getDataset();
-    const holdings = buildHoldingRows(dataset, scope, referenceDate);
+    const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
     const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
     const brokerageCashEur = getLatestInvestmentCashBalances(
       dataset,
@@ -209,7 +209,8 @@ export class FinanceDomainService {
         );
         return (
           account?.assetDomain === "investment" &&
-          entityIds.has(account.entityId)
+          entityIds.has(account.entityId) &&
+          (scope.kind !== "account" || account.id === scope.accountId)
         );
       })
       .reduce((sum, row) => sum + Number(row.balanceBaseEur), 0)

@@ -13,6 +13,10 @@ import type {
 
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
+const liveInvestmentPositionsCache = new WeakMap<
+  DomainDataset,
+  Map<string, DomainDataset["investmentPositions"]>
+>();
 
 function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
   return (
@@ -550,7 +554,11 @@ export function buildHoldingRows(
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
 
   return dataset.investmentPositions
-    .filter((position) => entityIds.has(position.entityId))
+    .filter(
+      (position) =>
+        entityIds.has(position.entityId) &&
+        (scope.kind !== "account" || position.accountId === scope.accountId),
+    )
     .map((position) => {
       const security = dataset.securities.find(
         (row) => row.id === position.securityId,
@@ -613,6 +621,40 @@ export function buildHoldingRows(
         unrealizedComplete: position.unrealizedComplete,
       };
     });
+}
+
+function buildLiveInvestmentPositions(
+  dataset: DomainDataset,
+  asOfDate: string,
+) {
+  const existingCache = liveInvestmentPositionsCache.get(dataset);
+  if (existingCache?.has(asOfDate)) {
+    return existingCache.get(asOfDate)!;
+  }
+
+  const rebuilt = rebuildInvestmentState(dataset, asOfDate);
+  const nextCache =
+    existingCache ?? new Map<string, DomainDataset["investmentPositions"]>();
+  nextCache.set(asOfDate, rebuilt.positions);
+  if (!existingCache) {
+    liveInvestmentPositionsCache.set(dataset, nextCache);
+  }
+  return rebuilt.positions;
+}
+
+export function buildLiveHoldingRows(
+  dataset: DomainDataset,
+  scope: Scope,
+  asOfDate = todayIso(),
+): HoldingRow[] {
+  return buildHoldingRows(
+    {
+      ...dataset,
+      investmentPositions: buildLiveInvestmentPositions(dataset, asOfDate),
+    },
+    scope,
+    asOfDate,
+  );
 }
 
 export function sumSnapshotField(
