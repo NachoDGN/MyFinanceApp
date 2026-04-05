@@ -11,6 +11,7 @@ import {
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
   normalizeInvestmentMatchingText,
+  rankReviewPropagationTransactions,
   type TransactionEnrichmentDecision,
   type SimilarAccountTransactionPromptContext,
 } from "@myfinance/classification";
@@ -787,6 +788,36 @@ export async function findSimilarResolvedTransactionsByDescriptionEmbedding(
     .filter(
       (row) => row.transactionId !== "" && Number.isFinite(row.similarity),
     );
+}
+
+export async function selectReviewPropagationCandidateMatches(input: {
+  dataset: DomainDataset;
+  account: DomainDataset["accounts"][number];
+  sourceTransaction: Transaction;
+  embeddingMatches: SimilarUnresolvedTransactionMatch[];
+}) {
+  const rankedMatches = await rankReviewPropagationTransactions(
+    input.dataset,
+    input.account,
+    input.sourceTransaction,
+    { embeddingClient: null },
+  );
+  const rankedMatchById = new Map(
+    rankedMatches.map((match) => [match.transaction.id, match]),
+  );
+
+  if (input.embeddingMatches.length > 0) {
+    return input.embeddingMatches.filter((match) =>
+      rankedMatchById.has(match.transactionId),
+    );
+  }
+
+  return rankedMatches.map((match) => ({
+    transactionId: match.transaction.id,
+    similarity:
+      match.semanticSimilarity ??
+      Math.min(0.99, Math.max(0, match.lexicalScore) / 100),
+  }));
 }
 
 function getTransactionUserProvidedContext(transaction: Transaction) {
@@ -1676,7 +1707,7 @@ async function processReviewPropagationJob(
     };
   }
 
-  const candidateMatches =
+  const embeddingMatches =
     await findSimilarUnresolvedTransactionsByDescriptionEmbedding(sql, {
       userId,
       sourceTransactionId,
@@ -1684,6 +1715,12 @@ async function processReviewPropagationJob(
       sourceEmbedding,
       threshold: getReviewPropagationSimilarityThreshold(),
     });
+  const candidateMatches = await selectReviewPropagationCandidateMatches({
+    dataset,
+    account,
+    sourceTransaction,
+    embeddingMatches,
+  });
 
   const appliedTransactionIds: string[] = [];
   const failedTransactionIds: Array<{ transactionId: string; error: string }> =

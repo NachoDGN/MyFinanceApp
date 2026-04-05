@@ -218,10 +218,12 @@ export function parseInvestmentEvent(transaction: Transaction): {
   transactionClass:
     | "investment_trade_buy"
     | "investment_trade_sell"
+    | "transfer_internal"
     | "dividend"
     | "interest"
     | "fee"
     | "fx_conversion"
+    | "balance_adjustment"
     | "unknown";
   quantity?: string;
   securityHint?: string;
@@ -234,8 +236,18 @@ export function parseInvestmentEvent(transaction: Transaction): {
   if (comparison.includes("DIVIDEND")) {
     return { transactionClass: "dividend" };
   }
+  if (/\bTRANSFERENCIAS?\s+ENTRE\s+CUENTAS\b/.test(comparison)) {
+    return { transactionClass: "transfer_internal" };
+  }
   if (comparison.includes("INTEREST")) {
     return { transactionClass: "interest" };
+  }
+  if (
+    Number(transaction.amountOriginal) === 0 &&
+    comparison.includes("IRPF") &&
+    comparison.includes("INTERESES")
+  ) {
+    return { transactionClass: "balance_adjustment" };
   }
   if (
     comparison.startsWith("PERIODO ") &&
@@ -1671,6 +1683,8 @@ function buildDeterministicClassification(
             ? "interest"
             : parsed.transactionClass === "fee"
               ? "broker_fee"
+              : parsed.transactionClass === "transfer_internal"
+                ? "uncategorized_investment"
               : parsed.transactionClass === "investment_trade_buy"
                 ? "stock_buy"
                 : "uncategorized_investment";

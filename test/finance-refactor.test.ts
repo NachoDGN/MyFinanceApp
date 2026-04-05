@@ -38,6 +38,7 @@ import {
   findSimilarResolvedTransactionsByDescriptionEmbedding,
   findSimilarUnresolvedTransactionsByDescriptionEmbedding,
   mergePropagatedContextHistory,
+  selectReviewPropagationCandidateMatches,
   shouldRunInvestmentRebuildAfterReviewPropagation,
   shouldQueueReviewPropagationAfterManualReview,
   TRANSACTION_SELECT_COLUMN_NAMES,
@@ -1251,6 +1252,321 @@ test("investment review propagation ranking rejects semantically nearby but diff
   assert.ok((matches[0]?.semanticSimilarity ?? 0) > 0.9);
 });
 
+test("review propagation candidate selection drops embedding matches that fail the lexical guardrail", async () => {
+  const account = createAccount({
+    id: "broker-review-propagation-filter",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const source = createTransaction({
+    id: "source-us500-fund",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2026-03-24",
+    postedDate: "2026-03-25",
+    amountOriginal: "-99.58",
+    amountBaseEur: "-99.58",
+    currencyOriginal: "EUR",
+    descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+    descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.94",
+    securityId: "security-vanguard-us500",
+    needsReview: false,
+    llmPayload: {
+      llm: {
+        rawOutput: {
+          resolved_instrument_name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+          resolved_instrument_isin: "IE0032126645",
+          current_price_type: "NAV",
+        },
+      },
+    },
+  });
+  const trueCandidate = createTransaction({
+    id: "candidate-us500-variant",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2026-03-03",
+    postedDate: "2026-03-04",
+    amountOriginal: "-99.43",
+    amountBaseEur: "-99.43",
+    currencyOriginal: "EUR",
+    descriptionRaw: "VANGUARD US 500 STOCK EUR @ 2.",
+    descriptionClean: "VANGUARD US 500 STOCK EUR @ 2.",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.61",
+    needsReview: true,
+    reviewReason: "Still ambiguous.",
+  });
+  const falseCandidate = createTransaction({
+    id: "candidate-amd",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2025-03-11",
+    postedDate: "2025-03-12",
+    amountOriginal: "-90.00",
+    amountBaseEur: "-90.00",
+    currencyOriginal: "EUR",
+    descriptionRaw: "ADVANCED MICRO DEVICES @ 1",
+    descriptionClean: "ADVANCED MICRO DEVICES @ 1",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.61",
+    needsReview: true,
+    reviewReason: "Still ambiguous.",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [source, trueCandidate, falseCandidate],
+  });
+
+  const matches = await selectReviewPropagationCandidateMatches({
+    dataset,
+    account,
+    sourceTransaction: source,
+    embeddingMatches: [
+      { transactionId: "candidate-us500-variant", similarity: 0.992 },
+      { transactionId: "candidate-amd", similarity: 0.991 },
+    ],
+  });
+
+  assert.deepEqual(
+    matches.map((match) => match.transactionId),
+    ["candidate-us500-variant"],
+  );
+});
+
+test("investment rebuild ignores propagated review ISIN context when the current trade resolves to a different ticker", async () => {
+  const account = createAccount({
+    id: "broker-review-propagation-rebuild-guardrail",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "candidate-amd-review-propagation",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2025-03-11",
+        postedDate: "2025-03-12",
+        amountOriginal: "-90.00",
+        amountBaseEur: "-90.00",
+        currencyOriginal: "EUR",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 1",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 1",
+        merchantNormalized: "Advanced Micro Devices",
+        counterpartyName: "MyInvestor",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "llm",
+        classificationSource: "llm",
+        classificationConfidence: "0.99",
+        securityId: null,
+        quantity: "1.00000000",
+        unitPriceOriginal: "90.00000000",
+        needsReview: false,
+        reviewReason: null,
+        llmPayload: {
+          llm: {
+            rawOutput: {
+              security_hint: "Advanced Micro Devices Inc",
+              resolved_instrument_name: "Advanced Micro Devices Inc",
+              resolved_instrument_ticker: "AMD",
+              current_price_type: "delayed_quote",
+            },
+          },
+          reviewContext: {
+            trigger: "review_propagation",
+            userProvidedContext:
+              "A similar unresolved transaction from this same account was manually re-reviewed. Source transaction description: VANGUARD US 500 STOCK INDEX EU. Resolved instrument ISIN: IE0032126645.",
+          },
+        },
+      }),
+    ],
+    securities: [
+      {
+        id: "security-amd",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "security-vanguard-us500",
+        providerName: "manual_fund_nav",
+        providerSymbol: "IE0032126645",
+        canonicalSymbol: "VANUIEI",
+        displaySymbol: "VANUIEI",
+        name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+        exchangeName: "VANGUARD",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: "IE0032126645",
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  });
+
+  const rebuilt = await prepareInvestmentRebuild(dataset, "2025-03-11");
+  const patch = rebuilt.transactionPatches.find(
+    (candidate) => candidate.id === "candidate-amd-review-propagation",
+  );
+
+  assert.equal(patch?.securityId, "security-amd");
+});
+
+test("investment rebuild ignores propagated ticker guesses when a stored alias points to the correct fund", async () => {
+  const account = createAccount({
+    id: "broker-review-propagation-vanguard-etf",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "candidate-vanguard-review-propagation",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2025-01-31",
+        postedDate: "2025-02-03",
+        amountOriginal: "-299.00",
+        amountBaseEur: "-299.00",
+        currencyOriginal: "EUR",
+        descriptionRaw: "VANGUARD US 500 STOCK EUR @ 4.",
+        descriptionClean: "VANGUARD US 500 STOCK EUR @ 4.",
+        merchantNormalized: "Vanguard",
+        counterpartyName: "Vanguard",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "llm",
+        classificationSource: "llm",
+        classificationConfidence: "0.93",
+        securityId: "security-vusa",
+        quantity: "4.00000000",
+        unitPriceOriginal: "74.75000000",
+        needsReview: false,
+        reviewReason: null,
+        llmPayload: {
+          llm: {
+            securityHint: "Vanguard S&P 500 UCITS ETF",
+            rawOutput: {
+              security_hint: "Vanguard S&P 500 UCITS ETF",
+              resolved_instrument_name:
+                "Vanguard S&P 500 UCITS ETF (USD) Distributing",
+              resolved_instrument_ticker: "VUSA",
+              current_price_type: "delayed_quote",
+            },
+          },
+          reviewContext: {
+            trigger: "review_propagation",
+            userProvidedContext:
+              "A similar unresolved transaction from this same account was manually re-reviewed and should be used as supporting precedent when the evidence matches.",
+            previousReviewReason:
+              'Parsed investment trade for "VANGUARD US 500 STOCK EUR", but the system has not matched it to a tracked security yet.',
+          },
+        },
+      }),
+    ],
+    securities: [
+      {
+        id: "security-fund",
+        providerName: "manual_fund_nav",
+        providerSymbol: "IE0032126645",
+        canonicalSymbol: "VANUIEI",
+        displaySymbol: "VANUIEI",
+        name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+        exchangeName: "VANGUARD",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: "IE0032126645",
+        figi: null,
+        active: true,
+        metadataJson: {
+          instrumentType: "Mutual Fund",
+        },
+        lastPriceRefreshAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "security-vusa",
+        providerName: "twelve_data",
+        providerSymbol: "VUSA",
+        canonicalSymbol: "VUSA",
+        displaySymbol: "VUSA",
+        name: "Vanguard S&P 500 UCITS ETF (USD) Distributing",
+        exchangeName: "LSE",
+        micCode: "XLON",
+        assetType: "etf",
+        quoteCurrency: "EUR",
+        country: "United Kingdom",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {
+          instrumentType: "ETF",
+        },
+        lastPriceRefreshAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+    securityAliases: [
+      {
+        id: "alias-vanguard-us-500-stock-eur",
+        securityId: "security-fund",
+        aliasTextNormalized: "VANGUARD US 500 STOCK EUR",
+        aliasSource: "manual",
+        templateId: null,
+        confidence: "0.9900",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+  });
+
+  const rebuilt = await prepareInvestmentRebuild(dataset, "2026-04-05");
+  const patch = rebuilt.transactionPatches.find(
+    (candidate) => candidate.id === "candidate-vanguard-review-propagation",
+  );
+
+  assert.equal(patch?.securityId, "security-fund");
+});
+
 test("vector similarity propagation includes abbreviated small-cap variants at the 0.9 threshold", async () => {
   const relaxedMatches =
     await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
@@ -1360,6 +1676,38 @@ test("investment parser recognizes periodic brokerage credits as interest", () =
   );
 
   assert.equal(parsed.transactionClass, "interest");
+});
+
+test("investment parser recognizes between-account brokerage transfers in Spanish", () => {
+  const parsed = parseInvestmentEvent(
+    createTransaction({
+      accountId: "broker-1",
+      amountOriginal: "500.00",
+      amountBaseEur: "500.00",
+      descriptionRaw: "transferencias entre cuentas",
+      descriptionClean: "TRANSFERENCIAS ENTRE CUENTAS",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+    }),
+  );
+
+  assert.equal(parsed.transactionClass, "transfer_internal");
+});
+
+test("investment parser recognizes zero-amount IRPF interest withholding memos as balance adjustments", () => {
+  const parsed = parseInvestmentEvent(
+    createTransaction({
+      accountId: "broker-1",
+      amountOriginal: "0.00",
+      amountBaseEur: "0.00",
+      descriptionRaw: "Retenci√≥n IRPF intereses dicie",
+      descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_investment",
+    }),
+  );
+
+  assert.equal(parsed.transactionClass, "balance_adjustment");
 });
 
 test("rule matching respects account scope", () => {
@@ -2096,6 +2444,48 @@ test("investment rebuild clears stale review flags for deterministic interest ro
   assert.equal(patch?.reviewReason, null);
 });
 
+test("investment rebuild clears stale review flags for zero-amount IRPF interest withholding memos", async () => {
+  const account = createAccount({
+    id: "broker-irpf-memo",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+    institutionName: "Broker",
+    displayName: "Brokerage",
+  });
+  const transaction = createTransaction({
+    id: "period-irpf-memo",
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionDate: "2025-01-03",
+    postedDate: "2025-01-03",
+    amountOriginal: "0.00",
+    amountBaseEur: "0.00",
+    descriptionRaw: "Retenci√≥n IRPF intereses dicie",
+    descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
+    transactionClass: "unknown",
+    categoryCode: "uncategorized_investment",
+    classificationStatus: "unknown",
+    classificationSource: "system_fallback",
+    classificationConfidence: "0.00",
+    needsReview: true,
+    reviewReason: "Needs LLM enrichment.",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [transaction],
+  });
+
+  const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-16");
+  const patch = rebuilt.transactionPatches.find(
+    (candidate) => candidate.id === "period-irpf-memo",
+  );
+
+  assert.equal(patch?.transactionClass, "balance_adjustment");
+  assert.equal(patch?.needsReview, false);
+  assert.equal(patch?.reviewReason, null);
+});
+
 test("investment rebuild remaps stale EU fund aliases away from USD OTC securities", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
   const previousFetch = globalThis.fetch;
@@ -2224,6 +2614,128 @@ test("investment rebuild remaps stale EU fund aliases away from USD OTC securiti
       rebuilt.insertedAliases[0]?.aliasTextNormalized,
       "VANGUARD US 500 STOCK INDEX EU",
     );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.TWELVE_DATA_API_KEY;
+    } else {
+      process.env.TWELVE_DATA_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test("investment rebuild prefers Samsung's London DR over preferred German listings when the hint does not mention preferred", async () => {
+  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.TWELVE_DATA_API_KEY = "test-key";
+  globalThis.fetch = async (input) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const url = new URL(requestUrl);
+
+    if (url.pathname.endsWith("/symbol_search")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              symbol: "SSUN",
+              instrument_name:
+                "Samsung Electronics Co., Ltd. GDR (Preferred Stock)",
+              exchange: "XBER",
+              mic_code: "XBER",
+              instrument_type: "Depositary Receipt",
+              country: "Germany",
+              currency: "EUR",
+            },
+            {
+              symbol: "SMSN",
+              instrument_name: "Samsung Electronics Co., Ltd.",
+              exchange: "LSE",
+              mic_code: "XLON",
+              instrument_type: "Depositary Receipt",
+              country: "United Kingdom",
+              currency: "USD",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    if (url.pathname.endsWith("/quote")) {
+      return new Response(
+        JSON.stringify({
+          close: "3022.00",
+          currency: "USD",
+          datetime: "2026-04-02",
+          is_market_open: "false",
+          last_quote_at: 1775140800,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    return new Response(JSON.stringify({ status: "error" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-samsung-dr",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "samsung-gdr-144a",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2026-03-04",
+      postedDate: "2026-03-06",
+      amountOriginal: "-2598.00",
+      amountBaseEur: "-2598.00",
+      descriptionRaw: "SAMSUNG ELECTR-GDR 144-A @ 1",
+      descriptionClean: "SAMSUNG ELECTR-GDR 144-A @ 1",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "investment_parser",
+      classificationSource: "investment_parser",
+      classificationConfidence: "0.96",
+      quantity: "1.00000000",
+      unitPriceOriginal: "2598.00000000",
+      needsReview: true,
+      reviewReason: "Security mapping requires review.",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-04-05");
+    const insertedSecurity = rebuilt.insertedSecurities[0];
+    const patch = rebuilt.transactionPatches.find(
+      (candidate) => candidate.id === "samsung-gdr-144a",
+    );
+
+    assert.equal(insertedSecurity?.providerSymbol, "SMSN");
+    assert.equal(insertedSecurity?.exchangeName, "LSE");
+    assert.equal(insertedSecurity?.assetType, "stock");
+    assert.equal(insertedSecurity?.quoteCurrency, "USD");
+    assert.equal(patch?.securityId, insertedSecurity?.id);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) {
@@ -5432,6 +5944,101 @@ test("holding rows ignore placeholder seed quotes when a real market-data row ex
   assert.equal(holding?.quoteFreshness, "delayed");
 });
 
+test("holding rows prefer official fund NAVs over later lower-quality web quotes on the same day", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-fund-nav-priority",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-vanguard-us500",
+        providerName: "manual_fund_nav",
+        providerSymbol: "IE0032126645",
+        canonicalSymbol: "VANUIEI",
+        displaySymbol: "VANUIEI",
+        name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+        exchangeName: "VANGUARD",
+        exchangeMic: null,
+        securityType: "other",
+        quoteCurrency: "EUR",
+        countryCode: "IE",
+        isin: "IE0032126645",
+        cusip: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-vanguard-us500",
+        priceDate: "2026-04-02",
+        quoteTimestamp: "2026-04-02T19:59:00Z",
+        price: "217.50",
+        currency: "USD",
+        sourceName: "llm_web_search",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "delayed",
+        rawJson: {
+          source: "portfolio_snapshot_delayed_quote",
+          priceType: "delayed",
+        },
+        createdAt: "2026-04-05T19:09:47Z",
+      },
+      {
+        securityId: "security-vanguard-us500",
+        priceDate: "2026-04-02",
+        quoteTimestamp: "2026-04-02T16:00:00Z",
+        price: "69.39",
+        currency: "EUR",
+        sourceName: "manual_nav_import",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "official_nav",
+        rawJson: {
+          priceType: "nav",
+        },
+        createdAt: "2026-04-05T16:20:43Z",
+      },
+    ],
+    investmentPositions: [
+      {
+        userId: "user-1",
+        entityId: "entity-1",
+        accountId: "brokerage-fund-nav-priority",
+        securityId: "security-vanguard-us500",
+        openQuantity: "10.00",
+        openCostBasisEur: "600.00",
+        avgCostEur: "60.00",
+        realizedPnlEur: "0.00",
+        dividendsEur: "0.00",
+        interestEur: "0.00",
+        feesEur: "0.00",
+        lastTradeDate: "2026-04-02",
+        lastRebuiltAt: "2026-04-05T19:20:00Z",
+        provenanceJson: {},
+        unrealizedComplete: true,
+      },
+    ],
+  });
+
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-04",
+  );
+
+  assert.equal(holding?.currentPrice, "69.39");
+  assert.equal(holding?.currentPriceCurrency, "EUR");
+  assert.equal(holding?.currentValueEur, "693.90");
+  assert.equal(holding?.quoteTimestamp, "2026-04-02T16:00:00Z");
+});
+
 test("holding freshness is stale when the latest delayed quote is older than five days", () => {
   const investmentAccount = createAccount({
     id: "brokerage-1",
@@ -5718,6 +6325,88 @@ test("investment rebuild derives open positions and brokerage cash from imported
   assert.equal(rebuilt.positions[0]?.realizedPnlEur, "20.00000000");
   assert.equal(balances[0]?.balanceBaseEur, "570.00000000");
   assert.equal(rebuilt.snapshots[0]?.totalPortfolioValueEur, "705.00000000");
+});
+
+test("investment cash balance prefers the last imported same-day statement row", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-same-day-balance",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+  });
+  const baseRow = {
+    accountId: investmentAccount.id,
+    accountEntityId: investmentAccount.entityId,
+    economicEntityId: investmentAccount.entityId,
+    createdAt: "2026-04-03T18:08:49.361Z",
+    updatedAt: "2026-04-03T18:08:49.361Z",
+    transactionDate: "2026-03-24",
+    categoryCode: "stock_buy",
+    transactionClass: "investment_trade_buy" as const,
+    classificationStatus: "investment_parser" as const,
+    classificationSource: "investment_parser" as const,
+    classificationConfidence: "0.96",
+  };
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        ...baseRow,
+        id: "same-day-row-110",
+        postedDate: "2026-03-25",
+        amountOriginal: "-99.58",
+        amountBaseEur: "-99.58",
+        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+        descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "-13.78",
+            balanceCurrency: "EUR",
+          },
+          SourceRow: 110,
+        },
+      }),
+      createTransaction({
+        ...baseRow,
+        id: "same-day-row-111",
+        postedDate: "2026-03-24",
+        amountOriginal: "400.00",
+        amountBaseEur: "400.00",
+        descriptionRaw: "Transferencia entre cuentas",
+        descriptionClean: "TRANSFERENCIA ENTRE CUENTAS",
+        transactionClass: "transfer_internal",
+        categoryCode: "uncategorized_investment",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "386.22",
+            balanceCurrency: "EUR",
+          },
+          SourceRow: 111,
+        },
+      }),
+      createTransaction({
+        ...baseRow,
+        id: "same-day-row-112",
+        postedDate: "2026-03-25",
+        amountOriginal: "-353.35",
+        amountBaseEur: "-353.35",
+        descriptionRaw: "ADVANCED MICRO DEVICES @ 2",
+        descriptionClean: "ADVANCED MICRO DEVICES @ 2",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "32.87",
+            balanceCurrency: "EUR",
+          },
+          SourceRow: 112,
+        },
+      }),
+    ],
+  });
+
+  const balances = getLatestInvestmentCashBalances(dataset, "2026-04-05");
+
+  assert.equal(balances[0]?.balanceBaseEur, "32.87000000");
+  assert.equal(balances[0]?.asOfDate, "2026-03-24");
 });
 
 test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {

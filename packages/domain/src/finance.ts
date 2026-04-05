@@ -33,6 +33,45 @@ function isPlaceholderSecurityPrice(price: SecurityPrice) {
   );
 }
 
+function readPriceRawString(
+  rawJson: unknown,
+  key: string,
+): string | null {
+  if (
+    !rawJson ||
+    typeof rawJson !== "object" ||
+    Array.isArray(rawJson) ||
+    !(key in rawJson)
+  ) {
+    return null;
+  }
+  const value = (rawJson as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function scoreSecurityPriceCandidate(price: SecurityPrice) {
+  let score = 0;
+
+  if (!isPlaceholderSecurityPrice(price)) {
+    score += 20;
+  }
+  if (price.sourceName === "manual_nav_import") {
+    score += 50;
+  }
+  if (String(price.marketState ?? "").toUpperCase().includes("NAV")) {
+    score += 20;
+  }
+  if (
+    String(readPriceRawString(price.rawJson, "priceType") ?? "")
+      .toUpperCase()
+      .includes("NAV")
+  ) {
+    score += 10;
+  }
+
+  return score;
+}
+
 function toDate(value: string) {
   return new Date(`${value}T00:00:00Z`);
 }
@@ -452,6 +491,23 @@ function parseImportedBalance(
   };
 }
 
+function readImportedSourceRow(transaction: Transaction) {
+  const rawPayload =
+    transaction.rawPayload && typeof transaction.rawPayload === "object"
+      ? (transaction.rawPayload as Record<string, unknown>)
+      : null;
+  const candidate =
+    rawPayload?.SourceRow ??
+    rawPayload?._source_row ??
+    rawPayload?.sourceRow ??
+    null;
+  const parsed =
+    typeof candidate === "number"
+      ? candidate
+      : Number.parseInt(String(candidate ?? ""), 10);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
 export function getLatestInvestmentCashBalances(
   dataset: DomainDataset,
   asOfDate = todayIso(),
@@ -478,11 +534,29 @@ export function getLatestInvestmentCashBalances(
           transaction.accountId === account.id &&
           transaction.transactionDate <= asOfDate,
       )
-      .sort((left, right) =>
-        `${right.transactionDate}${right.createdAt}`.localeCompare(
-          `${left.transactionDate}${left.createdAt}`,
-        ),
-      )
+      .sort((left, right) => {
+        const transactionDateOrder = right.transactionDate.localeCompare(
+          left.transactionDate,
+        );
+        if (transactionDateOrder !== 0) {
+          return transactionDateOrder;
+        }
+
+        const postedDateOrder = (right.postedDate ?? "").localeCompare(
+          left.postedDate ?? "",
+        );
+        if (postedDateOrder !== 0) {
+          return postedDateOrder;
+        }
+
+        const sourceRowOrder =
+          readImportedSourceRow(right) - readImportedSourceRow(left);
+        if (sourceRowOrder !== 0) {
+          return sourceRowOrder;
+        }
+
+        return right.createdAt.localeCompare(left.createdAt);
+      })
       .find((transaction) =>
         parseImportedBalance(transaction, account.defaultCurrency),
       );
@@ -535,8 +609,11 @@ function latestSecurityPrice(
     )
     .sort(
       (left, right) =>
+        scoreSecurityPriceCandidate(right) -
+          scoreSecurityPriceCandidate(left) ||
         right.priceDate.localeCompare(left.priceDate) ||
-        right.quoteTimestamp.localeCompare(left.quoteTimestamp),
+        right.quoteTimestamp.localeCompare(left.quoteTimestamp) ||
+        right.createdAt.localeCompare(left.createdAt),
     );
 
   return (

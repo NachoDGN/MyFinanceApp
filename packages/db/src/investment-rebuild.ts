@@ -274,20 +274,36 @@ function buildSecurityResolutionContext(
   const rawOutput = readOptionalRecord(llmNode?.rawOutput);
   const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
   const reviewTrigger = normalizeReviewTrigger(reviewContext?.trigger);
+  const propagatedExactIsinRaw = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_isin",
+  );
+  const propagatedExactIsin = normalizeSecurityIdentifier(propagatedExactIsinRaw);
+  const allowPropagatedGeneratedResolution =
+    reviewTrigger !== "review_propagation" || Boolean(propagatedExactIsin);
+  const priorReviewUserContext =
+    reviewTrigger === "review_propagation"
+      ? null
+      : readOptionalString(reviewContext?.previousUserContext);
+  const currentReviewUserContext =
+    reviewTrigger === "review_propagation"
+      ? null
+      : readOptionalString(reviewContext?.userProvidedContext);
 
   const llmHintCandidate =
-    readOptionalString(llmNode?.securityHint) ??
-    readRawOutputString(rawOutput, "security_hint");
-  const resolvedInstrumentName = readRawOutputString(
-    rawOutput,
-    "resolved_instrument_name",
-  );
+    allowPropagatedGeneratedResolution
+      ? readOptionalString(llmNode?.securityHint) ??
+        readRawOutputString(rawOutput, "security_hint")
+      : null;
+  const resolvedInstrumentName = allowPropagatedGeneratedResolution
+    ? readRawOutputString(rawOutput, "resolved_instrument_name")
+    : null;
   const resolvedInstrumentIsin = normalizeSecurityIdentifier(
-    readRawOutputString(rawOutput, "resolved_instrument_isin") ??
+    propagatedExactIsinRaw ??
       extractIsinFromText(
         transaction.manualNotes,
-        readOptionalString(reviewContext?.previousUserContext),
-        readOptionalString(reviewContext?.userProvidedContext),
+        priorReviewUserContext,
+        currentReviewUserContext,
       ),
   );
   const resolvedInstrumentTicker = readRawOutputString(
@@ -298,25 +314,26 @@ function buildSecurityResolutionContext(
     rawOutput,
     "resolved_instrument_exchange",
   );
-  const currentPrice = readRawOutputNumberAsString(rawOutput, "current_price");
-  const currentPriceCurrency = readRawOutputString(
-    rawOutput,
-    "current_price_currency",
-  );
-  const currentPriceTimestamp = readRawOutputString(
-    rawOutput,
-    "current_price_timestamp",
-  );
-  const currentPriceSource = readRawOutputString(
-    rawOutput,
-    "current_price_source",
-  );
-  const currentPriceType = readRawOutputString(rawOutput, "current_price_type");
+  const currentPrice = allowPropagatedGeneratedResolution
+    ? readRawOutputNumberAsString(rawOutput, "current_price")
+    : null;
+  const currentPriceCurrency = allowPropagatedGeneratedResolution
+    ? readRawOutputString(rawOutput, "current_price_currency")
+    : null;
+  const currentPriceTimestamp = allowPropagatedGeneratedResolution
+    ? readRawOutputString(rawOutput, "current_price_timestamp")
+    : null;
+  const currentPriceSource = allowPropagatedGeneratedResolution
+    ? readRawOutputString(rawOutput, "current_price_source")
+    : null;
+  const currentPriceType = allowPropagatedGeneratedResolution
+    ? readRawOutputString(rawOutput, "current_price_type")
+    : null;
   const reviewText = normalizeSecurityText(
     [
       transaction.manualNotes,
-      readOptionalString(reviewContext?.previousUserContext),
-      readOptionalString(reviewContext?.userProvidedContext),
+      priorReviewUserContext,
+      currentReviewUserContext,
       resolvedInstrumentName,
       currentPriceType,
     ]
@@ -683,6 +700,24 @@ function scoreCandidate(
       candidate.instrumentName.toUpperCase().includes("GDR")
     ) {
       score += 12;
+    }
+    if (
+      !/\bPREF(?:ERRED)?\b/.test(normalizedHint) &&
+      candidate.instrumentName.toUpperCase().includes("PREFERRED")
+    ) {
+      score -= 24;
+    }
+    if (normalizedHint.includes("144")) {
+      if (
+        [candidate.exchange, candidate.micCode]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => ["LSE", "XLON"].includes(value.toUpperCase()))
+      ) {
+        score += 18;
+      }
+      if (candidate.providerSymbol === "SMSN") {
+        score += 12;
+      }
     }
   }
   if (normalizedHint.includes("EMERGING MARKETS")) {
@@ -1124,6 +1159,13 @@ async function fetchLatestPrice(
 function mapAssetType(instrumentType: string): Security["assetType"] {
   const normalized = instrumentType.toUpperCase();
   if (normalized.includes("ETF")) return "etf";
+  if (
+    normalized.includes("DEPOSITARY") ||
+    normalized.includes("ADR") ||
+    normalized.includes("GDR")
+  ) {
+    return "stock";
+  }
   if (normalized.includes("MUTUAL") || normalized.includes("FUND")) return "other";
   if (normalized.includes("STOCK")) return "stock";
   if (normalized.includes("CASH")) return "cash";
@@ -1204,6 +1246,60 @@ function findSecurityByHint(
     !(context && securityConflictsWithResolutionContext(aliasedSecurity, context))
   ) {
     return aliasedSecurity;
+  }
+
+  if (context?.exactTicker) {
+    const normalizedExactTicker = normalizeSecurityText(context.exactTicker);
+    const exactTickerMatch =
+      dataset.securities
+        .filter((security) =>
+          [security.providerSymbol, security.canonicalSymbol, security.displaySymbol]
+            .map((value) => normalizeSecurityText(value))
+            .includes(normalizedExactTicker),
+        )
+        .filter(
+          (security) =>
+            !securityConflictsWithHint(hint, security) &&
+            !securityConflictsWithResolutionContext(security, context),
+        )
+        .sort((left, right) => {
+          const score = (security: Security) => {
+            let value = 0;
+            if (
+              context.exactExchange &&
+              [security.exchangeName, security.micCode]
+                .filter((entry): entry is string => Boolean(entry))
+                .some(
+                  (entry) =>
+                    normalizeSecurityText(entry) ===
+                    normalizeSecurityText(context.exactExchange),
+                )
+            ) {
+              value += 20;
+            }
+            if (
+              context.exactInstrumentName &&
+              normalizedSecurityNameMatches(
+                security.name,
+                context.exactInstrumentName,
+              )
+            ) {
+              value += 10;
+            }
+            if (
+              context.prefersEuroShareClass &&
+              security.quoteCurrency === "EUR"
+            ) {
+              value += 5;
+            }
+            return value;
+          };
+
+          return score(right) - score(left);
+        })[0] ?? null;
+    if (exactTickerMatch) {
+      return exactTickerMatch;
+    }
   }
 
   const directMatch = dataset.securities.find((security) => {
@@ -1717,7 +1813,9 @@ function shouldClearDeterministicNonTradeReview(
   return (
     transaction.needsReview &&
     parsedTransactionClass === transaction.transactionClass &&
-    ["interest", "dividend", "fee"].includes(transaction.transactionClass)
+    ["interest", "dividend", "fee", "transfer_internal", "balance_adjustment"].includes(
+      transaction.transactionClass,
+    )
   );
 }
 

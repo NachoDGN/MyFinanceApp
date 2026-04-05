@@ -19,6 +19,10 @@ import {
   getInvestmentsModel,
 } from "../../lib/queries";
 
+function normalizeInstrumentText(value: string | null | undefined) {
+  return value?.trim().toUpperCase() ?? "";
+}
+
 function splitIsoDate(value: string) {
   const [year, month, day] = value.split("-");
   return {
@@ -35,6 +39,36 @@ function readOptionalRecord(value: unknown): Record<string, unknown> | null {
 
 function readOptionalString(value: unknown) {
   return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function holdingLooksLikeFund(
+  security:
+    | (Awaited<ReturnType<typeof getInvestmentsModel>>["dataset"]["securities"][number] & {
+        metadataJson?: unknown;
+      })
+    | null
+    | undefined,
+) {
+  if (!security) return false;
+  if (security.assetType === "stock" || security.assetType === "etf") {
+    return false;
+  }
+
+  const metadata = readOptionalRecord(security.metadataJson);
+  const instrumentType = normalizeInstrumentText(
+    readOptionalString(metadata?.instrumentType),
+  );
+  const combined = normalizeInstrumentText(
+    [instrumentType, security.exchangeName, security.name].filter(Boolean).join(" "),
+  );
+
+  return (
+    combined.includes("FUND") ||
+    combined.includes("MUTUAL") ||
+    combined.includes("OEIC") ||
+    combined.includes("INDEX") ||
+    combined.includes("VANGUARD")
+  );
 }
 
 function getTransactionSecurityLabel(
@@ -126,6 +160,9 @@ export default async function InvestmentsPage({
     return new Decimal(amount).mul(eurToDisplayRate).toFixed(2);
   };
 
+  const safePercent = (numerator: Decimal, denominator: Decimal) =>
+    denominator.eq(0) ? null : numerator.div(denominator).mul(100).toFixed(2);
+
   const formatDisplayAmount = (amount: string | null | undefined) =>
     formatCurrency(toDisplayAmount(amount), model.currency);
 
@@ -189,6 +226,69 @@ export default async function InvestmentsPage({
     }
     return `/investments?${query.toString()}`;
   };
+
+  const securityById = new Map(
+    model.dataset.securities.map((security) => [security.id, security]),
+  );
+  const sortedHoldings = [...model.holdings.holdings].sort((left, right) => {
+    const rightValue = Number(right.currentValueEur ?? -1);
+    const leftValue = Number(left.currentValueEur ?? -1);
+    if (rightValue !== leftValue) {
+      return rightValue - leftValue;
+    }
+    return left.securityName.localeCompare(right.securityName);
+  });
+  const fundHoldings = sortedHoldings.filter((holding) =>
+    holdingLooksLikeFund(securityById.get(holding.securityId)),
+  );
+  const stockHoldings = sortedHoldings.filter(
+    (holding) => !holdingLooksLikeFund(securityById.get(holding.securityId)),
+  );
+  const pricedPortfolioValueEur = model.holdings.holdings.reduce(
+    (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
+    new Decimal(0),
+  );
+  const cashValueEur = new Decimal(model.holdings.brokerageCashEur);
+  const totalPortfolioValueEur = pricedPortfolioValueEur.plus(cashValueEur);
+  const buildHoldingBucketSummary = (
+    rows: typeof model.holdings.holdings,
+    label: string,
+  ) => {
+    const pricedRows = rows.filter(
+      (holding) =>
+        holding.currentValueEur !== null && holding.unrealizedPnlEur !== null,
+    );
+    const marketValueEur = pricedRows.reduce(
+      (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
+      new Decimal(0),
+    );
+    const unrealizedPnlEur = pricedRows.reduce(
+      (sum, holding) => sum.plus(holding.unrealizedPnlEur ?? 0),
+      new Decimal(0),
+    );
+    const costBasisEur = pricedRows.reduce(
+      (sum, holding) =>
+        sum.plus(
+          new Decimal(holding.currentValueEur ?? 0).minus(
+            holding.unrealizedPnlEur ?? 0,
+          ),
+        ),
+      new Decimal(0),
+    );
+
+    return {
+      label,
+      count: rows.length,
+      marketValueEur: marketValueEur.toFixed(2),
+      unrealizedPnlEur: unrealizedPnlEur.toFixed(2),
+      unrealizedPnlPercent: safePercent(unrealizedPnlEur, costBasisEur),
+      allocationPercent: safePercent(marketValueEur, totalPortfolioValueEur),
+      missingQuoteCount: rows.length - pricedRows.length,
+    };
+  };
+  const fundsSummary = buildHoldingBucketSummary(fundHoldings, "Funds");
+  const stocksSummary = buildHoldingBucketSummary(stockHoldings, "Stocks & ETF");
+  const cashAllocationPercent = safePercent(cashValueEur, totalPortfolioValueEur);
   const processedLedgerColumns =
     "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)";
   const unresolvedLedgerColumns =
@@ -284,6 +384,78 @@ export default async function InvestmentsPage({
         </div>
 
         <SectionCard
+          title="Snapshot by Asset Class"
+          subtitle="Live rebuilt market values and open-position returns"
+          span="span-12"
+        >
+          <div className="investment-breakdown-grid">
+            <article className="investment-summary-card">
+              <div className="investment-summary-head">
+                <div>
+                  <span className="label-sm">Cash</span>
+                  <h3 className="investment-summary-title">Brokerage Cash</h3>
+                </div>
+                <span className="pill">
+                  {cashAllocationPercent ? formatPercent(cashAllocationPercent) : "N/A"}
+                </span>
+              </div>
+              <div className="investment-summary-value">
+                {formatDisplayAmount(model.holdings.brokerageCashEur)}
+              </div>
+              <div className="investment-summary-meta">
+                <span>Current broker cash balance</span>
+                <span className="muted">No unrealized P/L applies to cash.</span>
+              </div>
+            </article>
+
+            {[fundsSummary, stocksSummary].map((bucket) => {
+              const positiveReturn =
+                Number(bucket.unrealizedPnlEur ?? "0") >= 0 ? "positive" : "negative";
+              const bucketCountLabel =
+                bucket.label === "Funds"
+                  ? `${bucket.count} fund position${bucket.count === 1 ? "" : "s"}`
+                  : `${bucket.count} stock/ETF position${bucket.count === 1 ? "" : "s"}`;
+
+              return (
+                <article className="investment-summary-card" key={bucket.label}>
+                  <div className="investment-summary-head">
+                    <div>
+                      <span className="label-sm">{bucket.label}</span>
+                      <h3 className="investment-summary-title">{bucketCountLabel}</h3>
+                    </div>
+                    <span className="pill">
+                      {bucket.allocationPercent
+                        ? formatPercent(bucket.allocationPercent)
+                        : "N/A"}
+                    </span>
+                  </div>
+                  <div className="investment-summary-value">
+                    {formatDisplayAmount(bucket.marketValueEur)}
+                  </div>
+                  <div className="investment-summary-meta">
+                    <span className={`investment-return ${positiveReturn}`}>
+                      {formatDisplayAmount(bucket.unrealizedPnlEur)} /{" "}
+                      {formatPercent(bucket.unrealizedPnlPercent)}
+                    </span>
+                    {bucket.missingQuoteCount > 0 ? (
+                      <span className="muted">
+                        {bucket.missingQuoteCount} position
+                        {bucket.missingQuoteCount === 1 ? "" : "s"} without a current
+                        quote
+                      </span>
+                    ) : (
+                      <span className="muted">
+                        All positions in this bucket are currently priced.
+                      </span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </SectionCard>
+
+        <SectionCard
           title="Allocation by Account"
           subtitle="Broker split"
           span="span-6"
@@ -295,6 +467,91 @@ export default async function InvestmentsPage({
             }))}
             currency={model.currency}
           />
+        </SectionCard>
+
+        <SectionCard
+          title="Funds"
+          subtitle="Current value, unrealized EUR, and return %"
+          span="span-6"
+        >
+          <div className="investment-position-list">
+            {fundHoldings.map((holding) => {
+              const positiveReturn =
+                Number(holding.unrealizedPnlEur ?? "0") >= 0
+                  ? "positive"
+                  : "negative";
+
+              return (
+                <article className="investment-position-card" key={holding.securityId}>
+                  <div className="investment-position-head">
+                    <div className="investment-position-copy">
+                      <h3 className="investment-position-name">{holding.securityName}</h3>
+                      <p className="investment-position-symbol">
+                        {holding.symbol} · {formatQuantity(holding.quantity)} units
+                      </p>
+                    </div>
+                    <div className="investment-position-values">
+                      <strong>{formatDisplayAmount(holding.currentValueEur)}</strong>
+                      {holding.currentValueEur ? (
+                        <span
+                          className={`investment-return ${positiveReturn}`}
+                        >
+                          {formatDisplayAmount(holding.unrealizedPnlEur)} /{" "}
+                          {formatPercent(holding.unrealizedPnlPercent)}
+                        </span>
+                      ) : (
+                        <span className="muted">Current quote unavailable</span>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Stocks & ETF"
+          subtitle="Current value, unrealized EUR, and return %"
+          span="span-6"
+        >
+          <div className="investment-position-list">
+            {stockHoldings.map((holding) => {
+              const positiveReturn =
+                Number(holding.unrealizedPnlEur ?? "0") >= 0
+                  ? "positive"
+                  : "negative";
+              const security = securityById.get(holding.securityId);
+              const exchangeLabel = security?.exchangeName ?? "Unknown exchange";
+
+              return (
+                <article className="investment-position-card" key={holding.securityId}>
+                  <div className="investment-position-head">
+                    <div className="investment-position-copy">
+                      <h3 className="investment-position-name">{holding.securityName}</h3>
+                      <p className="investment-position-symbol">
+                        {holding.symbol} · {exchangeLabel} ·{" "}
+                        {formatQuantity(holding.quantity)} units
+                      </p>
+                    </div>
+                    <div className="investment-position-values">
+                      <strong>{formatDisplayAmount(holding.currentValueEur)}</strong>
+                      {holding.currentValueEur ? (
+                        <span
+                          className={`investment-return ${positiveReturn}`}
+                        >
+                          {formatDisplayAmount(holding.unrealizedPnlEur)} /{" "}
+                          {formatPercent(holding.unrealizedPnlPercent)}
+                        </span>
+                      ) : (
+                        <span className="muted">Current quote unavailable</span>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
         </SectionCard>
 
         <SimpleTable
