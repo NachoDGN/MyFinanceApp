@@ -6,7 +6,11 @@ import {
   buildMetricResult,
   buildSpendingReadModel,
 } from "../packages/analytics/src/index.ts";
-import { lookupHistoricalFundPrice } from "../packages/llm/src/index.ts";
+import {
+  analyzeBankTransaction,
+  createLLMClient,
+  lookupHistoricalFundPrice,
+} from "../packages/llm/src/index.ts";
 import {
   applyRuleMatch,
   enrichImportedTransaction,
@@ -4170,6 +4174,274 @@ test("investment follow-up review keeps mapped trades unresolved when quantity i
     } else {
       process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
         previousFollowupModel;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("investment manual review can apply user-provided NAV to derive quantity immediately", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousImportModel = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+  const previousFollowupModel =
+    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+  const previousFetch = globalThis.fetch;
+
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
+  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
+
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, "https://api.openai.com/v1/responses");
+    const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
+    };
+    assert.equal(requestBody.model, "gpt-5.4");
+
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "investment_trade_buy",
+          category_code: "stock_buy",
+          merchant_normalized: "MyInvestor",
+          counterparty_name: "MyInvestor",
+          economic_entity_override: null,
+          security_hint: "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+          quantity: "0.79797576",
+          unit_price_original: "249.97000000",
+          resolved_instrument_name:
+            "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+          resolved_instrument_isin: "IE0031786696",
+          resolved_instrument_ticker: null,
+          resolved_instrument_exchange: null,
+          current_price: null,
+          current_price_currency: null,
+          current_price_timestamp: null,
+          current_price_source: null,
+          current_price_type: null,
+          resolution_process:
+            "Used the confirmed ISIN mapping and the user-provided trade-date NAV of EUR 249.97 for this transaction to compute the share quantity.",
+          confidence: 0.99,
+          explanation:
+            "This is a buy of the confirmed Vanguard Emerging Markets Stock Index Fund EUR Acc.",
+          reason:
+            "The exact ISIN is confirmed and the user provided the trade-date NAV, so quantity can be computed directly.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const account = createAccount({
+      id: "broker-followup-nav",
+      assetDomain: "investment",
+      accountType: "brokerage_account",
+      institutionName: "Broker",
+      displayName: "Brokerage",
+    });
+    const transaction = createTransaction({
+      id: "candidate-with-manual-nav",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionDate: "2025-11-06",
+      postedDate: "2025-11-07",
+      amountOriginal: "-199.47",
+      amountBaseEur: "-199.47",
+      currencyOriginal: "EUR",
+      descriptionRaw: "EMERGING MARKETS STOCK EUR ACC",
+      descriptionClean: "EMERGING MARKETS STOCK EUR ACC",
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.88",
+      securityId: "security-em-correct",
+      quantity: null,
+      unitPriceOriginal: null,
+      needsReview: true,
+      reviewReason:
+        'Mapped to IE0031786696, but no reliable historical fund price was available to derive quantity for "Vanguard Emerging Markets Stock Index Fund EUR Acc".',
+      manualNotes: "the NAV that day was 249.97 euros",
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+      securities: [
+        {
+          id: "security-em-correct",
+          providerName: "manual",
+          providerSymbol: "IE0031786696",
+          canonicalSymbol: "IE0031786696",
+          displaySymbol: "IE0031786696",
+          name: "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+          exchangeName: "FUNDS",
+          micCode: null,
+          assetType: "other",
+          quoteCurrency: "EUR",
+          country: "IE",
+          isin: "IE0031786696",
+          figi: null,
+          active: true,
+          metadataJson: { instrumentType: "Mutual Fund" },
+          lastPriceRefreshAt: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+      {
+        trigger: "manual_review_update",
+        reviewContext: {
+          userProvidedContext: "the NAV that day was 249.97 euros",
+        },
+      },
+    );
+
+    assert.equal(decision.transactionClass, "investment_trade_buy");
+    assert.equal(decision.quantity, "0.79797576");
+    assert.equal(decision.unitPriceOriginal, "249.97000000");
+    assert.equal(decision.needsReview, false);
+    assert.equal(decision.reviewReason, null);
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    if (previousImportModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImportModel;
+    }
+    if (previousFollowupModel === undefined) {
+      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
+    } else {
+      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM =
+        previousFollowupModel;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("transaction enrichment request schema keeps nullable quantity fields required for strict OpenAI JSON mode", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  let capturedBody: Record<string, unknown> | null = null;
+
+  process.env.OPENAI_API_KEY = "test-key";
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, "https://api.openai.com/v1/responses");
+    capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<
+      string,
+      unknown
+    >;
+
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "investment_trade_buy",
+          category_code: "stock_buy",
+          merchant_normalized: "MyInvestor",
+          counterparty_name: "MyInvestor",
+          economic_entity_override: null,
+          security_hint: "EMERGING MARKETS STOCK EUR ACC",
+          quantity: null,
+          unit_price_original: null,
+          resolved_instrument_name: "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+          resolved_instrument_isin: "IE0031786696",
+          resolved_instrument_ticker: null,
+          resolved_instrument_exchange: null,
+          current_price: null,
+          current_price_currency: null,
+          current_price_timestamp: null,
+          current_price_source: null,
+          current_price_type: null,
+          resolution_process: null,
+          confidence: 0.99,
+          explanation: "Resolved as an investment trade.",
+          reason: "The exact fund mapping is known.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const result = await analyzeBankTransaction(
+      createLLMClient(),
+      {
+        account: {
+          id: "broker-schema-check",
+          assetDomain: "investment",
+          institutionName: "Broker",
+          displayName: "Brokerage",
+          accountType: "brokerage_account",
+        },
+        allowedTransactionClasses: ["investment_trade_buy", "unknown"],
+        allowedCategories: [{ code: "stock_buy", displayName: "Stock buy" }],
+        transaction: {
+          transactionDate: "2025-11-06",
+          postedDate: "2025-11-07",
+          amountOriginal: "-199.47",
+          currencyOriginal: "EUR",
+          descriptionRaw: "EMERGING MARKETS STOCK EUR ACC",
+          merchantNormalized: "MyInvestor",
+          counterpartyName: "MyInvestor",
+          securityId: "security-emerging-markets",
+          quantity: null,
+          unitPriceOriginal: null,
+          rawPayload: {},
+        },
+        deterministicHint: {
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          explanation: "Matched the deterministic investment statement parser.",
+          source: "investment_parser",
+        },
+        portfolioState: {
+          scope: "account",
+          asOfDate: "2026-04-05",
+          holdings: [],
+          matchedHolding: null,
+          priceSanityCheck: null,
+        },
+        similarAccountTransactions: [],
+        reviewExamples: [],
+        reviewContext: {
+          trigger: "manual_review_update",
+          userProvidedContext: "the NAV that day was 249.97 euros",
+        },
+        promptOverrides: null,
+      },
+      "gpt-5.4",
+    );
+
+    assert.equal(result.analysisStatus, "done");
+    const format = (
+      (capturedBody?.text as { format?: { schema?: { required?: unknown } } })
+        ?.format ?? null
+    );
+    const required = Array.isArray(format?.schema?.required)
+      ? format.schema.required
+      : [];
+    assert.ok(required.includes("quantity"));
+    assert.ok(required.includes("unit_price_original"));
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
     }
     globalThis.fetch = previousFetch;
   }
