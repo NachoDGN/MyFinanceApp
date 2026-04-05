@@ -26,6 +26,15 @@ type ReviewJobStatusPayload = {
   startedAt?: string | null;
   finishedAt?: string | null;
   lastError?: string | null;
+  followUpJobs?: Array<{
+    id: string;
+    jobType?: "metric_refresh" | "review_propagation";
+    status?: "queued" | "running" | "completed" | "failed";
+    createdAt?: string;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    lastError?: string | null;
+  }>;
   payloadJson?: {
     changed?: boolean;
     changedFields?: string[];
@@ -84,6 +93,25 @@ export function ReviewEditorCell({
       reviewReason: "review reason",
     })[field] ?? field;
 
+  const getPendingFollowUpJob = (payload: ReviewJobStatusPayload) =>
+    (payload.followUpJobs ?? []).find((job) => job.status === "running") ??
+    (payload.followUpJobs ?? []).find((job) => job.status === "queued") ??
+    null;
+
+  const formatFollowUpProgressMessage = (
+    job: NonNullable<ReturnType<typeof getPendingFollowUpJob>>,
+  ) => {
+    if (job.jobType === "review_propagation") {
+      return job.status === "running"
+        ? "Updating similar unresolved transactions in the background."
+        : "Queued. Similar unresolved transactions will update in the background.";
+    }
+
+    return job.status === "running"
+      ? "Refreshing portfolio metrics in the background."
+      : "Queued. Portfolio metrics will refresh in the background.";
+  };
+
   useEffect(() => {
     if (!activeJobId) {
       return;
@@ -112,6 +140,26 @@ export function ReviewEditorCell({
         }
 
         if (payload.status === "completed") {
+          const pendingFollowUpJob = getPendingFollowUpJob(payload);
+          if (pendingFollowUpJob) {
+            setActiveJobStatus(
+              pendingFollowUpJob.status === "running" ? "running" : "queued",
+            );
+            setActiveJobCreatedAt(pendingFollowUpJob.createdAt ?? null);
+            setActiveJobProgressMessage(
+              formatFollowUpProgressMessage(pendingFollowUpJob),
+            );
+            setFeedback(
+              pendingFollowUpJob.jobType === "review_propagation"
+                ? "Transaction re-reviewed. Similar unresolved transactions are still updating."
+                : "Transaction re-reviewed. Portfolio metrics are still refreshing.",
+            );
+            timeoutId = setTimeout(() => {
+              void poll();
+            }, REVIEW_JOB_POLL_INTERVAL_MS);
+            return;
+          }
+
           setActiveJobStatus(null);
           setActiveJobCreatedAt(null);
           setActiveJobProgressMessage(null);
@@ -249,9 +297,10 @@ export function ReviewEditorCell({
       : 0;
   const progressMessage =
     activeJobStatus === "queued"
-      ? queuedForMs >= WORKER_QUEUE_WARNING_MS
-        ? "Queued for a while. The worker may not be running yet."
-        : "Queued. Waiting for the worker to pick it up."
+      ? activeJobProgressMessage ??
+        (queuedForMs >= WORKER_QUEUE_WARNING_MS
+          ? "Queued for a while. The worker may not be running yet."
+          : "Queued. Waiting for the worker to pick it up.")
       : activeJobStatus === "running"
         ? activeJobProgressMessage ?? "Running analyzer and rebuild steps."
         : null;

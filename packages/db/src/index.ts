@@ -1020,6 +1020,7 @@ async function queueJob(
   jobType: string,
   payloadJson: Record<string, unknown> = {},
 ) {
+  const jobId = randomUUID();
   await sql`
     insert into public.jobs (
       id,
@@ -1029,7 +1030,7 @@ async function queueJob(
       attempts,
       available_at
     ) values (
-      ${randomUUID()},
+      ${jobId},
       ${jobType},
       ${serializeJson(sql, payloadJson)}::jsonb,
       ${"queued"},
@@ -1037,6 +1038,7 @@ async function queueJob(
       ${new Date().toISOString()}
     )
   `;
+  return jobId;
 }
 
 async function supportsJobType(sql: SqlClient, jobType: string) {
@@ -1064,7 +1066,21 @@ async function claimNextQueuedJob(sql: SqlClient, workerId: string) {
       from public.jobs
       where status = 'queued'
         and available_at <= ${startedAt}
-      order by available_at asc, created_at asc
+      order by
+        case job_type
+          when 'review_reanalyze' then 0
+          when 'rule_parse' then 1
+          when 'classification' then 2
+          when 'transfer_rematch' then 3
+          when 'security_resolution' then 4
+          when 'price_refresh' then 5
+          when 'position_rebuild' then 6
+          when 'metric_refresh' then 7
+          when 'review_propagation' then 8
+          else 99
+        end asc,
+        available_at asc,
+        created_at asc
       limit 1
       for update skip locked
     )
@@ -2090,6 +2106,7 @@ export async function reanalyzeTransactionReview(
     }
     const promptOverrides = await loadPromptOverrides(sql, userId);
     const wasPendingReview = beforeTransaction.needsReview;
+    const followUpJobs: ReviewReanalysisFollowUpJobRef[] = [];
 
     await input.onProgress?.({
       stage: "llm_reanalysis",
@@ -2155,10 +2172,14 @@ export async function reanalyzeTransactionReview(
       stage: "metric_refresh",
       message: "Refreshing portfolio metrics.",
     });
-    await queueJob(sql, "metric_refresh", {
+    const metricRefreshJobId = await queueJob(sql, "metric_refresh", {
       trigger: "manual_review_update",
       transactionId: input.transactionId,
       accountId: beforeTransaction.accountId,
+    });
+    followUpJobs.push({
+      id: metricRefreshJobId,
+      jobType: "metric_refresh",
     });
 
     const finalRow = await selectTransactionRowById(
@@ -2214,7 +2235,15 @@ export async function reanalyzeTransactionReview(
         sourceAuditEventId: auditEvent.id,
       };
       if (await supportsJobType(sql, "review_propagation")) {
-        await queueJob(sql, "review_propagation", reviewPropagationPayload);
+        const reviewPropagationJobId = await queueJob(
+          sql,
+          "review_propagation",
+          reviewPropagationPayload,
+        );
+        followUpJobs.push({
+          id: reviewPropagationJobId,
+          jobType: "review_propagation",
+        });
       } else {
         await processReviewPropagationJob(
           sql,
@@ -2231,6 +2260,7 @@ export async function reanalyzeTransactionReview(
       changedFields,
       transaction: afterTransaction,
       auditEvent,
+      followUpJobs,
     };
   });
 }
@@ -2242,6 +2272,20 @@ export interface QueueTransactionReviewReanalysisInput {
   sourceChannel: "web" | "cli" | "worker" | "system";
 }
 
+export interface ReviewReanalysisFollowUpJobRef {
+  id: string;
+  jobType: "metric_refresh" | "review_propagation";
+}
+
+export interface ReviewReanalysisFollowUpJobStatus
+  extends ReviewReanalysisFollowUpJobRef {
+  status: "queued" | "running" | "completed" | "failed";
+  createdAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  lastError?: string | null;
+}
+
 export interface ReviewReanalysisJobStatus {
   id: string;
   jobType: string;
@@ -2251,6 +2295,7 @@ export interface ReviewReanalysisJobStatus {
   finishedAt?: string | null;
   lastError?: string | null;
   payloadJson: Record<string, unknown>;
+  followUpJobs: ReviewReanalysisFollowUpJobStatus[];
 }
 
 function normalizeJobProgress(value: unknown): ReviewReanalysisProgress | null {
@@ -2271,6 +2316,88 @@ function normalizeJobProgress(value: unknown): ReviewReanalysisProgress | null {
     updatedAt:
       typeof record.updatedAt === "string" ? record.updatedAt : undefined,
   };
+}
+
+function normalizeReviewReanalysisFollowUpJobRef(
+  value: unknown,
+): ReviewReanalysisFollowUpJobRef | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id : null;
+  const jobType =
+    record.jobType === "metric_refresh" ||
+    record.jobType === "review_propagation"
+      ? record.jobType
+      : null;
+  if (!id || !jobType) {
+    return null;
+  }
+
+  return {
+    id,
+    jobType,
+  };
+}
+
+function normalizeReviewReanalysisFollowUpJobs(
+  value: unknown,
+): ReviewReanalysisFollowUpJobRef[] {
+  return (readUnknownArray(value) ?? [])
+    .map((entry) => normalizeReviewReanalysisFollowUpJobRef(entry))
+    .filter(
+      (entry): entry is ReviewReanalysisFollowUpJobRef => Boolean(entry),
+    );
+}
+
+async function readJobById(sql: SqlClient, jobId: string) {
+  const rows = await sql`
+    select *
+    from public.jobs
+    where id = ${jobId}
+    limit 1
+  `;
+  return rows[0] ? mapFromSql<DomainDataset["jobs"]>(rows)[0] : null;
+}
+
+async function readReviewReanalysisFollowUpJobStatuses(
+  sql: SqlClient,
+  refs: ReviewReanalysisFollowUpJobRef[],
+): Promise<ReviewReanalysisFollowUpJobStatus[]> {
+  const jobs: ReviewReanalysisFollowUpJobStatus[] = [];
+
+  for (const ref of refs) {
+    const job = await readJobById(sql, ref.id);
+    if (!job) {
+      continue;
+    }
+
+    jobs.push({
+      id: job.id,
+      jobType: ref.jobType,
+      status: job.status,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt ?? null,
+      finishedAt: job.finishedAt ?? null,
+      lastError: job.lastError ?? null,
+    });
+  }
+
+  return jobs;
+}
+
+async function acquireReviewReanalysisQueueLock(
+  sql: SqlClient,
+  transactionId: string,
+) {
+  await sql`
+    select pg_advisory_xact_lock(
+      hashtext(${"review_reanalyze"}),
+      hashtext(${transactionId})
+    )
+  `;
 }
 
 export async function queueTransactionReviewReanalysis(
@@ -2294,6 +2421,8 @@ export async function queueTransactionReviewReanalysis(
     if (!normalizedReviewContext) {
       throw new Error("Review context cannot be empty.");
     }
+
+    await acquireReviewReanalysisQueueLock(sql, input.transactionId);
 
     const existingRows = await sql`
       select *
@@ -2382,12 +2511,18 @@ export async function getReviewReanalysisJobStatus(jobId: string) {
       throw new Error(`Review job ${jobId} is not available for this user.`);
     }
 
+    const followUpJobs = await readReviewReanalysisFollowUpJobStatuses(
+      sql,
+      normalizeReviewReanalysisFollowUpJobs(job.payloadJson.followUpJobs),
+    );
+
     return {
       ...job,
       payloadJson: {
         ...job.payloadJson,
         progress: normalizeJobProgress(job.payloadJson.progress),
       },
+      followUpJobs,
     } satisfies ReviewReanalysisJobStatus;
   });
 }
