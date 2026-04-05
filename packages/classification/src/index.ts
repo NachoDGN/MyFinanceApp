@@ -359,6 +359,8 @@ type LlmClassification = {
   counterpartyName: string | null;
   economicEntityId: string | null;
   securityHint: string | null;
+  quantity: string | null;
+  unitPriceOriginal: string | null;
   confidence: string | null;
   explanation: string | null;
   reason: string | null;
@@ -1312,6 +1314,37 @@ function normalizeTradeQuantity(
   return signedQuantity.toFixed(8);
 }
 
+function inferTradeQuantityFromUnitPrice(
+  transactionClass: string,
+  amountOriginal: string,
+  unitPriceOriginal: string | null | undefined,
+) {
+  if (!isTradeTransactionClass(transactionClass)) {
+    return null;
+  }
+
+  const normalizedUnitPrice = normalizeOptionalText(unitPriceOriginal);
+  if (!normalizedUnitPrice) {
+    return null;
+  }
+
+  const numericUnitPrice = Number(normalizedUnitPrice);
+  const numericAmount = Math.abs(Number(amountOriginal));
+  if (
+    !Number.isFinite(numericUnitPrice) ||
+    numericUnitPrice === 0 ||
+    !Number.isFinite(numericAmount) ||
+    numericAmount === 0
+  ) {
+    return null;
+  }
+
+  return normalizeTradeQuantity(
+    transactionClass,
+    (numericAmount / numericUnitPrice).toFixed(8),
+  );
+}
+
 function buildInvestmentPortfolioState(
   dataset: DomainDataset,
   account: Account,
@@ -1723,6 +1756,8 @@ async function requestLlmClassification(
       counterpartyName: null,
       economicEntityId: null,
       securityHint: null,
+      quantity: null,
+      unitPriceOriginal: null,
       confidence: null,
       explanation: null,
       reason: null,
@@ -1855,6 +1890,8 @@ async function requestLlmClassification(
       counterpartyName: null,
       economicEntityId: null,
       securityHint: null,
+      quantity: null,
+      unitPriceOriginal: null,
       confidence: null,
       explanation: null,
       reason: null,
@@ -1887,6 +1924,10 @@ async function requestLlmClassification(
       result.output.economic_entity_override ?? null,
     ),
     securityHint: normalizeOptionalText(result.output.security_hint ?? null),
+    quantity: normalizeOptionalText(result.output.quantity ?? null),
+    unitPriceOriginal: normalizeOptionalText(
+      result.output.unit_price_original ?? null,
+    ),
     confidence: result.output.confidence.toFixed(2),
     explanation: result.output.explanation,
     reason: result.output.reason,
@@ -1971,11 +2012,24 @@ export async function enrichImportedTransaction(
       !deterministicWins &&
       (deterministic.classificationSource !== "investment_parser" ||
         llmConfidence >= lowConfidenceCutoff);
+    const llmUnitPriceOriginal = normalizeOptionalText(llm.unitPriceOriginal);
+    const llmQuantity =
+      normalizeTradeQuantity(llmTransactionClass, llm.quantity) ??
+      inferTradeQuantityFromUnitPrice(
+        llmTransactionClass,
+        transaction.amountOriginal,
+        llmUnitPriceOriginal,
+      );
 
     if (shouldApplyLlm) {
       transactionClass = llmTransactionClass;
       categoryCode = llmCategoryCode;
       economicEntityId = llm.economicEntityId ?? deterministic.economicEntityId;
+      if (isTradeTransactionClass(llmTransactionClass)) {
+        quantity = llmQuantity ?? deterministic.quantity;
+        unitPriceOriginal =
+          llmUnitPriceOriginal ?? deterministic.unitPriceOriginal;
+      }
       classificationStatus = "llm";
       classificationSource = "llm";
       classificationConfidence =
