@@ -7,9 +7,10 @@ import postgres from "postgres";
 
 import {
   enrichImportedTransaction,
+  getReviewPropagationEmbeddingModel,
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
-  rankReviewPropagationTransactions,
+  normalizeInvestmentMatchingText,
 } from "@myfinance/classification";
 import {
   parseRuleDraftRequest,
@@ -42,11 +43,14 @@ import {
 } from "@myfinance/domain";
 import {
   buildPromptProfilePreview,
+  createTextEmbeddingClient,
+  isTextEmbeddingConfigured,
   listPromptProfileDefinitions,
   resolvePromptProfileSections,
   sanitizePromptProfileSectionOverrides,
   type PromptProfileId,
   type PromptProfileOverrides,
+  type TextEmbeddingClient,
 } from "@myfinance/llm";
 import {
   prepareInvestmentRebuild,
@@ -129,6 +133,131 @@ export function createSqlClient() {
 }
 
 type SqlClient = ReturnType<typeof createSqlClient>;
+
+export const TRANSACTION_SELECT_COLUMN_NAMES = [
+  "id",
+  "user_id",
+  "account_id",
+  "account_entity_id",
+  "economic_entity_id",
+  "import_batch_id",
+  "source_fingerprint",
+  "duplicate_key",
+  "transaction_date",
+  "posted_date",
+  "amount_original",
+  "currency_original",
+  "amount_base_eur",
+  "fx_rate_to_eur",
+  "description_raw",
+  "description_clean",
+  "merchant_normalized",
+  "counterparty_name",
+  "transaction_class",
+  "category_code",
+  "subcategory_code",
+  "transfer_group_id",
+  "related_account_id",
+  "related_transaction_id",
+  "transfer_match_status",
+  "cross_entity_flag",
+  "reimbursement_status",
+  "classification_status",
+  "classification_source",
+  "classification_confidence",
+  "needs_review",
+  "review_reason",
+  "exclude_from_analytics",
+  "correction_of_transaction_id",
+  "voided_at",
+  "manual_notes",
+  "llm_payload",
+  "raw_payload",
+  "security_id",
+  "quantity",
+  "unit_price_original",
+  "created_at",
+  "updated_at",
+] as const;
+
+export const TRANSACTION_SELECT_COLUMNS =
+  TRANSACTION_SELECT_COLUMN_NAMES.join(", ");
+
+const TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS = 768;
+const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
+
+type TransactionEmbeddingSeedRow = {
+  id: string;
+  descriptionRaw: string;
+  descriptionEmbedding: string | number[] | null;
+};
+
+type SimilarUnresolvedTransactionMatch = {
+  transactionId: string;
+  similarity: number;
+};
+
+export type ResolvedSourcePrecedent = {
+  sourceTransactionId: string;
+  sourceAuditEventId: string | null;
+  sourceDescriptionRaw: string;
+  userProvidedContext: string | null;
+  finalTransaction: {
+    transactionClass: string;
+    securityId: string | null;
+    quantity: string | null;
+    unitPriceOriginal: string | null;
+    needsReview: boolean;
+    reviewReason: string | null;
+  };
+  llm: {
+    model: string | null;
+    explanation: string | null;
+    reason: string | null;
+    resolutionProcess: string | null;
+    rawOutput: Record<string, unknown> | null;
+  };
+  rebuildEvidence: Record<string, unknown> | null;
+};
+
+export type PropagatedContextEntry = {
+  kind: "unresolved_source_context" | "resolved_source_precedent";
+  sourceTransactionId: string;
+  sourceAuditEventId: string | null;
+  propagatedAt: string;
+  similarity: number;
+  sourceDescriptionRaw: string;
+  sourceTransactionClass: string | null;
+  sourceNeedsReview: boolean;
+  sourceReviewReason: string | null;
+  userProvidedContext: string | null;
+  summaryText: string;
+  resolvedPrecedent: Record<string, unknown> | null;
+};
+
+function transactionColumnsSql(
+  sql: SqlClient,
+  alias?: string,
+) {
+  const prefix = alias ? `${alias}.` : "";
+  return sql.unsafe(
+    TRANSACTION_SELECT_COLUMN_NAMES.map((column) => `${prefix}${column}`).join(
+      ", ",
+    ),
+  );
+}
+
+function getReviewPropagationSimilarityThreshold() {
+  const value = Number(
+    process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD ?? "0.9",
+  );
+  return Number.isFinite(value) ? value : 0.9;
+}
+
+function getReviewPropagationMaxCandidates() {
+  const value = Number(process.env.REVIEW_PROPAGATION_MAX_CANDIDATES ?? "25");
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
+}
 
 export interface PromptProfileModel {
   id: PromptProfileId;
@@ -387,12 +516,415 @@ function readOptionalNumberAsString(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
 }
 
+function readRawOutputField(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  if (!rawOutput) {
+    return null;
+  }
+
+  if (key in rawOutput) {
+    return rawOutput[key];
+  }
+
+  const camelizedKey = camelizeKey(key);
+  if (camelizedKey in rawOutput) {
+    return rawOutput[camelizedKey];
+  }
+
+  return null;
+}
+
+function readRawOutputString(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  return readOptionalString(readRawOutputField(rawOutput, key));
+}
+
+function readRawOutputNumberAsString(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  const value = readRawOutputField(rawOutput, key);
+  return readOptionalNumberAsString(value) ?? readOptionalString(value);
+}
+
+function readUnknownArray(value: unknown) {
+  return Array.isArray(value) ? value : null;
+}
+
 function readTransactionRawOutput(
   transaction: Transaction,
 ): Record<string, unknown> | null {
   const llmPayload = readOptionalRecord(transaction.llmPayload);
   const llmNode = readOptionalRecord(llmPayload?.llm);
   return readOptionalRecord(llmNode?.rawOutput);
+}
+
+function readTransactionReviewContext(
+  transaction: Transaction,
+): Record<string, unknown> | null {
+  return readOptionalRecord(readOptionalRecord(transaction.llmPayload)?.reviewContext);
+}
+
+function normalizeStoredVectorLiteral(value: unknown) {
+  if (typeof value === "string" && value.trim() !== "") {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    const numericValues = value.filter(
+      (candidate): candidate is number =>
+        typeof candidate === "number" && Number.isFinite(candidate),
+    );
+    return numericValues.length > 0 ? serializeVector(numericValues) : null;
+  }
+  return null;
+}
+
+export function serializeVector(values: number[]) {
+  return `[${values
+    .filter((value) => Number.isFinite(value))
+    .map((value) => value.toString())
+    .join(",")}]`;
+}
+
+function parseTransactionEmbeddingSeedRow(
+  row: Record<string, unknown>,
+): TransactionEmbeddingSeedRow {
+  return {
+    id: typeof row.id === "string" ? row.id : "",
+    descriptionRaw:
+      typeof row.description_raw === "string" ? row.description_raw : "",
+    descriptionEmbedding: normalizeStoredVectorLiteral(
+      row.description_embedding,
+    ),
+  };
+}
+
+async function ensureTransactionDescriptionEmbeddings(
+  sql: SqlClient,
+  userId: string,
+  rows: readonly TransactionEmbeddingSeedRow[],
+  embeddingClient?: TextEmbeddingClient | null,
+) {
+  const rowsMissingEmbeddings = rows.filter(
+    (row) => !normalizeStoredVectorLiteral(row.descriptionEmbedding),
+  );
+  if (rowsMissingEmbeddings.length === 0) {
+    return {
+      generatedCount: 0,
+      skippedCount: 0,
+      skippedReason: null,
+    };
+  }
+
+  let client = embeddingClient;
+  if (client === undefined) {
+    if (!isTextEmbeddingConfigured()) {
+      return {
+        generatedCount: 0,
+        skippedCount: rowsMissingEmbeddings.length,
+        skippedReason: "embedding_client_not_configured",
+      };
+    }
+
+    try {
+      client = createTextEmbeddingClient(getReviewPropagationEmbeddingModel());
+    } catch {
+      return {
+        generatedCount: 0,
+        skippedCount: rowsMissingEmbeddings.length,
+        skippedReason: "embedding_client_unavailable",
+      };
+    }
+  }
+
+  if (!client) {
+    return {
+      generatedCount: 0,
+      skippedCount: rowsMissingEmbeddings.length,
+      skippedReason: "embedding_client_unavailable",
+    };
+  }
+
+  const embeddings = await client.embedTexts({
+    texts: rowsMissingEmbeddings.map(
+      (row) => normalizeInvestmentMatchingText(row.descriptionRaw) || " ",
+    ),
+    taskType: "SEMANTIC_SIMILARITY",
+    outputDimensionality: TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS,
+  });
+
+  for (const [index, row] of rowsMissingEmbeddings.entries()) {
+    const vector = embeddings[index];
+    if (!vector || vector.length === 0) {
+      continue;
+    }
+
+    await sql`
+      update public.transactions
+      set description_embedding = ${serializeVector(vector)}::extensions.vector(768)
+      where id = ${row.id}
+        and user_id = ${userId}
+    `;
+  }
+
+  return {
+    generatedCount: embeddings.length,
+    skippedCount: 0,
+    skippedReason: null,
+  };
+}
+
+export async function findSimilarUnresolvedTransactionsByDescriptionEmbedding(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    sourceTransactionId: string;
+    accountId: string;
+    sourceEmbedding: string;
+    threshold?: number;
+    limit?: number;
+  },
+): Promise<SimilarUnresolvedTransactionMatch[]> {
+  const threshold =
+    input.threshold ?? getReviewPropagationSimilarityThreshold();
+  const limit = input.limit ?? getReviewPropagationMaxCandidates();
+  const rows = await sql`
+    select
+      id,
+      1 - (
+        description_embedding <=>
+        ${input.sourceEmbedding}::extensions.vector(768)
+      ) as similarity
+    from public.transactions
+    where user_id = ${input.userId}
+      and account_id = ${input.accountId}
+      and id <> ${input.sourceTransactionId}
+      and coalesce(needs_review, false) = true
+      and voided_at is null
+      and description_embedding is not null
+      and 1 - (
+        description_embedding <=>
+        ${input.sourceEmbedding}::extensions.vector(768)
+      ) >= ${threshold}
+    order by
+      description_embedding <=>
+      ${input.sourceEmbedding}::extensions.vector(768) asc
+    limit ${limit}
+  `;
+
+  return rows
+    .map((row) => ({
+      transactionId: typeof row.id === "string" ? row.id : "",
+      similarity: Number(row.similarity ?? 0),
+    }))
+    .filter(
+      (row) => row.transactionId !== "" && Number.isFinite(row.similarity),
+    );
+}
+
+function getTransactionUserProvidedContext(transaction: Transaction) {
+  const reviewContext = readTransactionReviewContext(transaction);
+  return (
+    readOptionalString(reviewContext?.userProvidedContext) ??
+    transaction.manualNotes ??
+    null
+  );
+}
+
+export function buildResolvedSourcePrecedent(
+  sourceTransaction: Transaction,
+  sourceAuditEventId: string | null,
+): ResolvedSourcePrecedent {
+  const llmPayload = readOptionalRecord(sourceTransaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+
+  return {
+    sourceTransactionId: sourceTransaction.id,
+    sourceAuditEventId,
+    sourceDescriptionRaw: sourceTransaction.descriptionRaw,
+    userProvidedContext: getTransactionUserProvidedContext(sourceTransaction),
+    finalTransaction: {
+      transactionClass: sourceTransaction.transactionClass,
+      securityId: sourceTransaction.securityId ?? null,
+      quantity: sourceTransaction.quantity ?? null,
+      unitPriceOriginal: sourceTransaction.unitPriceOriginal ?? null,
+      needsReview: sourceTransaction.needsReview,
+      reviewReason: sourceTransaction.reviewReason ?? null,
+    },
+    llm: {
+      model:
+        readOptionalString(llmNode?.model) ??
+        readOptionalString(llmPayload?.model) ??
+        null,
+      explanation:
+        readOptionalString(llmNode?.explanation) ??
+        readOptionalString(llmPayload?.explanation) ??
+        null,
+      reason:
+        readOptionalString(llmNode?.reason) ??
+        readOptionalString(llmPayload?.reason) ??
+        null,
+      resolutionProcess: readRawOutputString(rawOutput, "resolution_process"),
+      rawOutput,
+    },
+    rebuildEvidence:
+      readOptionalRecord(llmPayload?.rebuildEvidence) ?? null,
+  };
+}
+
+function buildResolvedSourcePrecedentSummary(
+  precedent: ResolvedSourcePrecedent,
+) {
+  return [
+    `A similar transaction in this same account was resolved from "${precedent.sourceDescriptionRaw}".`,
+    precedent.userProvidedContext
+      ? `User review context: ${precedent.userProvidedContext}.`
+      : null,
+    `Final class: ${precedent.finalTransaction.transactionClass}.`,
+    precedent.finalTransaction.securityId
+      ? `Resolved security id: ${precedent.finalTransaction.securityId}.`
+      : null,
+    precedent.llm.resolutionProcess
+      ? `Resolution process: ${precedent.llm.resolutionProcess}.`
+      : precedent.llm.reason
+        ? `Resolution reason: ${precedent.llm.reason}.`
+        : null,
+    readOptionalRecord(precedent.rebuildEvidence)?.quantityDerivedFromHistoricalPrice ===
+    true
+      ? "Quantity was later derived during the rebuild step from a historical price or NAV."
+      : null,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
+function buildUnresolvedSourceContextSummary(sourceTransaction: Transaction) {
+  return [
+    `A similar transaction in this same account is still unresolved: "${sourceTransaction.descriptionRaw}".`,
+    getTransactionUserProvidedContext(sourceTransaction)
+      ? `User review context: ${getTransactionUserProvidedContext(sourceTransaction)}.`
+      : null,
+    sourceTransaction.reviewReason
+      ? `Remaining unresolved reason: ${sourceTransaction.reviewReason}.`
+      : "It still remains unresolved after manual review.",
+    "Use this as supporting context only when the descriptions appear to refer to the same instrument or event.",
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
+function normalizePropagatedContextEntry(
+  value: unknown,
+): PropagatedContextEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const kind =
+    record.kind === "unresolved_source_context" ||
+    record.kind === "resolved_source_precedent"
+      ? record.kind
+      : null;
+  const sourceTransactionId = readOptionalString(record.sourceTransactionId);
+  const propagatedAt = readOptionalString(record.propagatedAt);
+  const summaryText = readOptionalString(record.summaryText);
+  const sourceDescriptionRaw = readOptionalString(record.sourceDescriptionRaw);
+  if (
+    !kind ||
+    !sourceTransactionId ||
+    !propagatedAt ||
+    !summaryText ||
+    !sourceDescriptionRaw
+  ) {
+    return null;
+  }
+
+  return {
+    kind,
+    sourceTransactionId,
+    sourceAuditEventId: readOptionalString(record.sourceAuditEventId),
+    propagatedAt,
+    similarity: Number(record.similarity ?? 0),
+    sourceDescriptionRaw,
+    sourceTransactionClass: readOptionalString(record.sourceTransactionClass),
+    sourceNeedsReview: record.sourceNeedsReview === true,
+    sourceReviewReason: readOptionalString(record.sourceReviewReason),
+    userProvidedContext: readOptionalString(record.userProvidedContext),
+    summaryText,
+    resolvedPrecedent: readOptionalRecord(record.resolvedPrecedent) ?? null,
+  };
+}
+
+export function mergePropagatedContextHistory(
+  existingEntries: unknown,
+  nextEntry: PropagatedContextEntry,
+  limit = MAX_PROPAGATED_CONTEXT_ENTRIES,
+) {
+  const normalizedExisting = (readUnknownArray(existingEntries) ?? [])
+    .map((entry) => normalizePropagatedContextEntry(entry))
+    .filter((entry): entry is PropagatedContextEntry => Boolean(entry));
+
+  const deduplicatedExisting = normalizedExisting.filter(
+    (entry) =>
+      !(
+        entry.sourceTransactionId === nextEntry.sourceTransactionId &&
+        (entry.sourceAuditEventId ?? null) ===
+          (nextEntry.sourceAuditEventId ?? null)
+      ),
+  );
+
+  return [nextEntry, ...deduplicatedExisting].slice(0, limit);
+}
+
+export function buildUnresolvedSourcePropagatedContextEntry(input: {
+  sourceTransaction: Transaction;
+  sourceAuditEventId: string | null;
+  similarity: number;
+  propagatedAt: string;
+}): PropagatedContextEntry {
+  return {
+    kind: "unresolved_source_context",
+    sourceTransactionId: input.sourceTransaction.id,
+    sourceAuditEventId: input.sourceAuditEventId,
+    propagatedAt: input.propagatedAt,
+    similarity: input.similarity,
+    sourceDescriptionRaw: input.sourceTransaction.descriptionRaw,
+    sourceTransactionClass: input.sourceTransaction.transactionClass ?? null,
+    sourceNeedsReview: input.sourceTransaction.needsReview,
+    sourceReviewReason: input.sourceTransaction.reviewReason ?? null,
+    userProvidedContext: getTransactionUserProvidedContext(input.sourceTransaction),
+    summaryText: buildUnresolvedSourceContextSummary(input.sourceTransaction),
+    resolvedPrecedent: null,
+  };
+}
+
+export function buildResolvedSourcePropagatedContextEntry(input: {
+  sourceTransaction: Transaction;
+  sourceAuditEventId: string | null;
+  similarity: number;
+  propagatedAt: string;
+  precedent: ResolvedSourcePrecedent;
+}): PropagatedContextEntry {
+  return {
+    kind: "resolved_source_precedent",
+    sourceTransactionId: input.sourceTransaction.id,
+    sourceAuditEventId: input.sourceAuditEventId,
+    propagatedAt: input.propagatedAt,
+    similarity: input.similarity,
+    sourceDescriptionRaw: input.sourceTransaction.descriptionRaw,
+    sourceTransactionClass: input.sourceTransaction.transactionClass ?? null,
+    sourceNeedsReview: input.sourceTransaction.needsReview,
+    sourceReviewReason: input.sourceTransaction.reviewReason ?? null,
+    userProvidedContext: getTransactionUserProvidedContext(input.sourceTransaction),
+    summaryText: buildResolvedSourcePrecedentSummary(input.precedent),
+    resolvedPrecedent: input.precedent as unknown as Record<string, unknown>,
+  };
 }
 
 export function canSeedReviewPropagationFromTransaction(
@@ -410,23 +942,42 @@ export function canSeedReviewPropagationFromTransaction(
   return account.assetDomain === "investment" && Boolean(transaction.securityId);
 }
 
+export function shouldQueueReviewPropagationAfterManualReview(
+  account: { assetDomain: "cash" | "investment" },
+  transaction: Pick<Transaction, "needsReview">,
+) {
+  return account.assetDomain === "investment" && transaction.needsReview === true;
+}
+
 export function buildReviewPropagationUserContext(sourceTransaction: Transaction) {
   const rawOutput = readTransactionRawOutput(sourceTransaction);
-  const instrumentName = readOptionalString(rawOutput?.resolved_instrument_name);
-  const instrumentIsin = readOptionalString(rawOutput?.resolved_instrument_isin);
-  const instrumentTicker = readOptionalString(rawOutput?.resolved_instrument_ticker);
-  const instrumentExchange = readOptionalString(
-    rawOutput?.resolved_instrument_exchange,
+  const llmPayload = readOptionalRecord(sourceTransaction.llmPayload);
+  const rebuildEvidence = readOptionalRecord(llmPayload?.rebuildEvidence);
+  const instrumentName = readRawOutputString(rawOutput, "resolved_instrument_name");
+  const instrumentIsin = readRawOutputString(rawOutput, "resolved_instrument_isin");
+  const instrumentTicker = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_ticker",
   );
-  const currentPrice =
-    readOptionalNumberAsString(rawOutput?.current_price) ??
-    readOptionalString(rawOutput?.current_price);
-  const currentPriceCurrency = readOptionalString(rawOutput?.current_price_currency);
-  const currentPriceTimestamp = readOptionalString(
-    rawOutput?.current_price_timestamp,
+  const instrumentExchange = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_exchange",
   );
-  const currentPriceSource = readOptionalString(rawOutput?.current_price_source);
-  const currentPriceType = readOptionalString(rawOutput?.current_price_type);
+  const currentPrice = readRawOutputNumberAsString(rawOutput, "current_price");
+  const currentPriceCurrency = readRawOutputString(
+    rawOutput,
+    "current_price_currency",
+  );
+  const currentPriceTimestamp = readRawOutputString(
+    rawOutput,
+    "current_price_timestamp",
+  );
+  const currentPriceSource = readRawOutputString(
+    rawOutput,
+    "current_price_source",
+  );
+  const currentPriceType = readRawOutputString(rawOutput, "current_price_type");
+  const resolutionProcess = readRawOutputString(rawOutput, "resolution_process");
 
   return [
     "A similar unresolved transaction from this same account was manually re-reviewed and should be used as supporting precedent when the evidence matches.",
@@ -448,6 +999,10 @@ export function buildReviewPropagationUserContext(sourceTransaction: Transaction
         }${currentPriceTimestamp ? ` as of ${currentPriceTimestamp}` : ""}${
           currentPriceSource ? ` from ${currentPriceSource}` : ""
         }.`
+      : null,
+    resolutionProcess ? `Resolution process: ${resolutionProcess}.` : null,
+    rebuildEvidence?.quantityDerivedFromHistoricalPrice === true
+      ? "Quantity was later derived from a historical price or NAV during rebuild."
       : null,
     sourceTransaction.reviewReason
       ? `The source transaction may still need review for this remaining reason: ${sourceTransaction.reviewReason}.`
@@ -597,6 +1152,27 @@ async function updateRunningJobPayload(
   `;
 }
 
+const REVIEW_PROPAGATION_ANALYTICS_FIELDS = [
+  "transactionClass",
+  "categoryCode",
+  "economicEntityId",
+] as const;
+
+const REVIEW_PROPAGATION_INVESTMENT_FIELDS = [
+  "transactionClass",
+  "securityId",
+  "quantity",
+  "unitPriceOriginal",
+] as const;
+
+function hasTransactionFieldChange(
+  before: Transaction,
+  after: Transaction,
+  fields: readonly (keyof Transaction)[],
+) {
+  return fields.some((field) => before[field] !== after[field]);
+}
+
 async function processReviewPropagationJob(
   sql: SqlClient,
   userId: string,
@@ -607,6 +1183,10 @@ async function processReviewPropagationJob(
     typeof payloadJson.sourceTransactionId === "string"
       ? payloadJson.sourceTransactionId
       : "";
+  const sourceAuditEventId =
+    typeof payloadJson.sourceAuditEventId === "string"
+      ? payloadJson.sourceAuditEventId
+      : null;
   if (!sourceTransactionId) {
     throw new Error(
       "Review propagation job is missing sourceTransactionId.",
@@ -632,26 +1212,150 @@ async function processReviewPropagationJob(
     );
   }
 
-  if (!canSeedReviewPropagationFromTransaction(account, sourceTransaction)) {
+  if (account.assetDomain !== "investment" || sourceTransaction.voidedAt) {
     return {
       sourceTransactionId,
+      sourceAuditEventId,
       accountId: account.id,
+      mode: sourceTransaction.needsReview
+        ? "unresolved_source_context"
+        : "resolved_source_rereview",
       candidateCount: 0,
       attemptedCount: 0,
       appliedCount: 0,
       skippedCount: 0,
-      skippedReason: "source_transaction_not_resolved",
+      skippedReason: "source_transaction_not_eligible",
     };
   }
 
-  const candidateMatches = await rankReviewPropagationTransactions(
-    dataset,
-    account,
-    sourceTransaction,
-    {
-      limit: Math.max(dataset.transactions.length, 1),
-    },
+  const mode =
+    sourceTransaction.needsReview === true
+      ? "unresolved_source_context"
+      : "resolved_source_rereview";
+  const candidateSeedRowsRaw = await sql`
+    select id, description_raw, description_embedding
+    from public.transactions
+    where user_id = ${userId}
+      and account_id = ${account.id}
+      and id <> ${sourceTransactionId}
+      and coalesce(needs_review, false) = true
+      and voided_at is null
+  `;
+  if (candidateSeedRowsRaw.length === 0) {
+    return {
+      sourceTransactionId,
+      sourceAuditEventId,
+      accountId: account.id,
+      mode,
+      candidateCount: 0,
+      attemptedCount: 0,
+      appliedCount: 0,
+      skippedCount: 0,
+    };
+  }
+
+  const sourceSeedRowRaw = await sql`
+    select id, description_raw, description_embedding
+    from public.transactions
+    where id = ${sourceTransactionId}
+      and user_id = ${userId}
+    limit 1
+  `;
+  const sourceSeedRow = sourceSeedRowRaw[0]
+    ? parseTransactionEmbeddingSeedRow(
+        sourceSeedRowRaw[0] as Record<string, unknown>,
+      )
+    : null;
+  if (!sourceSeedRow) {
+    throw new Error(
+      `Source transaction ${sourceTransactionId} is missing description embedding context.`,
+    );
+  }
+
+  const candidateSeedRows = candidateSeedRowsRaw.map((row) =>
+    parseTransactionEmbeddingSeedRow(row as Record<string, unknown>),
   );
+  let embeddingGeneration = {
+    generatedCount: 0,
+    skippedCount: 0,
+    skippedReason: null as string | null,
+  };
+  try {
+    const sourceEmbeddingResult = await ensureTransactionDescriptionEmbeddings(
+      sql,
+      userId,
+      [sourceSeedRow],
+    );
+    const candidateEmbeddingResult =
+      await ensureTransactionDescriptionEmbeddings(
+        sql,
+        userId,
+        candidateSeedRows,
+      );
+    embeddingGeneration = {
+      generatedCount:
+        sourceEmbeddingResult.generatedCount +
+        candidateEmbeddingResult.generatedCount,
+      skippedCount:
+        sourceEmbeddingResult.skippedCount +
+        candidateEmbeddingResult.skippedCount,
+      skippedReason:
+        sourceEmbeddingResult.skippedReason ??
+        candidateEmbeddingResult.skippedReason,
+    };
+  } catch (embeddingError) {
+    return {
+      sourceTransactionId,
+      sourceAuditEventId,
+      accountId: account.id,
+      mode,
+      candidateCount: 0,
+      attemptedCount: 0,
+      appliedCount: 0,
+      skippedCount: 0,
+      skippedReason: "embedding_generation_failed",
+      embeddingError:
+        embeddingError instanceof Error
+          ? embeddingError.message
+          : "Embedding generation failed.",
+    };
+  }
+
+  const sourceEmbeddingRows = await sql`
+    select description_embedding
+    from public.transactions
+    where id = ${sourceTransactionId}
+      and user_id = ${userId}
+    limit 1
+  `;
+  const sourceEmbedding = normalizeStoredVectorLiteral(
+    sourceEmbeddingRows[0]?.description_embedding,
+  );
+  if (!sourceEmbedding) {
+    return {
+      sourceTransactionId,
+      sourceAuditEventId,
+      accountId: account.id,
+      mode,
+      candidateCount: 0,
+      attemptedCount: 0,
+      appliedCount: 0,
+      skippedCount: 0,
+      skippedReason:
+        embeddingGeneration.skippedReason ?? "source_embedding_unavailable",
+      embeddingGeneration,
+    };
+  }
+
+  const candidateMatches =
+    await findSimilarUnresolvedTransactionsByDescriptionEmbedding(sql, {
+      userId,
+      sourceTransactionId,
+      accountId: account.id,
+      sourceEmbedding,
+      threshold: getReviewPropagationSimilarityThreshold(),
+      limit: getReviewPropagationMaxCandidates(),
+    });
 
   const appliedTransactionIds: string[] = [];
   const failedTransactionIds: Array<{ transactionId: string; error: string }> =
@@ -659,19 +1363,107 @@ async function processReviewPropagationJob(
   let attemptedCount = 0;
   let appliedCount = 0;
   let skippedCount = 0;
+  let shouldRunInvestmentRebuild = false;
+  let shouldQueueMetricRefresh = false;
+  const propagatedAt = new Date().toISOString();
+  const resolvedSourcePrecedent =
+    mode === "resolved_source_rereview"
+      ? buildResolvedSourcePrecedent(sourceTransaction, sourceAuditEventId)
+      : null;
 
   for (const match of candidateMatches) {
     const currentCandidate =
       dataset.transactions.find(
-        (candidate) => candidate.id === match.transaction.id,
-      ) ?? match.transaction;
-    if (!currentCandidate.needsReview || currentCandidate.voidedAt) {
+        (candidate) => candidate.id === match.transactionId,
+      ) ?? null;
+    if (!currentCandidate || !currentCandidate.needsReview || currentCandidate.voidedAt) {
       skippedCount += 1;
       continue;
     }
 
     attemptedCount += 1;
     try {
+      const existingReviewContext =
+        readTransactionReviewContext(currentCandidate) ?? {};
+      const propagationEntry =
+        mode === "resolved_source_rereview" && resolvedSourcePrecedent
+          ? buildResolvedSourcePropagatedContextEntry({
+              sourceTransaction,
+              sourceAuditEventId,
+              similarity: match.similarity,
+              propagatedAt,
+              precedent: resolvedSourcePrecedent,
+            })
+          : buildUnresolvedSourcePropagatedContextEntry({
+              sourceTransaction,
+              sourceAuditEventId,
+              similarity: match.similarity,
+              propagatedAt,
+            });
+      const nextPropagatedContexts = mergePropagatedContextHistory(
+        existingReviewContext.propagatedContexts,
+        propagationEntry,
+      );
+
+      if (mode === "unresolved_source_context") {
+        const currentLlmPayload =
+          readOptionalRecord(currentCandidate.llmPayload) ?? {};
+        const nextLlmPayload = {
+          ...currentLlmPayload,
+          reviewContext: {
+            ...(readOptionalRecord(currentLlmPayload.reviewContext) ?? {}),
+            propagatedContexts: nextPropagatedContexts,
+          },
+        };
+
+        if (
+          JSON.stringify(currentLlmPayload) === JSON.stringify(nextLlmPayload)
+        ) {
+          skippedCount += 1;
+          continue;
+        }
+
+        const after = await sql`
+          update public.transactions
+          set llm_payload = ${serializeJson(sql, nextLlmPayload)}::jsonb,
+              updated_at = ${new Date().toISOString()}
+          where id = ${currentCandidate.id}
+            and user_id = ${userId}
+          returning ${transactionColumnsSql(sql)}
+        `;
+        const afterTransaction = mapFromSql<Transaction>(after[0]);
+        const auditEvent = createAuditEvent(
+          "worker",
+          "job:review_propagation",
+          "transactions.review_propagate_context",
+          "transaction",
+          currentCandidate.id,
+          currentCandidate as unknown as Record<string, unknown>,
+          after[0],
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes:
+              "Appended propagated unresolved review context from a similar transaction in the same investment account.",
+          } as Record<string, unknown>)}
+        `;
+
+        dataset = replaceTransactionInDataset(dataset, afterTransaction);
+        appliedTransactionIds.push(afterTransaction.id);
+        appliedCount += 1;
+        continue;
+      }
+
       const decision = await enrichImportedTransaction(
         dataset,
         account,
@@ -682,26 +1474,16 @@ async function processReviewPropagationJob(
           reviewContext: {
             previousReviewReason: currentCandidate.reviewReason ?? null,
             previousUserContext: currentCandidate.manualNotes ?? null,
-            userProvidedContext: buildReviewPropagationUserContext(
-              sourceTransaction,
-            ),
             previousLlmPayload:
               currentCandidate.llmPayload &&
               typeof currentCandidate.llmPayload === "object"
                 ? (currentCandidate.llmPayload as Record<string, unknown>)
                 : null,
+            propagatedContexts: nextPropagatedContexts,
+            resolvedSourcePrecedent,
           },
         },
       );
-
-      const shouldPersistDecision =
-        decision.transactionClass !== "unknown" &&
-        (!decision.needsReview || account.assetDomain === "investment");
-
-      if (!shouldPersistDecision) {
-        skippedCount += 1;
-        continue;
-      }
 
       const after = await sql`
         update public.transactions
@@ -721,7 +1503,7 @@ async function processReviewPropagationJob(
             updated_at = ${new Date().toISOString()}
         where id = ${currentCandidate.id}
           and user_id = ${userId}
-        returning *
+        returning ${transactionColumnsSql(sql)}
       `;
       const afterTransaction = mapFromSql<Transaction>(after[0]);
       const auditEvent = createAuditEvent(
@@ -746,13 +1528,27 @@ async function processReviewPropagationJob(
           after_json: auditEvent.afterJson,
           created_at: auditEvent.createdAt,
           notes:
-            "Re-ran LLM classification for a similar unresolved transaction after a successful manual review.",
+            "Re-ran LLM classification for a similar unresolved transaction using a resolved precedent from the same investment account.",
         } as Record<string, unknown>)}
       `;
 
       dataset = replaceTransactionInDataset(dataset, afterTransaction);
       appliedTransactionIds.push(afterTransaction.id);
       appliedCount += 1;
+      shouldRunInvestmentRebuild =
+        shouldRunInvestmentRebuild ||
+        hasTransactionFieldChange(
+          currentCandidate,
+          afterTransaction,
+          REVIEW_PROPAGATION_INVESTMENT_FIELDS,
+        );
+      shouldQueueMetricRefresh =
+        shouldQueueMetricRefresh ||
+        hasTransactionFieldChange(
+          currentCandidate,
+          afterTransaction,
+          REVIEW_PROPAGATION_ANALYTICS_FIELDS,
+        );
     } catch (candidateError) {
       skippedCount += 1;
       failedTransactionIds.push({
@@ -766,10 +1562,10 @@ async function processReviewPropagationJob(
   }
 
   let rebuilt: Awaited<ReturnType<typeof applyInvestmentRebuild>> | null = null;
-  if (appliedCount > 0 && account.assetDomain === "investment") {
+  if (mode === "resolved_source_rereview" && shouldRunInvestmentRebuild) {
     rebuilt = await applyInvestmentRebuild(sql, userId);
   }
-  if (appliedCount > 0) {
+  if (mode === "resolved_source_rereview" && shouldQueueMetricRefresh) {
     await queueJob(sql, "metric_refresh", {
       trigger: "review_propagation",
       sourceTransactionId,
@@ -780,7 +1576,9 @@ async function processReviewPropagationJob(
 
   return {
     sourceTransactionId,
+    sourceAuditEventId,
     accountId: account.id,
+    mode,
     candidateCount: candidateMatches.length,
     attemptedCount,
     appliedCount,
@@ -788,6 +1586,7 @@ async function processReviewPropagationJob(
     appliedTransactionIds,
     failedTransactionIds,
     rebuilt,
+    embeddingGeneration,
   };
 }
 
@@ -836,6 +1635,22 @@ function isUniqueViolation(error: unknown): error is { code: string } {
   );
 }
 
+async function selectTransactionRowById(
+  sql: SqlClient,
+  userId: string,
+  transactionId: string,
+) {
+  const rows = await sql`
+    select ${transactionColumnsSql(sql)}
+    from public.transactions
+    where id = ${transactionId}
+      and user_id = ${userId}
+    limit 1
+  `;
+
+  return rows[0] ?? null;
+}
+
 async function loadDatasetForUser(
   sql: SqlClient,
   userId: string,
@@ -866,7 +1681,12 @@ async function loadDatasetForUser(
     sql`select * from public.accounts where user_id = ${userId} order by created_at`,
     sql`select * from public.import_templates where user_id = ${userId} order by created_at`,
     sql`select * from public.import_batches where user_id = ${userId} order by imported_at desc`,
-    sql`select * from public.transactions where user_id = ${userId} order by transaction_date desc, created_at desc`,
+    sql`
+      select ${transactionColumnsSql(sql)}
+      from public.transactions
+      where user_id = ${userId}
+      order by transaction_date desc, created_at desc
+    `,
     sql`select * from public.categories order by sort_order, code`,
     sql`select * from public.classification_rules where user_id = ${userId} order by priority`,
     sql`select * from public.audit_events order by created_at desc limit 200`,
@@ -960,6 +1780,9 @@ async function applyInvestmentRebuild(
     onProgress: options?.onProgress,
     historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
   });
+  const latestTransactionsById = new Map(
+    latestDataset.transactions.map((transaction) => [transaction.id, transaction]),
+  );
 
   for (const security of rebuilt.insertedSecurities) {
     await sql`
@@ -1033,6 +1856,7 @@ async function applyInvestmentRebuild(
     const updatePayload: Record<string, unknown> = {
       updated_at: new Date().toISOString(),
     };
+    const existingTransaction = latestTransactionsById.get(patch.id) ?? null;
     if (patch.transactionClass !== undefined) {
       updatePayload.transaction_class = patch.transactionClass;
     }
@@ -1063,12 +1887,40 @@ async function applyInvestmentRebuild(
     if (patch.reviewReason !== undefined) {
       updatePayload.review_reason = patch.reviewReason;
     }
-    await sql`
-      update public.transactions
-      set ${sql(updatePayload)}
-      where id = ${patch.id}
-        and user_id = ${userId}
-    `;
+    const existingLlmPayload =
+      readOptionalRecord(existingTransaction?.llmPayload) ?? {};
+    const nextLlmPayload =
+      patch.llmPayload || patch.rebuildEvidence
+        ? {
+            ...existingLlmPayload,
+            ...(patch.llmPayload ?? {}),
+            ...(patch.rebuildEvidence
+              ? {
+                  rebuildEvidence: {
+                    ...(readOptionalRecord(existingLlmPayload.rebuildEvidence) ??
+                      {}),
+                    ...patch.rebuildEvidence,
+                  },
+                }
+              : {}),
+          }
+        : null;
+    if (nextLlmPayload) {
+      await sql`
+        update public.transactions
+        set ${sql(updatePayload)},
+            llm_payload = ${serializeJson(sql, nextLlmPayload)}::jsonb
+        where id = ${patch.id}
+          and user_id = ${userId}
+      `;
+    } else {
+      await sql`
+        update public.transactions
+        set ${sql(updatePayload)}
+        where id = ${patch.id}
+          and user_id = ${userId}
+      `;
+    }
   }
 
   await sql`
@@ -1186,13 +2038,11 @@ export async function reanalyzeTransactionReview(
   });
 
   return withSeededUserContext(async (sql) => {
-    const before = await sql`
-      select * from public.transactions
-      where id = ${input.transactionId}
-        and user_id = ${userId}
-      limit 1
-    `;
-    const beforeRow = before[0];
+    const beforeRow = await selectTransactionRowById(
+      sql,
+      userId,
+      input.transactionId,
+    );
     if (!beforeRow) {
       throw new Error(`Transaction ${input.transactionId} not found.`);
     }
@@ -1262,7 +2112,7 @@ export async function reanalyzeTransactionReview(
           updated_at = ${new Date().toISOString()}
       where id = ${input.transactionId}
         and user_id = ${userId}
-      returning *
+      returning ${transactionColumnsSql(sql)}
     `;
 
     if (account.assetDomain === "investment") {
@@ -1285,13 +2135,11 @@ export async function reanalyzeTransactionReview(
       accountId: beforeTransaction.accountId,
     });
 
-    const finalRows = await sql`
-      select * from public.transactions
-      where id = ${input.transactionId}
-        and user_id = ${userId}
-      limit 1
-    `;
-    const finalRow = finalRows[0];
+    const finalRow = await selectTransactionRowById(
+      sql,
+      userId,
+      input.transactionId,
+    );
     if (!finalRow) {
       throw new Error(
         `Transaction ${input.transactionId} disappeared after review reanalysis.`,
@@ -1328,7 +2176,7 @@ export async function reanalyzeTransactionReview(
     `;
     if (
       wasPendingReview &&
-      canSeedReviewPropagationFromTransaction(account, afterTransaction)
+      shouldQueueReviewPropagationAfterManualReview(account, beforeTransaction)
     ) {
       await input.onProgress?.({
         stage: "review_propagation",
@@ -1859,13 +2707,11 @@ class SqlFinanceRepository implements FinanceRepository {
     generatedRuleId?: string;
   }> {
     const result = await withSeededUserContext(async (sql) => {
-      const before = await sql`
-        select * from public.transactions
-        where id = ${input.transactionId}
-          and user_id = ${this.userId}
-        limit 1
-      `;
-      const beforeRow = before[0];
+      const beforeRow = await selectTransactionRowById(
+        sql,
+        this.userId,
+        input.transactionId,
+      );
       if (!beforeRow) {
         throw new Error(`Transaction ${input.transactionId} not found.`);
       }
@@ -1906,7 +2752,7 @@ class SqlFinanceRepository implements FinanceRepository {
             set ${sql(updatePayload)}
             where id = ${input.transactionId}
               and user_id = ${this.userId}
-            returning *
+            returning ${transactionColumnsSql(sql)}
           `
         : [{ ...beforeRow, ...updatePayload }];
 
@@ -2688,7 +3534,8 @@ class SqlFinanceRepository implements FinanceRepository {
               let latestDataset = await loadDatasetForUser(sql, this.userId);
               const promptOverrides = await getPromptOverridesCached();
               const rows = await sql`
-                select * from public.transactions
+                select ${transactionColumnsSql(sql)}
+                from public.transactions
                 where user_id = ${this.userId}
                   and import_batch_id = ${importBatchId}
                   and coalesce(llm_payload->>'analysisStatus', 'pending') = 'pending'
@@ -2732,7 +3579,7 @@ class SqlFinanceRepository implements FinanceRepository {
                         updated_at = ${new Date().toISOString()}
                     where id = ${transaction.id}
                       and user_id = ${this.userId}
-                    returning *
+                    returning ${transactionColumnsSql(sql)}
                   `;
                   latestDataset = replaceTransactionInDataset(
                     latestDataset,
@@ -2767,7 +3614,7 @@ class SqlFinanceRepository implements FinanceRepository {
                         updated_at = ${new Date().toISOString()}
                     where id = ${transaction.id}
                       and user_id = ${this.userId}
-                    returning *
+                    returning ${transactionColumnsSql(sql)}
                   `;
                   latestDataset = replaceTransactionInDataset(
                     latestDataset,

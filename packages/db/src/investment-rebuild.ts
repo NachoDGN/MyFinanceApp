@@ -41,6 +41,8 @@ type ResolvedTransactionPatch = {
   unitPriceOriginal?: string | null;
   needsReview?: boolean;
   reviewReason?: string | null;
+  llmPayload?: Record<string, unknown> | null;
+  rebuildEvidence?: Record<string, unknown> | null;
 };
 
 const MAX_HISTORICAL_PRICE_DRIFT_DAYS = 7;
@@ -90,6 +92,83 @@ function readOptionalString(value: unknown) {
 
 function readOptionalNumberAsString(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
+}
+
+function camelizeJsonKey(value: string) {
+  return value.replace(/_([a-z])/g, (_, character: string) =>
+    character.toUpperCase(),
+  );
+}
+
+function readRawOutputField(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  if (!rawOutput) {
+    return null;
+  }
+
+  if (key in rawOutput) {
+    return rawOutput[key];
+  }
+
+  const camelizedKey = camelizeJsonKey(key);
+  if (camelizedKey in rawOutput) {
+    return rawOutput[camelizedKey];
+  }
+
+  return null;
+}
+
+function readRawOutputString(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  return readOptionalString(readRawOutputField(rawOutput, key));
+}
+
+function readRawOutputNumberAsString(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  const value = readRawOutputField(rawOutput, key);
+  return readOptionalNumberAsString(value) ?? readOptionalString(value);
+}
+
+function buildHistoricalPriceEvidence(price: SecurityPrice | null) {
+  if (!price) {
+    return null;
+  }
+
+  return {
+    sourceName: price.sourceName ?? null,
+    priceDate: price.priceDate ?? null,
+    quoteTimestamp: price.quoteTimestamp ?? null,
+    price: price.price ?? null,
+    currency: price.currency ?? null,
+    marketState: price.marketState ?? null,
+  };
+}
+
+function buildTransactionRebuildEvidence(input: {
+  resolvedSecurityId: string | null;
+  historicalPrice: SecurityPrice | null;
+  quantityDerivedFromHistoricalPrice: boolean;
+}) {
+  if (
+    !input.resolvedSecurityId &&
+    !input.historicalPrice &&
+    !input.quantityDerivedFromHistoricalPrice
+  ) {
+    return null;
+  }
+
+  return {
+    resolvedSecurityId: input.resolvedSecurityId,
+    historicalPriceUsed: buildHistoricalPriceEvidence(input.historicalPrice),
+    quantityDerivedFromHistoricalPrice: input.quantityDerivedFromHistoricalPrice,
+    rebuiltAt: new Date().toISOString(),
+  } satisfies Record<string, unknown>;
 }
 
 function isPlaceholderSecurityPrice(price: SecurityPrice) {
@@ -193,33 +272,41 @@ function buildSecurityResolutionContext(
 
   const llmHintCandidate =
     readOptionalString(llmNode?.securityHint) ??
-    readOptionalString(rawOutput?.security_hint);
-  const resolvedInstrumentName = readOptionalString(
-    rawOutput?.resolved_instrument_name,
+    readRawOutputString(rawOutput, "security_hint");
+  const resolvedInstrumentName = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_name",
   );
   const resolvedInstrumentIsin = normalizeSecurityIdentifier(
-    readOptionalString(rawOutput?.resolved_instrument_isin) ??
+    readRawOutputString(rawOutput, "resolved_instrument_isin") ??
       extractIsinFromText(
         transaction.manualNotes,
         readOptionalString(reviewContext?.previousUserContext),
         readOptionalString(reviewContext?.userProvidedContext),
       ),
   );
-  const resolvedInstrumentTicker = readOptionalString(
-    rawOutput?.resolved_instrument_ticker,
+  const resolvedInstrumentTicker = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_ticker",
   );
-  const resolvedInstrumentExchange = readOptionalString(
-    rawOutput?.resolved_instrument_exchange,
+  const resolvedInstrumentExchange = readRawOutputString(
+    rawOutput,
+    "resolved_instrument_exchange",
   );
-  const currentPrice = readOptionalNumberAsString(rawOutput?.current_price);
-  const currentPriceCurrency = readOptionalString(
-    rawOutput?.current_price_currency,
+  const currentPrice = readRawOutputNumberAsString(rawOutput, "current_price");
+  const currentPriceCurrency = readRawOutputString(
+    rawOutput,
+    "current_price_currency",
   );
-  const currentPriceTimestamp = readOptionalString(
-    rawOutput?.current_price_timestamp,
+  const currentPriceTimestamp = readRawOutputString(
+    rawOutput,
+    "current_price_timestamp",
   );
-  const currentPriceSource = readOptionalString(rawOutput?.current_price_source);
-  const currentPriceType = readOptionalString(rawOutput?.current_price_type);
+  const currentPriceSource = readRawOutputString(
+    rawOutput,
+    "current_price_source",
+  );
+  const currentPriceType = readRawOutputString(rawOutput, "current_price_type");
   const reviewText = normalizeSecurityText(
     [
       transaction.manualNotes,
@@ -284,8 +371,12 @@ function buildWebResolvedProviderSymbol(
   context: SecurityResolutionContext,
   hint: string,
 ) {
-  if (context.exactTicker) return context.exactTicker;
+  if (context.prefersMutualFund && context.exactIsin) return context.exactIsin;
+  if (context.exactTicker && !context.prefersMutualFund) {
+    return context.exactTicker;
+  }
   if (context.exactIsin) return context.exactIsin;
+  if (context.exactTicker) return context.exactTicker;
   const normalizedHint = normalizeSecurityText(
     context.exactInstrumentName ?? hint,
   ).replace(/[^A-Z0-9]+/g, " ");
@@ -1159,6 +1250,24 @@ function findSecurityByHint(
   }
 
   const normalizedHint = normalizeSecurityText(hint);
+  const aliasMatch = dataset.securityAliases.find(
+    (alias) =>
+      normalizeSecurityText(alias.aliasTextNormalized) === normalizedHint,
+  );
+  const aliasedSecurity = aliasMatch
+    ? (dataset.securities.find(
+        (security) => security.id === aliasMatch.securityId,
+      ) ?? null)
+    : null;
+
+  if (
+    aliasedSecurity &&
+    !securityConflictsWithHint(hint, aliasedSecurity) &&
+    !(context && securityConflictsWithResolutionContext(aliasedSecurity, context))
+  ) {
+    return aliasedSecurity;
+  }
+
   const directMatch = dataset.securities.find((security) => {
     const candidates = [
       security.providerSymbol,
@@ -1179,25 +1288,62 @@ function findSecurityByHint(
     return directMatch;
   }
 
-  const aliasMatch = dataset.securityAliases.find(
-    (alias) =>
-      normalizeSecurityText(alias.aliasTextNormalized) === normalizedHint,
-  );
-  const aliasedSecurity = aliasMatch
-    ? (dataset.securities.find(
-        (security) => security.id === aliasMatch.securityId,
-      ) ?? null)
-    : null;
+  return null;
+}
 
-  if (
-    aliasedSecurity &&
-    !securityConflictsWithHint(hint, aliasedSecurity) &&
-    !(context && securityConflictsWithResolutionContext(aliasedSecurity, context))
-  ) {
-    return aliasedSecurity;
+function buildConfirmedSecurityAliases(input: {
+  transaction: Transaction;
+  resolvedSecurityId: string | null;
+  resolutionContext: SecurityResolutionContext;
+}) {
+  if (!input.resolvedSecurityId) {
+    return [] as SecurityAlias[];
   }
 
-  return null;
+  const llmPayload = readOptionalRecord(input.transaction.llmPayload);
+  const llmNode = readOptionalRecord(llmPayload?.llm);
+  const rawOutput = readOptionalRecord(llmNode?.rawOutput);
+  const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
+  const resolutionProcess = readRawOutputString(rawOutput, "resolution_process");
+  const exactIsin = normalizeSecurityIdentifier(
+    readRawOutputString(rawOutput, "resolved_instrument_isin"),
+  );
+
+  if (!exactIsin && !resolutionProcess) {
+    return [] as SecurityAlias[];
+  }
+
+  const aliasTexts = new Set(
+    [
+      input.transaction.descriptionRaw,
+      input.transaction.descriptionClean,
+      input.resolutionContext.hint,
+      readOptionalString(llmNode?.securityHint),
+      readRawOutputString(rawOutput, "security_hint"),
+      readRawOutputString(rawOutput, "resolved_instrument_name"),
+      exactIsin || null,
+    ]
+      .map((value) => normalizeSecurityText(value))
+      .filter((value) => value.length >= 6),
+  );
+  const aliasSource = readOptionalString(reviewContext?.userProvidedContext)
+    ? "manual"
+    : "provider";
+  const confidence = exactIsin ? "0.9900" : "0.9700";
+  const createdAt = new Date().toISOString();
+
+  return [...aliasTexts].map(
+    (aliasTextNormalized) =>
+      ({
+        id: randomUUID(),
+        securityId: input.resolvedSecurityId as string,
+        aliasTextNormalized,
+        aliasSource,
+        templateId: null,
+        confidence,
+        createdAt,
+      }) satisfies SecurityAlias,
+  );
 }
 
 async function resolveSecurity(
@@ -1809,6 +1955,13 @@ export async function prepareInvestmentRebuild(
 
     const resolutionContext = buildSecurityResolutionContext(transaction);
     const hint = resolutionContext.hint;
+    const hintedSecurity = hint
+      ? findSecurityByHint(workingDataset, hint, resolutionContext)
+      : null;
+    if (hintedSecurity) {
+      resolvedSecurityId = hintedSecurity.id;
+    }
+
     const currentResolvedSecurity = resolvedSecurityId
       ? (workingDataset.securities.find(
           (security) => security.id === resolvedSecurityId,
@@ -1850,6 +2003,24 @@ export async function prepareInvestmentRebuild(
           (security) => security.id === resolvedSecurityId,
         ) ?? null)
       : null;
+    for (const alias of buildConfirmedSecurityAliases({
+      transaction,
+      resolvedSecurityId,
+      resolutionContext,
+    })) {
+      const alreadyExists = workingDataset.securityAliases.some(
+        (candidate) =>
+          candidate.securityId === alias.securityId &&
+          normalizeSecurityText(candidate.aliasTextNormalized) ===
+            normalizeSecurityText(alias.aliasTextNormalized),
+      );
+      if (alreadyExists) {
+        continue;
+      }
+
+      insertedAliases.push(alias);
+      workingDataset.securityAliases.unshift(alias);
+    }
     const isTrade =
       resolvedSecurity &&
       ["investment_trade_buy", "investment_trade_sell"].includes(
@@ -1880,10 +2051,13 @@ export async function prepareInvestmentRebuild(
         : null;
     recordPrice(historicalPrice);
 
+    let quantityDerivedFromHistoricalPrice = false;
     if (resolvedSecurity && historicalPrice) {
-      quantity =
-        quantity ??
-        inferQuantityFromPrice(workingDataset, transaction, historicalPrice);
+      if (!quantity) {
+        quantity =
+          inferQuantityFromPrice(workingDataset, transaction, historicalPrice);
+        quantityDerivedFromHistoricalPrice = Boolean(quantity);
+      }
       unitPriceOriginal = unitPriceOriginal ?? historicalPrice.price;
     }
 
@@ -1909,6 +2083,14 @@ export async function prepareInvestmentRebuild(
         : null;
 
     const patch: ResolvedTransactionPatch = { id: transaction.id };
+    const rebuildEvidence = buildTransactionRebuildEvidence({
+      resolvedSecurityId,
+      historicalPrice,
+      quantityDerivedFromHistoricalPrice,
+    });
+    const existingRebuildEvidence = readOptionalRecord(
+      readOptionalRecord(transaction.llmPayload)?.rebuildEvidence,
+    );
     let changed = false;
 
     if (
@@ -1952,6 +2134,13 @@ export async function prepareInvestmentRebuild(
     if ((unitPriceOriginal ?? null) !== originalUnitPriceOriginal) {
       transaction.unitPriceOriginal = unitPriceOriginal;
       patch.unitPriceOriginal = unitPriceOriginal;
+      changed = true;
+    }
+    if (
+      rebuildEvidence &&
+      JSON.stringify(rebuildEvidence) !== JSON.stringify(existingRebuildEvidence)
+    ) {
+      patch.rebuildEvidence = rebuildEvidence;
       changed = true;
     }
 

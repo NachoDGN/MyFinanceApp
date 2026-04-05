@@ -48,6 +48,9 @@ type TransactionPromptReviewContext = {
   previousUserContext: string;
   userProvidedContext: string;
   previousLlmPayload: string;
+  propagatedContexts: string;
+  persistedSecurityMappings: string;
+  resolvedSourcePrecedent: string;
 };
 
 const transactionPromptPlaceholders = [
@@ -89,6 +92,9 @@ const reviewContextPlaceholders = [
   "previous_user_review_context",
   "new_user_review_context",
   "previous_llm_analysis",
+  "propagated_contexts",
+  "persisted_security_mappings",
+  "resolved_source_precedent",
 ] as const;
 
 const spreadsheetTableStartPlaceholders = ["file_kind", "sheet_previews_block"] as const;
@@ -137,6 +143,8 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Use only the allowed transaction classes and category codes provided.",
           "Use null instead of guessing unsupported values.",
           "Keep the explanation to one short sentence.",
+          "If the transaction is fully resolved, populate resolution_process with a concise evidence chain. If it remains unresolved, set resolution_process to null.",
+          "Do not claim that quantity or price was derived from a later rebuild step unless that derivation is explicitly present in the transaction input.",
           "Never invent merchants, counterparties, or categories.",
           "When similar same-account history is provided, use it as supporting precedent rather than a hard rule.",
         ].join(" "),
@@ -208,6 +216,9 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Previous user review context: {{previous_user_review_context}}.",
           "New user review context: {{new_user_review_context}}.",
           "Previous LLM analysis: {{previous_llm_analysis}}.",
+          "Propagated contexts from similar unresolved transactions: {{propagated_contexts}}.",
+          "Persisted confirmed security mappings: {{persisted_security_mappings}}.",
+          "Resolved source precedent from a similar transaction: {{resolved_source_precedent}}.",
         ].join("\n"),
         requiredPlaceholders: [...reviewContextPlaceholders],
       },
@@ -233,7 +244,10 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Treat clearly named stocks, ETFs, index funds, and mutual funds as investment transactions even when ticker or quantity is missing.",
           "Use security_hint for the best normalized issuer or fund name visible in the description.",
           "If the instrument is recognizable but the exact catalog mapping is uncertain, still classify the transaction and explain the remaining ambiguity in reason.",
+          "If the transaction is fully resolved, populate resolution_process with a concise but complete evidence chain describing how the exact instrument or event was resolved, what identifiers or sources were used, and why the match is exact. If the transaction remains unresolved, set resolution_process to null.",
+          "Do not claim that quantity or unit price was derived by the model when those values could instead be derived later by a rebuild step using historical prices or NAV.",
           "Never invent security ids or ticker symbols.",
+          "When persisted security mappings from prior confirmed resolutions are provided, treat them as the strongest internal precedent, but only reuse them when the current transaction wording and context are consistent with that mapping.",
           "Use the latest portfolio snapshot when provided to sanity-check whether the row can realistically be a buy, sell, or fee.",
           "When similar same-account history is provided, use it as supporting precedent rather than a hard rule.",
           "Broker commissions can mention a security name and quantity without being a real disposal.",
@@ -324,6 +338,9 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Previous user review context: {{previous_user_review_context}}.",
           "New user review context: {{new_user_review_context}}.",
           "Previous LLM analysis: {{previous_llm_analysis}}.",
+          "Propagated contexts from similar unresolved transactions: {{propagated_contexts}}.",
+          "Persisted confirmed security mappings: {{persisted_security_mappings}}.",
+          "Resolved source precedent from a similar transaction: {{resolved_source_precedent}}.",
         ].join("\n"),
         requiredPlaceholders: [...reviewContextPlaceholders],
       },
@@ -533,13 +550,16 @@ function renderTransactionPrompt(
         })
       : "";
   const reviewContextBlock = reviewContext
-    ? interpolateTemplate(sections.review_context_template, {
-        review_trigger: reviewContext.trigger,
-        previous_review_reason: reviewContext.previousReviewReason,
-        previous_user_review_context: reviewContext.previousUserContext,
-        new_user_review_context: reviewContext.userProvidedContext,
-        previous_llm_analysis: reviewContext.previousLlmPayload,
-      })
+      ? interpolateTemplate(sections.review_context_template, {
+          review_trigger: reviewContext.trigger,
+          previous_review_reason: reviewContext.previousReviewReason,
+          previous_user_review_context: reviewContext.previousUserContext,
+          new_user_review_context: reviewContext.userProvidedContext,
+          previous_llm_analysis: reviewContext.previousLlmPayload,
+          propagated_contexts: reviewContext.propagatedContexts,
+          persisted_security_mappings: reviewContext.persistedSecurityMappings,
+          resolved_source_precedent: reviewContext.resolvedSourcePrecedent,
+        })
     : "";
 
   return {
@@ -688,6 +708,9 @@ export function buildPromptProfilePreview(
           previousUserContext: "{{previous_user_review_context}}",
           userProvidedContext: "{{new_user_review_context}}",
           previousLlmPayload: "{{previous_llm_analysis}}",
+          propagatedContexts: "{{propagated_contexts}}",
+          persistedSecurityMappings: "{{persisted_security_mappings}}",
+          resolvedSourcePrecedent: "{{resolved_source_precedent}}",
         },
       );
     case "investment_transaction_analyzer":
@@ -730,6 +753,9 @@ export function buildPromptProfilePreview(
           previousUserContext: "{{previous_user_review_context}}",
           userProvidedContext: "{{new_user_review_context}}",
           previousLlmPayload: "{{previous_llm_analysis}}",
+          propagatedContexts: "{{propagated_contexts}}",
+          persistedSecurityMappings: "{{persisted_security_mappings}}",
+          resolvedSourcePrecedent: "{{resolved_source_precedent}}",
         },
       );
     case "spreadsheet_table_start":

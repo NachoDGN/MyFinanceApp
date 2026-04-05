@@ -396,6 +396,9 @@ export interface TransactionReviewContextInput {
   previousReviewReason?: string | null;
   previousUserContext?: string | null;
   previousLlmPayload?: Record<string, unknown> | null;
+  propagatedContexts?: unknown[];
+  resolvedSourcePrecedent?: unknown | null;
+  persistedSecurityMappings?: unknown[];
 }
 
 export interface TransactionEnrichmentOptions {
@@ -447,6 +450,17 @@ type HistoricalReviewExample = {
     unitPriceOriginal: string | null;
     reviewReason: string | null;
   };
+};
+
+type PersistedSecurityMapping = {
+  securityId: string;
+  matchedAlias: string;
+  aliasSource: string;
+  confidence: string;
+  providerSymbol: string;
+  displaySymbol: string;
+  securityName: string;
+  isin: string | null;
 };
 
 export interface SimilarAccountTransactionMatch {
@@ -528,6 +542,43 @@ function readOptionalRecord(value: unknown) {
   return isRecord(value) ? value : null;
 }
 
+function readUnknownArray(value: unknown) {
+  return Array.isArray(value) ? value : null;
+}
+
+function camelizeJsonKey(value: string) {
+  return value.replace(/_([a-z])/g, (_, character: string) =>
+    character.toUpperCase(),
+  );
+}
+
+function readRawOutputField(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  if (!rawOutput) {
+    return null;
+  }
+
+  if (key in rawOutput) {
+    return rawOutput[key];
+  }
+
+  const camelizedKey = camelizeJsonKey(key);
+  if (camelizedKey in rawOutput) {
+    return rawOutput[camelizedKey];
+  }
+
+  return null;
+}
+
+function readRawOutputString(
+  rawOutput: Record<string, unknown> | null,
+  key: string,
+) {
+  return readOptionalString(readRawOutputField(rawOutput, key));
+}
+
 function tokenizePromptText(value: string | null | undefined) {
   const normalized = normalizeOptionalText(value);
   if (!normalized) {
@@ -541,11 +592,13 @@ function tokenizePromptText(value: string | null | undefined) {
   );
 }
 
-function getReviewPropagationEmbeddingModel() {
+export function getReviewPropagationEmbeddingModel() {
   return process.env.REVIEW_PROPAGATION_EMBEDDING_MODEL?.trim() || "gemini-embedding-001";
 }
 
-function normalizeInvestmentMatchingText(value: string | null | undefined) {
+export function normalizeInvestmentMatchingText(
+  value: string | null | undefined,
+) {
   return normalizeDescription(value ?? "")
     .comparison.replace(/\bGLOB\b/g, "GLOBAL")
     .replace(/\bSM[\s-]?CAP\b/g, "SMALL CAP")
@@ -608,11 +661,11 @@ function buildReviewPropagationContextText(transaction: Transaction) {
     transaction.manualNotes,
     readOptionalString(reviewContext?.previousUserContext),
     readOptionalString(reviewContext?.userProvidedContext),
-    readOptionalString(rawOutput?.resolved_instrument_name),
-    readOptionalString(rawOutput?.resolved_instrument_isin),
-    readOptionalString(rawOutput?.current_price_type),
-    readOptionalString(rawOutput?.reason),
-    readOptionalString(rawOutput?.explanation),
+    readRawOutputString(rawOutput, "resolved_instrument_name"),
+    readRawOutputString(rawOutput, "resolved_instrument_isin"),
+    readRawOutputString(rawOutput, "current_price_type"),
+    readRawOutputString(rawOutput, "reason"),
+    readRawOutputString(rawOutput, "explanation"),
   ]
     .filter((value): value is string => Boolean(value))
     .join(" ");
@@ -625,12 +678,12 @@ function extractTransactionIsinEvidence(transaction: Transaction) {
   const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
 
   return extractIsinFromText(
-    readOptionalString(rawOutput?.resolved_instrument_isin),
+    readRawOutputString(rawOutput, "resolved_instrument_isin"),
     transaction.manualNotes,
     readOptionalString(reviewContext?.previousUserContext),
     readOptionalString(reviewContext?.userProvidedContext),
-    readOptionalString(rawOutput?.reason),
-    readOptionalString(rawOutput?.explanation),
+    readRawOutputString(rawOutput, "reason"),
+    readRawOutputString(rawOutput, "explanation"),
   );
 }
 
@@ -1350,6 +1403,70 @@ function buildInvestmentPortfolioState(
   };
 }
 
+function buildPersistedInvestmentSecurityMappings(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  deterministic: DeterministicClassification,
+) {
+  if (
+    account.assetDomain !== "investment" ||
+    !isTradeTransactionClass(deterministic.transactionClass)
+  ) {
+    return [] as PersistedSecurityMapping[];
+  }
+
+  const candidateAliases = new Set(
+    [
+      deterministic.securityHint,
+      transaction.descriptionRaw,
+      transaction.descriptionClean,
+    ]
+      .map((value) => normalizeDescription(value ?? "").comparison)
+      .filter(Boolean),
+  );
+  if (candidateAliases.size === 0) {
+    return [] as PersistedSecurityMapping[];
+  }
+
+  const seenSecurityIds = new Set<string>();
+  const persistedMappings: PersistedSecurityMapping[] = [];
+
+  for (const alias of dataset.securityAliases) {
+    const normalizedAlias = normalizeDescription(
+      alias.aliasTextNormalized,
+    ).comparison;
+    if (!candidateAliases.has(normalizedAlias)) {
+      continue;
+    }
+
+    const security =
+      dataset.securities.find((candidate) => candidate.id === alias.securityId) ??
+      null;
+    if (!security || seenSecurityIds.has(security.id)) {
+      continue;
+    }
+
+    seenSecurityIds.add(security.id);
+    persistedMappings.push({
+      securityId: security.id,
+      matchedAlias: alias.aliasTextNormalized,
+      aliasSource: alias.aliasSource,
+      confidence: alias.confidence,
+      providerSymbol: security.providerSymbol,
+      displaySymbol: security.displaySymbol,
+      securityName: security.name,
+      isin: security.isin ?? null,
+    });
+
+    if (persistedMappings.length >= 3) {
+      break;
+    }
+  }
+
+  return persistedMappings;
+}
+
 function getFallbackCategory(transaction: Transaction, account: Account) {
   if (account.assetDomain === "investment") {
     return "uncategorized_investment";
@@ -1540,6 +1657,15 @@ async function requestLlmClassification(
   deterministic: DeterministicClassification,
   options?: TransactionEnrichmentOptions,
 ): Promise<LlmClassification> {
+  const existingReviewContext = readOptionalRecord(
+    readOptionalRecord(transaction.llmPayload)?.reviewContext,
+  );
+  const persistedSecurityMappings = buildPersistedInvestmentSecurityMappings(
+    dataset,
+    account,
+    transaction,
+    deterministic,
+  );
   const { model } =
     account.assetDomain === "investment"
       ? getInvestmentTransactionClassifierConfig()
@@ -1675,6 +1801,17 @@ async function requestLlmClassification(
           options?.reviewContext?.previousLlmPayload ??
           (transaction.llmPayload as Record<string, unknown> | null | undefined) ??
           null,
+        propagatedContexts:
+          options?.reviewContext?.propagatedContexts ??
+          readUnknownArray(existingReviewContext?.propagatedContexts) ??
+          [],
+        persistedSecurityMappings:
+          options?.reviewContext?.persistedSecurityMappings ??
+          persistedSecurityMappings,
+        resolvedSourcePrecedent:
+          options?.reviewContext?.resolvedSourcePrecedent ??
+          existingReviewContext?.resolvedSourcePrecedent ??
+          null,
       },
     },
     model,
@@ -1747,10 +1884,19 @@ export async function enrichImportedTransaction(
   transaction: Transaction,
   options?: TransactionEnrichmentOptions,
 ): Promise<TransactionEnrichmentDecision> {
+  const existingReviewContext = readOptionalRecord(
+    readOptionalRecord(transaction.llmPayload)?.reviewContext,
+  );
   const deterministic = buildDeterministicClassification(
     dataset,
     account,
     transaction,
+  );
+  const persistedSecurityMappings = buildPersistedInvestmentSecurityMappings(
+    dataset,
+    account,
+    transaction,
+    deterministic,
   );
   const llm = await requestLlmClassification(
     dataset,
@@ -1894,6 +2040,17 @@ export async function enrichImportedTransaction(
           null,
         userProvidedContext:
           options?.reviewContext?.userProvidedContext ?? null,
+        propagatedContexts:
+          options?.reviewContext?.propagatedContexts ??
+          readUnknownArray(existingReviewContext?.propagatedContexts) ??
+          [],
+        persistedSecurityMappings:
+          options?.reviewContext?.persistedSecurityMappings ??
+          persistedSecurityMappings,
+        resolvedSourcePrecedent:
+          options?.reviewContext?.resolvedSourcePrecedent ??
+          existingReviewContext?.resolvedSourcePrecedent ??
+          null,
       },
       reviewExamplesUsed: llm.reviewExamplesUsed,
       timing: {

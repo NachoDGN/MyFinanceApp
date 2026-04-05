@@ -20,6 +20,7 @@ export const transactionAnalysisResponseSchema = z.object({
   current_price_timestamp: z.string().nullable().optional(),
   current_price_source: z.string().nullable().optional(),
   current_price_type: z.string().nullable().optional(),
+  resolution_process: z.string().nullable().optional(),
   confidence: z.number().min(0).max(1),
   explanation: z.string().min(1).max(240),
   reason: z.string().min(1).max(320),
@@ -44,6 +45,7 @@ const transactionAnalysisJsonSchema = {
     "current_price_timestamp",
     "current_price_source",
     "current_price_type",
+    "resolution_process",
     "confidence",
     "explanation",
     "reason",
@@ -64,6 +66,7 @@ const transactionAnalysisJsonSchema = {
     current_price_timestamp: { type: ["string", "null"] },
     current_price_source: { type: ["string", "null"] },
     current_price_type: { type: ["string", "null"] },
+    resolution_process: { type: ["string", "null"] },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     explanation: { type: "string" },
     reason: { type: "string" },
@@ -155,6 +158,9 @@ export interface AnalyzeBankTransactionInput {
     previousUserContext?: string | null;
     userProvidedContext?: string | null;
     previousLlmPayload?: unknown;
+    propagatedContexts?: unknown[];
+    persistedSecurityMappings?: unknown[];
+    resolvedSourcePrecedent?: unknown | null;
   };
   reviewExamples?: Array<{
     transaction: {
@@ -259,6 +265,15 @@ export async function analyzeBankTransaction(
               input.reviewContext.userProvidedContext ?? "null",
             previousLlmPayload: JSON.stringify(
               input.reviewContext.previousLlmPayload ?? null,
+            ),
+            propagatedContexts: JSON.stringify(
+              input.reviewContext.propagatedContexts ?? [],
+            ),
+            persistedSecurityMappings: JSON.stringify(
+              input.reviewContext.persistedSecurityMappings ?? [],
+            ),
+            resolvedSourcePrecedent: JSON.stringify(
+              input.reviewContext.resolvedSourcePrecedent ?? null,
             ),
           }
         : null,
