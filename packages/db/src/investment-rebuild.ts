@@ -4,12 +4,6 @@ import { Decimal } from "decimal.js";
 
 import { parseInvestmentEvent } from "@myfinance/classification";
 import {
-  createLLMClient,
-  isModelConfigured,
-  lookupHistoricalFundPrice,
-  resolveModelProvider,
-} from "@myfinance/llm";
-import {
   rebuildInvestmentState,
   resolveFxRate,
   type DomainDataset,
@@ -211,6 +205,7 @@ function shiftIsoDate(value: string, days: number) {
 type SecurityResolutionContext = {
   reviewTrigger: "import_classification" | "manual_review_update" | "review_propagation" | null;
   hint: string | null;
+  transactionDate: string;
   exactInstrumentName: string | null;
   exactIsin: string | null;
   exactTicker: string | null;
@@ -343,6 +338,7 @@ function buildSecurityResolutionContext(
   return {
     reviewTrigger,
     hint,
+    transactionDate: transaction.transactionDate,
     exactInstrumentName: resolvedInstrumentName,
     exactIsin: resolvedInstrumentIsin || null,
     exactTicker: resolvedInstrumentTicker,
@@ -375,6 +371,26 @@ function supportsTwelveDataMarketData(
   return (
     Boolean(security.providerSymbol?.trim()) &&
     ["stock", "etf"].includes(security.assetType)
+  );
+}
+
+function securityLooksLikeFund(
+  security: Pick<Security, "assetType" | "name" | "metadataJson">,
+  context?: Pick<SecurityResolutionContext, "prefersMutualFund" | "currentPriceType">,
+) {
+  const instrumentType = normalizeSecurityText(
+    readOptionalString(readOptionalRecord(security.metadataJson)?.instrumentType) ??
+      security.name,
+  );
+
+  return (
+    security.assetType !== "etf" &&
+    (context?.prefersMutualFund ||
+      normalizeSecurityText(context?.currentPriceType).includes("NAV") ||
+      instrumentType.includes("MUTUAL") ||
+      instrumentType.includes("INDEX FUND") ||
+      instrumentType.includes("OEIC") ||
+      (instrumentType.includes("FUND") && !instrumentType.includes("ETF")))
   );
 }
 
@@ -942,37 +958,6 @@ function isWeekendIso(value: string) {
   return day === 0 || day === 6;
 }
 
-function isFollowupInvestmentReviewTrigger(
-  trigger: SecurityResolutionContext["reviewTrigger"],
-) {
-  return (
-    trigger === "manual_review_update" || trigger === "review_propagation"
-  );
-}
-
-function getHistoricalFundPriceLookupModel(
-  trigger: SecurityResolutionContext["reviewTrigger"],
-) {
-  if (isFollowupInvestmentReviewTrigger(trigger)) {
-    return (
-      process.env.INVESTMENT_HISTORICAL_NAV_FOLLOWUP_REVIEW_LLM?.trim() ||
-      process.env.INVESTMENT_HISTORICAL_NAV_MANUAL_REVIEW_LLM?.trim() ||
-      "gpt-5.4"
-    );
-  }
-
-  return process.env.INVESTMENT_HISTORICAL_NAV_LLM?.trim() || "gpt-5.4-mini";
-}
-
-function isHistoricalFundPriceLookupConfigured(
-  trigger: SecurityResolutionContext["reviewTrigger"],
-) {
-  const model = getHistoricalFundPriceLookupModel(trigger);
-  return (
-    resolveModelProvider(model) === "openai" && isModelConfigured(model)
-  );
-}
-
 function expectedLatestQuoteDate(referenceDate: string) {
   const day = new Date(`${referenceDate}T00:00:00Z`).getUTCDay();
   if (day === 6) return shiftIsoDate(referenceDate, -1);
@@ -1075,125 +1060,6 @@ async function fetchHistoricalPrice(
   } satisfies SecurityPrice;
 }
 
-function supportsHistoricalFundNavLookup(
-  security: Pick<Security, "isin" | "assetType" | "name" | "metadataJson">,
-  context?: SecurityResolutionContext,
-) {
-  const normalizedIsin = normalizeSecurityIdentifier(context?.exactIsin);
-  if (!normalizedIsin) {
-    return false;
-  }
-
-  const instrumentType = normalizeSecurityText(
-    readOptionalString(readOptionalRecord(security.metadataJson)?.instrumentType) ??
-      security.name,
-  );
-  const looksLikeFund =
-    context?.prefersMutualFund ||
-    normalizeSecurityText(context?.currentPriceType).includes("NAV") ||
-    instrumentType.includes("MUTUAL") ||
-    instrumentType.includes("INDEX FUND") ||
-    instrumentType.includes("OEIC") ||
-    (instrumentType.includes("FUND") && !instrumentType.includes("ETF"));
-
-  return looksLikeFund && security.assetType !== "etf";
-}
-
-function buildHistoricalFundPriceRecord(
-  securityId: string,
-  output: Awaited<ReturnType<typeof lookupHistoricalFundPrice>>["output"],
-) {
-  if (
-    !output ||
-    output.historical_nav === null ||
-    !output.historical_nav_date ||
-    !output.currency
-  ) {
-    return null;
-  }
-
-  const priceDate = output.historical_nav_date.slice(0, 10);
-  return {
-    securityId,
-    priceDate,
-    quoteTimestamp: `${priceDate}T16:00:00Z`,
-    price: output.historical_nav.toFixed(8),
-    currency: output.currency,
-    sourceName: "llm_historical_nav",
-    isRealtime: false,
-    isDelayed: true,
-    marketState: "NAV",
-    rawJson: {
-      security: output.security,
-      securityType: output.security_type,
-      shareClass: output.share_class,
-      matchStatus: output.match_status,
-      identitySource: output.identity_source,
-      historicalPriceSource: output.historical_price_source,
-      explanation: output.explanation,
-    },
-    createdAt: new Date().toISOString(),
-  } satisfies SecurityPrice;
-}
-
-async function fetchHistoricalFundNavPrice(
-  security: Pick<Security, "id" | "isin" | "name" | "assetType" | "metadataJson">,
-  transactionDate: string,
-  context?: SecurityResolutionContext,
-  onProgress?: (progress: InvestmentRebuildProgress) => Promise<void> | void,
-) {
-  if (
-    !supportsHistoricalFundNavLookup(security, context) ||
-    !isHistoricalFundPriceLookupConfigured(context?.reviewTrigger ?? null)
-  ) {
-    return null;
-  }
-
-  const exactIsin = normalizeSecurityIdentifier(context?.exactIsin);
-  if (!exactIsin) {
-    return null;
-  }
-
-  await onProgress?.({
-    stage: "historical_price_lookup",
-    message: `Looking up historical NAV for ${exactIsin} on ${transactionDate}.`,
-  });
-
-  const result = await lookupHistoricalFundPrice(
-    createLLMClient(),
-    {
-      isin: exactIsin,
-      targetDate: transactionDate,
-      securityNameHint: context?.exactInstrumentName ?? security.name,
-      transactionDescription: context?.hint ?? security.name,
-      transactionCurrency: context?.transactionCurrency ?? null,
-    },
-    getHistoricalFundPriceLookupModel(context?.reviewTrigger ?? null),
-  );
-  if (result.analysisStatus !== "done" || !result.output) {
-    return null;
-  }
-  if (
-    result.output.match_status !== "exact" ||
-    result.output.historical_nav === null ||
-    !result.output.historical_nav_date ||
-    !result.output.currency
-  ) {
-    return null;
-  }
-
-  const resolvedPriceDate = result.output.historical_nav_date.slice(0, 10);
-  if (
-    resolvedPriceDate > transactionDate ||
-    dayDistance(resolvedPriceDate, transactionDate) >
-      MAX_HISTORICAL_PRICE_DRIFT_DAYS
-  ) {
-    return null;
-  }
-
-  return buildHistoricalFundPriceRecord(security.id, result.output);
-}
-
 async function fetchLatestPrice(
   security: Security,
   apiKey: string,
@@ -1271,10 +1137,51 @@ function findSecurityByHint(
 ) {
   if (context?.exactIsin) {
     const isinMatch =
-      dataset.securities.find(
-        (security) =>
-          normalizeSecurityIdentifier(security.isin) === context.exactIsin,
-      ) ?? null;
+      dataset.securities
+        .filter(
+          (security) =>
+            normalizeSecurityIdentifier(security.isin) === context.exactIsin,
+        )
+        .map((security) => {
+          let score = 0;
+
+          if (
+            !securityConflictsWithHint(hint, security) &&
+            !securityConflictsWithResolutionContext(security, context)
+          ) {
+            score += 1000;
+          }
+          if (
+            findStoredHistoricalPrice(dataset, security.id, context.transactionDate)
+          ) {
+            score += 500;
+          }
+          if (
+            dataset.securityPrices.some((price) => price.securityId === security.id)
+          ) {
+            score += 100;
+          }
+          if (security.providerName === "manual_fund_nav") {
+            score += 80;
+          }
+          if (securityLooksLikeFund(security, context)) {
+            score += 40;
+          }
+          if (
+            normalizedSecurityNameMatches(
+              security.name,
+              context.exactInstrumentName ?? hint,
+            )
+          ) {
+            score += 20;
+          }
+          if (context.prefersEuroShareClass && security.quoteCurrency === "EUR") {
+            score += 10;
+          }
+
+          return { security, score };
+        })
+        .sort((left, right) => right.score - left.score)[0]?.security ?? null;
     if (isinMatch) {
       return isinMatch;
     }
@@ -1604,8 +1511,12 @@ function buildQuantityReviewReason(
     return `Quantity could not be derived for "${hint}".`;
   }
 
+  if (securityLooksLikeFund(resolvedSecurity)) {
+    return `Mapped to ${resolvedSecurity.displaySymbol}, but no stored NAV was available in security_prices to derive quantity for "${hint}".`;
+  }
+
   if (!supportsTwelveDataMarketData(resolvedSecurity)) {
-    return `Mapped to ${resolvedSecurity.displaySymbol}, but no reliable historical fund price was available to derive quantity for "${hint}".`;
+    return `Mapped to ${resolvedSecurity.displaySymbol}, but no reliable historical price was available to derive quantity for "${hint}".`;
   }
 
   if (!apiKeyAvailable) {
@@ -1613,6 +1524,56 @@ function buildQuantityReviewReason(
   }
 
   return `Mapped to ${resolvedSecurity.displaySymbol}, but Twelve Data did not return a usable historical price to derive quantity for "${hint}".`;
+}
+
+function scoreStoredPriceCandidate(price: SecurityPrice) {
+  const rawJson = readOptionalRecord(price.rawJson);
+  let score = 0;
+
+  if (!isPlaceholderSecurityPrice(price)) {
+    score += 20;
+  }
+  if (price.sourceName === "manual_nav_import") {
+    score += 50;
+  }
+  if (normalizeSecurityText(price.marketState).includes("NAV")) {
+    score += 20;
+  }
+  if (
+    normalizeSecurityText(readOptionalString(rawJson?.priceType)).includes("NAV")
+  ) {
+    score += 10;
+  }
+
+  return score;
+}
+
+function findStoredHistoricalPriceForSecurityIds(
+  dataset: DomainDataset,
+  securityIds: readonly string[],
+  transactionDate: string,
+) {
+  const securityIdSet = new Set(securityIds);
+  return (
+    [...dataset.securityPrices]
+      .filter(
+        (price) =>
+          securityIdSet.has(price.securityId) &&
+          price.priceDate <= transactionDate &&
+          dayDistance(price.priceDate, transactionDate) <=
+            MAX_HISTORICAL_PRICE_DRIFT_DAYS,
+      )
+      .sort((left, right) => {
+        const scoreDelta =
+          scoreStoredPriceCandidate(right) - scoreStoredPriceCandidate(left);
+        if (scoreDelta !== 0) {
+          return scoreDelta;
+        }
+        return `${right.priceDate}${right.quoteTimestamp}${right.createdAt}`.localeCompare(
+          `${left.priceDate}${left.quoteTimestamp}${left.createdAt}`,
+        );
+      })[0] ?? null
+  );
 }
 
 function buildMarketPriceReviewReason(
@@ -1659,20 +1620,32 @@ function findStoredHistoricalPrice(
   securityId: string,
   transactionDate: string,
 ) {
-  return (
-    [...dataset.securityPrices]
-      .filter(
-        (price) =>
-          price.securityId === securityId &&
-          price.priceDate <= transactionDate &&
-          dayDistance(price.priceDate, transactionDate) <=
-            MAX_HISTORICAL_PRICE_DRIFT_DAYS,
-      )
-      .sort((left, right) =>
-        `${right.priceDate}${right.createdAt}`.localeCompare(
-          `${left.priceDate}${left.createdAt}`,
-        ),
-      )[0] ?? null
+  return findStoredHistoricalPriceForSecurityIds(
+    dataset,
+    [securityId],
+    transactionDate,
+  );
+}
+
+function findStoredHistoricalPriceByIsin(
+  dataset: DomainDataset,
+  isin: string,
+  transactionDate: string,
+) {
+  const matchingSecurityIds = dataset.securities
+    .filter(
+      (security) => normalizeSecurityIdentifier(security.isin) === isin,
+    )
+    .map((security) => security.id);
+
+  if (matchingSecurityIds.length === 0) {
+    return null;
+  }
+
+  return findStoredHistoricalPriceForSecurityIds(
+    dataset,
+    matchingSecurityIds,
+    transactionDate,
   );
 }
 
@@ -1857,17 +1830,27 @@ export async function prepareInvestmentRebuild(
     >,
     transactionDate: string,
     context?: SecurityResolutionContext,
+    options?: {
+      allowExternalLookup?: boolean;
+    },
   ) => {
     const cacheKey = `${security.id}:${transactionDate}`;
     if (historicalPriceCache.has(cacheKey)) {
       return historicalPriceCache.get(cacheKey) ?? null;
     }
 
-    const storedPrice = findStoredHistoricalPrice(
-      workingDataset,
-      security.id,
-      transactionDate,
+    const normalizedIsin = normalizeSecurityIdentifier(
+      context?.exactIsin ?? security.isin,
     );
+    const storedPrice =
+      findStoredHistoricalPrice(workingDataset, security.id, transactionDate) ??
+      (normalizedIsin
+        ? findStoredHistoricalPriceByIsin(
+            workingDataset,
+            normalizedIsin,
+            transactionDate,
+          )
+        : null);
     if (storedPrice) {
       historicalPriceCache.set(cacheKey, storedPrice);
       return storedPrice;
@@ -1877,6 +1860,7 @@ export async function prepareInvestmentRebuild(
       workingDataset.securities.find((candidate) => candidate.id === security.id) ??
       null;
     if (
+      options?.allowExternalLookup !== false &&
       apiKey &&
       securityRecord &&
       supportsTwelveDataMarketData(securityRecord)
@@ -1889,19 +1873,6 @@ export async function prepareInvestmentRebuild(
       if (fetchedPrice) {
         historicalPriceCache.set(cacheKey, fetchedPrice);
         return fetchedPrice;
-      }
-    }
-
-    if (securityRecord) {
-      const fetchedFundPrice = await fetchHistoricalFundNavPrice(
-        securityRecord,
-        transactionDate,
-        context,
-        options?.onProgress,
-      );
-      if (fetchedFundPrice) {
-        historicalPriceCache.set(cacheKey, fetchedFundPrice);
-        return fetchedFundPrice;
       }
     }
 
@@ -2066,13 +2037,16 @@ export async function prepareInvestmentRebuild(
 
     const historicalPrice =
       isTrade &&
-      resolvedSecurity &&
-      (!historicalLookupTransactionIds ||
-        historicalLookupTransactionIds.has(transaction.id))
+      resolvedSecurity
         ? await loadHistoricalPrice(
             resolvedSecurity,
             transaction.transactionDate,
             resolutionContext,
+            {
+              allowExternalLookup:
+                !historicalLookupTransactionIds ||
+                historicalLookupTransactionIds.has(transaction.id),
+            },
           )
         : null;
     recordPrice(historicalPrice);
