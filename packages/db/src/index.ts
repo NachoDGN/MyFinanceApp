@@ -1173,6 +1173,37 @@ function hasTransactionFieldChange(
   return fields.some((field) => before[field] !== after[field]);
 }
 
+function buildInvestmentResolutionSignal(transaction: Transaction) {
+  const rawOutput = readTransactionRawOutput(transaction);
+  return {
+    resolvedInstrumentName:
+      readRawOutputString(rawOutput, "resolved_instrument_name") ?? null,
+    resolvedInstrumentIsin:
+      readRawOutputString(rawOutput, "resolved_instrument_isin") ?? null,
+    resolvedInstrumentTicker:
+      readRawOutputString(rawOutput, "resolved_instrument_ticker") ?? null,
+    resolvedInstrumentExchange:
+      readRawOutputString(rawOutput, "resolved_instrument_exchange") ?? null,
+    currentPriceType:
+      readRawOutputString(rawOutput, "current_price_type") ?? null,
+  };
+}
+
+export function shouldRunInvestmentRebuildAfterReviewPropagation(
+  before: Transaction,
+  after: Transaction,
+) {
+  return (
+    hasTransactionFieldChange(
+      before,
+      after,
+      REVIEW_PROPAGATION_INVESTMENT_FIELDS,
+    ) ||
+    JSON.stringify(buildInvestmentResolutionSignal(before)) !==
+      JSON.stringify(buildInvestmentResolutionSignal(after))
+  );
+}
+
 async function processReviewPropagationJob(
   sql: SqlClient,
   userId: string,
@@ -1535,15 +1566,16 @@ async function processReviewPropagationJob(
       dataset = replaceTransactionInDataset(dataset, afterTransaction);
       appliedTransactionIds.push(afterTransaction.id);
       appliedCount += 1;
-      shouldRunInvestmentRebuild =
-        shouldRunInvestmentRebuild ||
-        hasTransactionFieldChange(
+      const shouldRunRebuildForCandidate =
+        shouldRunInvestmentRebuildAfterReviewPropagation(
           currentCandidate,
           afterTransaction,
-          REVIEW_PROPAGATION_INVESTMENT_FIELDS,
         );
+      shouldRunInvestmentRebuild =
+        shouldRunInvestmentRebuild || shouldRunRebuildForCandidate;
       shouldQueueMetricRefresh =
         shouldQueueMetricRefresh ||
+        shouldRunRebuildForCandidate ||
         hasTransactionFieldChange(
           currentCandidate,
           afterTransaction,
@@ -1563,7 +1595,9 @@ async function processReviewPropagationJob(
 
   let rebuilt: Awaited<ReturnType<typeof applyInvestmentRebuild>> | null = null;
   if (mode === "resolved_source_rereview" && shouldRunInvestmentRebuild) {
-    rebuilt = await applyInvestmentRebuild(sql, userId);
+    rebuilt = await applyInvestmentRebuild(sql, userId, {
+      historicalLookupTransactionIds: appliedTransactionIds,
+    });
   }
   if (mode === "resolved_source_rereview" && shouldQueueMetricRefresh) {
     await queueJob(sql, "metric_refresh", {

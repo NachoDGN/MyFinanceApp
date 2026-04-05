@@ -33,6 +33,7 @@ import {
   buildUnresolvedSourcePropagatedContextEntry,
   findSimilarUnresolvedTransactionsByDescriptionEmbedding,
   mergePropagatedContextHistory,
+  shouldRunInvestmentRebuildAfterReviewPropagation,
   shouldQueueReviewPropagationAfterManualReview,
   TRANSACTION_SELECT_COLUMN_NAMES,
 } from "../packages/db/src/index.ts";
@@ -607,6 +608,54 @@ test("manual re-review propagation queueing stays limited to unresolved investme
   assert.equal(
     shouldQueueReviewPropagationAfterManualReview(account, transaction),
     false,
+  );
+});
+
+test("review propagation triggers investment rebuild when exact instrument resolution only changes inside llm payload", () => {
+  const before = createTransaction({
+    id: "propagation-stale-resolution",
+    accountId: "broker-propagation-stale-resolution",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    classificationStatus: "llm",
+    classificationSource: "llm",
+    classificationConfidence: "0.98",
+    needsReview: false,
+    reviewReason: null,
+    securityId: "security-provider-stale",
+    quantity: null,
+    unitPriceOriginal: null,
+    llmPayload: {
+      llm: {
+        rawOutput: {
+          resolved_instrument_name:
+            "Vanguard Eurozone Stock Index Fund Institutional Plus EUR Acc",
+          resolved_instrument_isin: null,
+          current_price_type: null,
+        },
+      },
+    },
+  });
+  const after = createTransaction({
+    ...before,
+    llmPayload: {
+      llm: {
+        rawOutput: {
+          resolved_instrument_name:
+            "Vanguard Eurozone Stock Index Fund - EUR Acc",
+          resolved_instrument_isin: "IE0008248803",
+          current_price_type: "NAV",
+        },
+      },
+    },
+  });
+
+  assert.equal(before.securityId, after.securityId);
+  assert.equal(before.quantity, after.quantity);
+  assert.equal(before.unitPriceOriginal, after.unitPriceOriginal);
+  assert.equal(
+    shouldRunInvestmentRebuildAfterReviewPropagation(before, after),
+    true,
   );
 });
 
