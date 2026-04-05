@@ -1699,108 +1699,112 @@ async function processReviewPropagationJob(
       ? buildResolvedSourcePrecedent(sourceTransaction, sourceAuditEventId)
       : null;
 
-  for (const match of candidateMatches) {
-    const currentCandidate =
-      dataset.transactions.find(
-        (candidate) => candidate.id === match.transactionId,
-      ) ?? null;
-    if (
-      !currentCandidate ||
-      !currentCandidate.needsReview ||
-      currentCandidate.voidedAt
-    ) {
-      skippedCount += 1;
-      continue;
-    }
-
-    attemptedCount += 1;
-    try {
-      const existingReviewContext =
-        readTransactionReviewContext(currentCandidate) ?? {};
-      const propagationEntry =
-        mode === "resolved_source_rereview" && resolvedSourcePrecedent
-          ? buildResolvedSourcePropagatedContextEntry({
-              sourceTransaction,
-              sourceAuditEventId,
-              similarity: match.similarity,
-              propagatedAt,
-              precedent: resolvedSourcePrecedent,
-            })
-          : buildUnresolvedSourcePropagatedContextEntry({
-              sourceTransaction,
-              sourceAuditEventId,
-              similarity: match.similarity,
-              propagatedAt,
-            });
-      const nextPropagatedContexts = mergePropagatedContextHistory(
-        existingReviewContext.propagatedContexts,
-        propagationEntry,
-      );
-      const candidateResult = await applyReviewPropagationToCandidate(sql, {
-        userId,
-        mode,
-        dataset,
-        account,
-        currentCandidate,
-        nextPropagatedContexts,
-        promptOverrides,
-        resolvedSourcePrecedent,
-      });
-
-      if (!candidateResult.afterTransaction) {
+  return withInvestmentMutationLock(sql, userId, async () => {
+    for (const match of candidateMatches) {
+      const currentCandidate =
+        dataset.transactions.find(
+          (candidate) => candidate.id === match.transactionId,
+        ) ?? null;
+      if (
+        !currentCandidate ||
+        !currentCandidate.needsReview ||
+        currentCandidate.voidedAt
+      ) {
         skippedCount += 1;
         continue;
       }
 
-      dataset = replaceTransactionInDataset(
-        dataset,
-        candidateResult.afterTransaction,
-      );
-      appliedTransactionIds.push(candidateResult.afterTransaction.id);
-      appliedCount += 1;
-      shouldRunInvestmentRebuild ||= candidateResult.shouldRunInvestmentRebuild;
-      shouldQueueMetricRefresh ||= candidateResult.shouldQueueMetricRefresh;
-    } catch (candidateError) {
-      skippedCount += 1;
-      failedTransactionIds.push({
-        transactionId: currentCandidate.id,
-        error:
-          candidateError instanceof Error
-            ? candidateError.message
-            : "Review propagation failed.",
+      attemptedCount += 1;
+      try {
+        const existingReviewContext =
+          readTransactionReviewContext(currentCandidate) ?? {};
+        const propagationEntry =
+          mode === "resolved_source_rereview" && resolvedSourcePrecedent
+            ? buildResolvedSourcePropagatedContextEntry({
+                sourceTransaction,
+                sourceAuditEventId,
+                similarity: match.similarity,
+                propagatedAt,
+                precedent: resolvedSourcePrecedent,
+              })
+            : buildUnresolvedSourcePropagatedContextEntry({
+                sourceTransaction,
+                sourceAuditEventId,
+                similarity: match.similarity,
+                propagatedAt,
+              });
+        const nextPropagatedContexts = mergePropagatedContextHistory(
+          existingReviewContext.propagatedContexts,
+          propagationEntry,
+        );
+        const candidateResult = await applyReviewPropagationToCandidate(sql, {
+          userId,
+          mode,
+          dataset,
+          account,
+          currentCandidate,
+          nextPropagatedContexts,
+          promptOverrides,
+          resolvedSourcePrecedent,
+        });
+
+        if (!candidateResult.afterTransaction) {
+          skippedCount += 1;
+          continue;
+        }
+
+        dataset = replaceTransactionInDataset(
+          dataset,
+          candidateResult.afterTransaction,
+        );
+        appliedTransactionIds.push(candidateResult.afterTransaction.id);
+        appliedCount += 1;
+        shouldRunInvestmentRebuild ||=
+          candidateResult.shouldRunInvestmentRebuild;
+        shouldQueueMetricRefresh ||= candidateResult.shouldQueueMetricRefresh;
+      } catch (candidateError) {
+        skippedCount += 1;
+        failedTransactionIds.push({
+          transactionId: currentCandidate.id,
+          error:
+            candidateError instanceof Error
+              ? candidateError.message
+              : "Review propagation failed.",
+        });
+      }
+    }
+
+    let rebuilt: Awaited<ReturnType<typeof applyInvestmentRebuild>> | null =
+      null;
+    if (mode === "resolved_source_rereview" && shouldRunInvestmentRebuild) {
+      rebuilt = await applyInvestmentRebuild(sql, userId, {
+        historicalLookupTransactionIds: appliedTransactionIds,
       });
     }
-  }
+    if (mode === "resolved_source_rereview" && shouldQueueMetricRefresh) {
+      await queueJob(sql, "metric_refresh", {
+        trigger: "review_propagation",
+        sourceTransactionId,
+        accountId: account.id,
+        appliedTransactionIds,
+      });
+    }
 
-  let rebuilt: Awaited<ReturnType<typeof applyInvestmentRebuild>> | null = null;
-  if (mode === "resolved_source_rereview" && shouldRunInvestmentRebuild) {
-    rebuilt = await applyInvestmentRebuild(sql, userId, {
-      historicalLookupTransactionIds: appliedTransactionIds,
-    });
-  }
-  if (mode === "resolved_source_rereview" && shouldQueueMetricRefresh) {
-    await queueJob(sql, "metric_refresh", {
-      trigger: "review_propagation",
+    return {
       sourceTransactionId,
+      sourceAuditEventId,
       accountId: account.id,
+      mode,
+      candidateCount: candidateMatches.length,
+      attemptedCount,
+      appliedCount,
+      skippedCount,
       appliedTransactionIds,
-    });
-  }
-
-  return {
-    sourceTransactionId,
-    sourceAuditEventId,
-    accountId: account.id,
-    mode,
-    candidateCount: candidateMatches.length,
-    attemptedCount,
-    appliedCount,
-    skippedCount,
-    appliedTransactionIds,
-    failedTransactionIds,
-    rebuilt,
-    embeddingGeneration,
-  };
+      failedTransactionIds,
+      rebuilt,
+      embeddingGeneration,
+    };
+  });
 }
 
 function parseJsonColumn<T>(value: unknown): T {
@@ -2106,21 +2110,26 @@ async function applyInvestmentRebuild(
     historicalLookupTransactionIds?: readonly string[];
   },
 ) {
-  const latestDataset = await loadDatasetForUser(sql, userId);
-  const referenceDate = getDatasetLatestDate(latestDataset);
-  const rebuilt = await prepareInvestmentRebuild(latestDataset, referenceDate, {
-    onProgress: options?.onProgress,
-    historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
-  });
-  const latestTransactionsById = new Map(
-    latestDataset.transactions.map((transaction) => [
-      transaction.id,
-      transaction,
-    ]),
-  );
+  return withInvestmentMutationLock(sql, userId, async () => {
+    const latestDataset = await loadDatasetForUser(sql, userId);
+    const referenceDate = getDatasetLatestDate(latestDataset);
+    const rebuilt = await prepareInvestmentRebuild(
+      latestDataset,
+      referenceDate,
+      {
+        onProgress: options?.onProgress,
+        historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
+      },
+    );
+    const latestTransactionsById = new Map(
+      latestDataset.transactions.map((transaction) => [
+        transaction.id,
+        transaction,
+      ]),
+    );
 
-  for (const security of rebuilt.insertedSecurities) {
-    await sql`
+    for (const security of rebuilt.insertedSecurities) {
+      await sql`
       insert into public.securities ${sql({
         id: security.id,
         provider_name: security.providerName,
@@ -2142,10 +2151,10 @@ async function applyInvestmentRebuild(
       } as Record<string, unknown>)}
       on conflict (provider_name, provider_symbol) do nothing
     `;
-  }
+    }
 
-  for (const alias of rebuilt.insertedAliases) {
-    await sql`
+    for (const alias of rebuilt.insertedAliases) {
+      await sql`
       insert into public.security_aliases ${sql({
         id: alias.id,
         security_id: alias.securityId,
@@ -2157,10 +2166,10 @@ async function applyInvestmentRebuild(
       } as Record<string, unknown>)}
       on conflict (security_id, alias_text_normalized) do nothing
     `;
-  }
+    }
 
-  for (const price of rebuilt.upsertedPrices) {
-    await sql`
+    for (const price of rebuilt.upsertedPrices) {
+      await sql`
       insert into public.security_prices ${sql({
         security_id: price.securityId,
         price_date: price.priceDate,
@@ -2185,91 +2194,92 @@ async function applyInvestmentRebuild(
         raw_json = excluded.raw_json,
         created_at = excluded.created_at
     `;
-  }
+    }
 
-  for (const patch of rebuilt.transactionPatches) {
-    const updatePayload: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
-    };
-    const existingTransaction = latestTransactionsById.get(patch.id) ?? null;
-    if (patch.transactionClass !== undefined) {
-      updatePayload.transaction_class = patch.transactionClass;
+    for (const patch of rebuilt.transactionPatches) {
+      const updatePayload: Record<string, unknown> = {
+        updated_at: new Date().toISOString(),
+      };
+      const existingTransaction = latestTransactionsById.get(patch.id) ?? null;
+      if (patch.transactionClass !== undefined) {
+        updatePayload.transaction_class = patch.transactionClass;
+      }
+      if (patch.categoryCode !== undefined) {
+        updatePayload.category_code = patch.categoryCode;
+      }
+      if (patch.classificationStatus !== undefined) {
+        updatePayload.classification_status = patch.classificationStatus;
+      }
+      if (patch.classificationSource !== undefined) {
+        updatePayload.classification_source = patch.classificationSource;
+      }
+      if (patch.classificationConfidence !== undefined) {
+        updatePayload.classification_confidence =
+          patch.classificationConfidence;
+      }
+      if (patch.securityId !== undefined) {
+        updatePayload.security_id = patch.securityId;
+      }
+      if (patch.quantity !== undefined) {
+        updatePayload.quantity = patch.quantity;
+      }
+      if (patch.unitPriceOriginal !== undefined) {
+        updatePayload.unit_price_original = patch.unitPriceOriginal;
+      }
+      if (patch.needsReview !== undefined) {
+        updatePayload.needs_review = patch.needsReview;
+      }
+      if (patch.reviewReason !== undefined) {
+        updatePayload.review_reason = patch.reviewReason;
+      }
+      const existingLlmPayload =
+        readOptionalRecord(existingTransaction?.llmPayload) ?? {};
+      const nextLlmPayload =
+        patch.llmPayload || patch.rebuildEvidence
+          ? {
+              ...existingLlmPayload,
+              ...(patch.llmPayload ?? {}),
+              ...(patch.rebuildEvidence
+                ? {
+                    rebuildEvidence: {
+                      ...(readOptionalRecord(
+                        existingLlmPayload.rebuildEvidence,
+                      ) ?? {}),
+                      ...patch.rebuildEvidence,
+                    },
+                  }
+                : {}),
+            }
+          : null;
+      if (nextLlmPayload) {
+        await updateTransactionRecord(sql, {
+          userId,
+          transactionId: patch.id,
+          updatePayload,
+          llmPayload: nextLlmPayload,
+          returning: false,
+        });
+      } else {
+        await updateTransactionRecord(sql, {
+          userId,
+          transactionId: patch.id,
+          updatePayload,
+          returning: false,
+        });
+      }
     }
-    if (patch.categoryCode !== undefined) {
-      updatePayload.category_code = patch.categoryCode;
-    }
-    if (patch.classificationStatus !== undefined) {
-      updatePayload.classification_status = patch.classificationStatus;
-    }
-    if (patch.classificationSource !== undefined) {
-      updatePayload.classification_source = patch.classificationSource;
-    }
-    if (patch.classificationConfidence !== undefined) {
-      updatePayload.classification_confidence = patch.classificationConfidence;
-    }
-    if (patch.securityId !== undefined) {
-      updatePayload.security_id = patch.securityId;
-    }
-    if (patch.quantity !== undefined) {
-      updatePayload.quantity = patch.quantity;
-    }
-    if (patch.unitPriceOriginal !== undefined) {
-      updatePayload.unit_price_original = patch.unitPriceOriginal;
-    }
-    if (patch.needsReview !== undefined) {
-      updatePayload.needs_review = patch.needsReview;
-    }
-    if (patch.reviewReason !== undefined) {
-      updatePayload.review_reason = patch.reviewReason;
-    }
-    const existingLlmPayload =
-      readOptionalRecord(existingTransaction?.llmPayload) ?? {};
-    const nextLlmPayload =
-      patch.llmPayload || patch.rebuildEvidence
-        ? {
-            ...existingLlmPayload,
-            ...(patch.llmPayload ?? {}),
-            ...(patch.rebuildEvidence
-              ? {
-                  rebuildEvidence: {
-                    ...(readOptionalRecord(
-                      existingLlmPayload.rebuildEvidence,
-                    ) ?? {}),
-                    ...patch.rebuildEvidence,
-                  },
-                }
-              : {}),
-          }
-        : null;
-    if (nextLlmPayload) {
-      await updateTransactionRecord(sql, {
-        userId,
-        transactionId: patch.id,
-        updatePayload,
-        llmPayload: nextLlmPayload,
-        returning: false,
-      });
-    } else {
-      await updateTransactionRecord(sql, {
-        userId,
-        transactionId: patch.id,
-        updatePayload,
-        returning: false,
-      });
-    }
-  }
 
-  await sql`
+    await sql`
     delete from public.daily_portfolio_snapshots
     where user_id = ${userId}
   `;
-  await sql`
+    await sql`
     delete from public.investment_positions
     where user_id = ${userId}
   `;
 
-  for (const position of rebuilt.positions) {
-    await sql`
+    for (const position of rebuilt.positions) {
+      await sql`
       insert into public.investment_positions ${sql({
         user_id: position.userId,
         entity_id: position.entityId,
@@ -2288,10 +2298,10 @@ async function applyInvestmentRebuild(
         unrealized_complete: position.unrealizedComplete,
       } as Record<string, unknown>)}
     `;
-  }
+    }
 
-  for (const snapshot of rebuilt.snapshots) {
-    await sql`
+    for (const snapshot of rebuilt.snapshots) {
+      await sql`
       insert into public.daily_portfolio_snapshots ${sql({
         snapshot_date: snapshot.snapshotDate,
         user_id: snapshot.userId,
@@ -2306,16 +2316,17 @@ async function applyInvestmentRebuild(
         generated_at: snapshot.generatedAt,
       } as Record<string, unknown>)}
     `;
-  }
+    }
 
-  return {
-    referenceDate,
-    rebuiltPositions: rebuilt.positions.length,
-    rebuiltSnapshots: rebuilt.snapshots.length,
-    updatedTransactions: rebuilt.transactionPatches.length,
-    insertedSecurities: rebuilt.insertedSecurities.length,
-    upsertedPrices: rebuilt.upsertedPrices.length,
-  };
+    return {
+      referenceDate,
+      rebuiltPositions: rebuilt.positions.length,
+      rebuiltSnapshots: rebuilt.snapshots.length,
+      updatedTransactions: rebuilt.transactionPatches.length,
+      insertedSecurities: rebuilt.insertedSecurities.length,
+      upsertedPrices: rebuilt.upsertedPrices.length,
+    };
+  });
 }
 
 export interface ReanalyzeTransactionReviewInput {
@@ -2556,107 +2567,122 @@ export async function reanalyzeTransactionReview(
       },
     );
 
-    await input.onProgress?.({
-      stage: "apply_transaction_update",
-      message: "Applying analyzer results to the transaction.",
-    });
-    const after = await updateTransactionFromEnrichmentDecision(
-      sql,
-      userId,
-      input.transactionId,
-      decision,
-      {
-        manualNotes: normalizedReviewContext,
-      },
-    );
+    let afterTransaction: Transaction | null = null;
+    let changedFields: string[] = [];
+    let auditEvent: AuditEvent | null = null;
 
-    if (account.assetDomain === "investment") {
+    await withInvestmentMutationLock(sql, userId, async () => {
       await input.onProgress?.({
-        stage: "investment_rebuild",
-        message: "Rebuilding investment positions and fetching dated prices.",
+        stage: "apply_transaction_update",
+        message: "Applying analyzer results to the transaction.",
       });
-      await applyInvestmentRebuild(sql, userId, {
-        onProgress: input.onProgress,
-        historicalLookupTransactionIds: [input.transactionId],
-      });
-    }
-    await input.onProgress?.({
-      stage: "metric_refresh",
-      message: "Refreshing portfolio metrics.",
-    });
-    const metricRefreshJobId = await queueJob(sql, "metric_refresh", {
-      trigger: reviewMode,
-      transactionId: input.transactionId,
-      accountId: beforeTransaction.accountId,
-    });
-    followUpJobs.push({
-      id: metricRefreshJobId,
-      jobType: "metric_refresh",
-    });
-
-    const finalRow = await selectTransactionRowById(
-      sql,
-      userId,
-      input.transactionId,
-    );
-    if (!finalRow) {
-      throw new Error(
-        `Transaction ${input.transactionId} disappeared after review reanalysis.`,
+      const after = await updateTransactionFromEnrichmentDecision(
+        sql,
+        userId,
+        input.transactionId,
+        decision,
+        {
+          manualNotes: normalizedReviewContext,
+        },
       );
-    }
-    const afterTransaction = mapFromSql<Transaction>(finalRow);
-    const changedFields = getReviewReanalyzeChangedFields(
-      beforeTransaction,
-      afterTransaction,
-    );
-    const auditEvent = createAuditEvent(
-      input.sourceChannel,
-      input.actorName,
-      "transactions.review_reanalyze",
-      "transaction",
-      input.transactionId,
-      beforeRow,
-      after,
-    );
-    await insertAuditEventRecord(
-      sql,
-      auditEvent,
-      reviewMode === "manual_resolved_review"
-        ? "Re-ran LLM classification for a previously resolved transaction from a clean baseline with similar resolved precedent context."
-        : "Re-ran LLM classification for a single transaction with manual review context.",
-    );
-    if (
-      wasPendingReview &&
-      shouldQueueReviewPropagationAfterManualReview(account, beforeTransaction)
-    ) {
-      await input.onProgress?.({
-        stage: "review_propagation",
-        message:
-          "Propagating the correction to similar unresolved transactions.",
-      });
-      const reviewPropagationPayload = {
-        sourceTransactionId: afterTransaction.id,
-        accountId: afterTransaction.accountId,
-        sourceAuditEventId: auditEvent.id,
-      };
-      if (await supportsJobType(sql, "review_propagation")) {
-        const reviewPropagationJobId = await queueJob(
-          sql,
-          "review_propagation",
-          reviewPropagationPayload,
-        );
-        followUpJobs.push({
-          id: reviewPropagationJobId,
-          jobType: "review_propagation",
+
+      if (account.assetDomain === "investment") {
+        await input.onProgress?.({
+          stage: "investment_rebuild",
+          message: "Rebuilding investment positions and fetching dated prices.",
         });
-      } else {
-        await processReviewPropagationJob(
-          sql,
-          userId,
-          reviewPropagationPayload,
-          promptOverrides,
+        await applyInvestmentRebuild(sql, userId, {
+          onProgress: input.onProgress,
+          historicalLookupTransactionIds: [input.transactionId],
+        });
+      }
+      await input.onProgress?.({
+        stage: "metric_refresh",
+        message: "Refreshing portfolio metrics.",
+      });
+      const metricRefreshJobId = await queueJob(sql, "metric_refresh", {
+        trigger: reviewMode,
+        transactionId: input.transactionId,
+        accountId: beforeTransaction.accountId,
+      });
+      followUpJobs.push({
+        id: metricRefreshJobId,
+        jobType: "metric_refresh",
+      });
+
+      const finalRow = await selectTransactionRowById(
+        sql,
+        userId,
+        input.transactionId,
+      );
+      if (!finalRow) {
+        throw new Error(
+          `Transaction ${input.transactionId} disappeared after review reanalysis.`,
         );
       }
+      afterTransaction = mapFromSql<Transaction>(finalRow);
+      changedFields = getReviewReanalyzeChangedFields(
+        beforeTransaction,
+        afterTransaction,
+      );
+      auditEvent = createAuditEvent(
+        input.sourceChannel,
+        input.actorName,
+        "transactions.review_reanalyze",
+        "transaction",
+        input.transactionId,
+        beforeRow,
+        after,
+      );
+      await insertAuditEventRecord(
+        sql,
+        auditEvent,
+        reviewMode === "manual_resolved_review"
+          ? "Re-ran LLM classification for a previously resolved transaction from a clean baseline with similar resolved precedent context."
+          : "Re-ran LLM classification for a single transaction with manual review context.",
+      );
+      if (
+        wasPendingReview &&
+        shouldQueueReviewPropagationAfterManualReview(
+          account,
+          beforeTransaction,
+        )
+      ) {
+        await input.onProgress?.({
+          stage: "review_propagation",
+          message:
+            "Propagating the correction to similar unresolved transactions.",
+        });
+        const reviewPropagationPayload = {
+          sourceTransactionId: afterTransaction.id,
+          accountId: afterTransaction.accountId,
+          sourceAuditEventId: auditEvent.id,
+        };
+        if (await supportsJobType(sql, "review_propagation")) {
+          const reviewPropagationJobId = await queueJob(
+            sql,
+            "review_propagation",
+            reviewPropagationPayload,
+          );
+          followUpJobs.push({
+            id: reviewPropagationJobId,
+            jobType: "review_propagation",
+          });
+        } else {
+          await processReviewPropagationJob(
+            sql,
+            userId,
+            reviewPropagationPayload,
+            promptOverrides,
+          );
+        }
+      }
+    });
+
+    if (!afterTransaction || !auditEvent) {
+      throw new Error(
+        `Transaction ${input.transactionId} was not finalized after review reanalysis.`,
+      );
     }
 
     return {
@@ -2800,6 +2826,37 @@ async function acquireReviewReanalysisQueueLock(
       hashtext(${transactionId})
     )
   `;
+}
+
+async function acquireInvestmentMutationLock(sql: SqlClient, userId: string) {
+  await sql`
+    select pg_advisory_lock(
+      hashtext(${"investment_mutation"}),
+      hashtext(${userId})
+    )
+  `;
+}
+
+async function releaseInvestmentMutationLock(sql: SqlClient, userId: string) {
+  await sql`
+    select pg_advisory_unlock(
+      hashtext(${"investment_mutation"}),
+      hashtext(${userId})
+    )
+  `;
+}
+
+async function withInvestmentMutationLock<T>(
+  sql: SqlClient,
+  userId: string,
+  runner: () => Promise<T>,
+) {
+  await acquireInvestmentMutationLock(sql, userId);
+  try {
+    return await runner();
+  } finally {
+    await releaseInvestmentMutationLock(sql, userId);
+  }
 }
 
 export async function queueTransactionReviewReanalysis(
