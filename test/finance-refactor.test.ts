@@ -762,6 +762,80 @@ test("vector similarity candidate lookup returns same-account unresolved transac
   ]);
 });
 
+test("default review propagation threshold is never stricter than 0.9", async () => {
+  const previousThreshold = process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD;
+  process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD = "0.95";
+
+  try {
+    const matches =
+      await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
+        createSimilaritySql([
+          {
+            id: "candidate-above-point-nine",
+            userId: "user-1",
+            accountId: "broker-1",
+            needsReview: true,
+            voidedAt: null,
+            descriptionEmbedding: "[0.91,0.09]",
+          },
+          {
+            id: "candidate-below-point-nine",
+            userId: "user-1",
+            accountId: "broker-1",
+            needsReview: true,
+            voidedAt: null,
+            descriptionEmbedding: "[0.89,0.11]",
+          },
+        ]),
+        {
+          userId: "user-1",
+          sourceTransactionId: "source-1",
+          accountId: "broker-1",
+          sourceEmbedding: "[1,0]",
+        },
+      );
+
+    assert.deepEqual(
+      matches.map((match) => match.transactionId),
+      ["candidate-above-point-nine"],
+    );
+  } finally {
+    if (previousThreshold === undefined) {
+      delete process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD;
+    } else {
+      process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD = previousThreshold;
+    }
+  }
+});
+
+test("default review propagation lookup does not cap unresolved matches at 25", async () => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({
+    id: `candidate-${index + 1}`,
+    userId: "user-1",
+    accountId: "broker-1",
+    needsReview: true,
+    voidedAt: null,
+    descriptionEmbedding: "[1,0]",
+  }));
+
+  const matches =
+    await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
+      createSimilaritySql(rows),
+      {
+        userId: "user-1",
+        sourceTransactionId: "source-1",
+        accountId: "broker-1",
+        sourceEmbedding: "[1,0]",
+      },
+    );
+
+  assert.equal(matches.length, 30);
+  assert.deepEqual(
+    matches.map((match) => match.transactionId),
+    rows.map((row) => row.id),
+  );
+});
+
 test("vector similarity propagation does not filter out buy sell or fee variants when embeddings are close", async () => {
   const matches =
     await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
@@ -3804,7 +3878,7 @@ test("investment review includes persisted confirmed security mappings from stor
   }
 });
 
-test("resolved-source propagation passes full source precedent into candidate review context and keeps propagated precedent when still unresolved", async () => {
+test("resolved-source propagation passes full resolved transaction data and llm output into candidate review context and keeps propagated precedent when still unresolved", async () => {
   const previousKey = process.env.OPENAI_API_KEY;
   const previousImportModel = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
   const previousFollowupModel =
@@ -3978,10 +4052,22 @@ test("resolved-source propagation passes full source precedent into candidate re
       /Resolved source precedent from a similar transaction:/,
     );
     assert.match(capturedUserPrompt, /"sourceTransactionId":"resolved-source"/);
+    assert.match(
+      capturedUserPrompt,
+      /"finalTransaction":\{"transactionClass":"investment_trade_buy","securityId":"security-vanguard-eurozone","quantity":"2\.00000000","unitPriceOriginal":"49\.79000000"/,
+    );
     assert.match(capturedUserPrompt, /"resolutionProcess":"Matched the exact ISIN IE0032126645/);
     assert.match(
       capturedUserPrompt,
+      /"rawOutput":\{"resolution_process":"Matched the exact ISIN IE0032126645.*"resolved_instrument_isin":"IE0032126645"/,
+    );
+    assert.match(
+      capturedUserPrompt,
       /"quantityDerivedFromHistoricalPrice":true/,
+    );
+    assert.match(
+      capturedUserPrompt,
+      /"historicalPriceUsed":\{"sourceName":"llm_historical_nav","priceDate":"2026-03-03","quoteTimestamp":"2026-03-03T00:00:00Z","price":"49\.79000000","currency":"EUR"/,
     );
     assert.match(
       capturedUserPrompt,
@@ -3995,6 +4081,19 @@ test("resolved-source propagation passes full source precedent into candidate re
         }>;
         resolvedSourcePrecedent?: {
           sourceTransactionId?: string;
+          finalTransaction?: {
+            securityId?: string | null;
+            quantity?: string | null;
+            unitPriceOriginal?: string | null;
+          } | null;
+          llm?: {
+            rawOutput?: {
+              resolved_instrument_isin?: string | null;
+            } | null;
+          } | null;
+          rebuildEvidence?: {
+            quantityDerivedFromHistoricalPrice?: boolean;
+          } | null;
         } | null;
       };
       applied?: {
@@ -4005,6 +4104,26 @@ test("resolved-source propagation passes full source precedent into candidate re
     assert.equal(
       llmPayload.reviewContext?.resolvedSourcePrecedent?.sourceTransactionId,
       "resolved-source",
+    );
+    assert.equal(
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction?.securityId,
+      "security-vanguard-eurozone",
+    );
+    assert.equal(
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction?.quantity,
+      "2.00000000",
+    );
+    assert.equal(
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.finalTransaction?.unitPriceOriginal,
+      "49.79000000",
+    );
+    assert.equal(
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.llm?.rawOutput?.resolved_instrument_isin,
+      "IE0032126645",
+    );
+    assert.equal(
+      llmPayload.reviewContext?.resolvedSourcePrecedent?.rebuildEvidence?.quantityDerivedFromHistoricalPrice,
+      true,
     );
     assert.equal(
       llmPayload.reviewContext?.propagatedContexts?.[0]?.sourceTransactionId,

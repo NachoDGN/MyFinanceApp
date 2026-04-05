@@ -251,12 +251,12 @@ function getReviewPropagationSimilarityThreshold() {
   const value = Number(
     process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD ?? "0.9",
   );
-  return Number.isFinite(value) ? value : 0.9;
-}
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0.9;
+  }
 
-function getReviewPropagationMaxCandidates() {
-  const value = Number(process.env.REVIEW_PROPAGATION_MAX_CANDIDATES ?? "25");
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
+  // Resolved-source propagation must never become stricter than 0.9.
+  return Math.min(value, 0.9);
 }
 
 export interface PromptProfileModel {
@@ -691,7 +691,10 @@ export async function findSimilarUnresolvedTransactionsByDescriptionEmbedding(
 ): Promise<SimilarUnresolvedTransactionMatch[]> {
   const threshold =
     input.threshold ?? getReviewPropagationSimilarityThreshold();
-  const limit = input.limit ?? getReviewPropagationMaxCandidates();
+  const limit =
+    input.limit && Number.isFinite(input.limit) && input.limit > 0
+      ? Math.floor(input.limit)
+      : 2147483647;
   const rows = await sql`
     select
       id,
@@ -1385,7 +1388,6 @@ async function processReviewPropagationJob(
       accountId: account.id,
       sourceEmbedding,
       threshold: getReviewPropagationSimilarityThreshold(),
-      limit: getReviewPropagationMaxCandidates(),
     });
 
   const appliedTransactionIds: string[] = [];
@@ -1566,21 +1568,11 @@ async function processReviewPropagationJob(
       dataset = replaceTransactionInDataset(dataset, afterTransaction);
       appliedTransactionIds.push(afterTransaction.id);
       appliedCount += 1;
-      const shouldRunRebuildForCandidate =
-        shouldRunInvestmentRebuildAfterReviewPropagation(
-          currentCandidate,
-          afterTransaction,
-        );
-      shouldRunInvestmentRebuild =
-        shouldRunInvestmentRebuild || shouldRunRebuildForCandidate;
-      shouldQueueMetricRefresh =
-        shouldQueueMetricRefresh ||
-        shouldRunRebuildForCandidate ||
-        hasTransactionFieldChange(
-          currentCandidate,
-          afterTransaction,
-          REVIEW_PROPAGATION_ANALYTICS_FIELDS,
-        );
+      // Once a resolved source fans out to a similar unresolved candidate,
+      // always follow through with rebuild and metric refresh even if the
+      // propagated analyzer output only restates the same instrument metadata.
+      shouldRunInvestmentRebuild = true;
+      shouldQueueMetricRefresh = true;
     } catch (candidateError) {
       skippedCount += 1;
       failedTransactionIds.push({
