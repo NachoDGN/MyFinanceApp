@@ -780,3 +780,10 @@ export interface AddOpeningPositionInput {
   sourceChannel: AuditSourceChannel;
   apply: boolean;
 }
+
+export interface DeleteHoldingAdjustmentInput {
+  adjustmentId: string;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}

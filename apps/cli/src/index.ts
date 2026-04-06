@@ -17,6 +17,7 @@ import {
   FinanceDomainService,
   isCanonicalFieldKey,
   parseMyInvestorFundOrderHistoryText,
+  reconcileFundOrderHistoryImportPlan,
   resolvePeriodSelection,
   signModeOptions,
   todayIso,
@@ -547,9 +548,15 @@ positionsCommand
       const sourceText = readFundHistoryText(options.file);
       const parsedRows = parseMyInvestorFundOrderHistoryText(sourceText);
       const plan = buildFundOrderHistoryImportPlan(dataset, options.account, parsedRows);
+      const reconciliation = reconcileFundOrderHistoryImportPlan(
+        dataset,
+        options.account,
+        plan,
+      );
       const applyChanges = Boolean(options.apply);
 
       const patchedTransactions = [];
+      const deletedOpeningAdjustments = [];
       const createdOpeningPositions = [];
 
       if (applyChanges) {
@@ -569,7 +576,18 @@ positionsCommand
           );
         }
 
-        for (const openingPosition of plan.openingPositions) {
+        for (const adjustment of reconciliation.staleOpeningAdjustments) {
+          deletedOpeningAdjustments.push(
+            await domain.deleteHoldingAdjustment({
+              adjustmentId: adjustment.adjustmentId,
+              actorName: "cli",
+              sourceChannel: "cli",
+              apply: true,
+            }),
+          );
+        }
+
+        for (const openingPosition of reconciliation.openingPositionsToCreate) {
           createdOpeningPositions.push(
             await domain.addOpeningPosition({
               accountId: options.account,
@@ -597,8 +615,11 @@ positionsCommand
           rejectedRowCount: plan.rejectedRows.length,
           unresolvedRows: plan.unresolvedRows,
           matchedTransactionPatches: plan.matchedTransactionPatches,
-          openingPositions: plan.openingPositions,
+          staleOpeningAdjustments: reconciliation.staleOpeningAdjustments,
+          existingOpeningPositions: reconciliation.existingOpeningPositions,
+          openingPositions: reconciliation.openingPositionsToCreate,
           patchedTransactionCount: patchedTransactions.length,
+          deletedOpeningAdjustmentCount: deletedOpeningAdjustments.length,
           createdOpeningPositionCount: createdOpeningPositions.length,
           generatedAt: new Date().toISOString(),
         },

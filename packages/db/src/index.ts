@@ -31,6 +31,7 @@ import {
   type CreateRuleInput,
   type CreateTemplateInput,
   type DeleteAccountInput,
+  type DeleteHoldingAdjustmentInput,
   type DeleteTemplateInput,
   type DomainDataset,
   type FinanceRepository,
@@ -2026,6 +2027,22 @@ async function selectTransactionRowById(
   return rows[0] ?? null;
 }
 
+async function selectHoldingAdjustmentRowById(
+  sql: SqlClient,
+  userId: string,
+  adjustmentId: string,
+) {
+  const rows = await sql`
+    select *
+    from public.holding_adjustments
+    where id = ${adjustmentId}
+      and user_id = ${userId}
+    limit 1
+  `;
+
+  return rows[0] ?? null;
+}
+
 async function loadDatasetForUser(
   sql: SqlClient,
   userId: string,
@@ -3760,6 +3777,47 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, adjustmentId };
     });
+    return result;
+  }
+
+  async deleteHoldingAdjustment(input: DeleteHoldingAdjustmentInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const beforeRow = await selectHoldingAdjustmentRowById(
+        sql,
+        this.userId,
+        input.adjustmentId,
+      );
+      if (!beforeRow) {
+        throw new Error(`Holding adjustment ${input.adjustmentId} not found.`);
+      }
+
+      const auditEvent = createAuditEvent(
+        input.sourceChannel,
+        input.actorName,
+        "positions.delete-opening",
+        "holding_adjustment",
+        input.adjustmentId,
+        beforeRow,
+        null,
+      );
+
+      if (input.apply) {
+        await sql`
+          delete from public.holding_adjustments
+          where id = ${input.adjustmentId}
+            and user_id = ${this.userId}
+        `;
+        await insertAuditEventRecord(sql, auditEvent);
+        await queueJob(sql, "position_rebuild", {
+          accountId: beforeRow.account_id,
+          adjustmentId: input.adjustmentId,
+          trigger: "opening_position_delete",
+        });
+      }
+
+      return { applied: input.apply, adjustmentId: input.adjustmentId };
+    });
+
     return result;
   }
 

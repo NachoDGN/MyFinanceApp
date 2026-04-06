@@ -5,6 +5,7 @@ import type {
   CreateRuleInput,
   CreateTemplateInput,
   DeleteAccountInput,
+  DeleteHoldingAdjustmentInput,
   DeleteTemplateInput,
   HoldingsResponse,
   Job,
@@ -278,6 +279,10 @@ export class FinanceDomainService {
 
   addOpeningPosition(input: AddOpeningPositionInput) {
     return this.repository.addOpeningPosition(input);
+  }
+
+  deleteHoldingAdjustment(input: DeleteHoldingAdjustmentInput) {
+    return this.repository.deleteHoldingAdjustment(input);
   }
 
   runPendingJobs(apply: boolean) {

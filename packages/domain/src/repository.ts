@@ -14,6 +14,7 @@ import type {
   CreateAccountInput,
   CreateRuleInput,
   CreateTemplateInput,
+  DeleteHoldingAdjustmentInput,
   DeleteAccountInput,
   DeleteTemplateInput,
   DomainDataset,
@@ -132,6 +133,9 @@ export interface FinanceRepository {
   ): Promise<{ applied: boolean; templateId: string }>;
   addOpeningPosition(
     input: AddOpeningPositionInput,
+  ): Promise<{ applied: boolean; adjustmentId: string }>;
+  deleteHoldingAdjustment(
+    input: DeleteHoldingAdjustmentInput,
   ): Promise<{ applied: boolean; adjustmentId: string }>;
   queueRuleDraft(
     input: QueueRuleDraftInput,

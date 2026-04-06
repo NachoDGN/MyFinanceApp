@@ -1,7 +1,12 @@
 import { differenceInCalendarDays, parse } from "date-fns";
 import Decimal from "decimal.js";
 
-import type { DomainDataset, Security, Transaction } from "./types";
+import type {
+  DomainDataset,
+  HoldingAdjustment,
+  Security,
+  Transaction,
+} from "./types";
 
 const FINALIZED_STATUS = "Finalizada";
 const REJECTED_STATUS = "Rechazada";
@@ -54,6 +59,21 @@ export interface FundOrderHistoryImportPlan {
   unresolvedRows: FundOrderHistoryIssue[];
   matchedTransactionPatches: FundOrderHistoryTransactionPatch[];
   openingPositions: FundOrderHistoryOpeningPosition[];
+}
+
+export interface FundOrderHistoryExistingOpeningAdjustment {
+  adjustmentId: string;
+  securityId: string;
+  fundName: string;
+  orderDate: string;
+  quantity: string;
+  costBasisEur: string;
+}
+
+export interface FundOrderHistoryReconciliationPlan {
+  staleOpeningAdjustments: FundOrderHistoryExistingOpeningAdjustment[];
+  existingOpeningPositions: FundOrderHistoryExistingOpeningAdjustment[];
+  openingPositionsToCreate: FundOrderHistoryOpeningPosition[];
 }
 
 export function parseMyInvestorFundOrderHistoryText(
@@ -240,6 +260,87 @@ export function buildFundOrderHistoryImportPlan(
   };
 }
 
+export function reconcileFundOrderHistoryImportPlan(
+  dataset: DomainDataset,
+  accountId: string,
+  plan: FundOrderHistoryImportPlan,
+): FundOrderHistoryReconciliationPlan {
+  const relevantSecurityIds = new Set(
+    [
+      ...plan.matchedTransactionPatches.map((patch) => patch.securityId),
+      ...plan.openingPositions.map((position) => position.securityId),
+    ].filter(Boolean),
+  );
+  const securityNamesById = new Map(
+    dataset.securities.map((security) => [security.id, security.name]),
+  );
+  const openingAdjustmentsByKey = new Map<
+    string,
+    FundOrderHistoryExistingOpeningAdjustment[]
+  >();
+
+  for (const adjustment of dataset.holdingAdjustments) {
+    if (
+      adjustment.accountId !== accountId ||
+      adjustment.reason !== "opening_position" ||
+      !relevantSecurityIds.has(adjustment.securityId)
+    ) {
+      continue;
+    }
+    const normalized = normalizeExistingOpeningAdjustment(
+      adjustment,
+      securityNamesById,
+    );
+    const key = buildOpeningAdjustmentKey({
+      securityId: normalized.securityId,
+      orderDate: normalized.orderDate,
+      quantity: normalized.quantity,
+      costBasisEur: normalized.costBasisEur,
+    });
+    const existing = openingAdjustmentsByKey.get(key) ?? [];
+    existing.push(normalized);
+    openingAdjustmentsByKey.set(key, existing);
+  }
+
+  const staleOpeningAdjustments: FundOrderHistoryExistingOpeningAdjustment[] =
+    [];
+  const existingOpeningPositions: FundOrderHistoryExistingOpeningAdjustment[] =
+    [];
+  const openingPositionsToCreate: FundOrderHistoryOpeningPosition[] = [];
+
+  for (const patch of plan.matchedTransactionPatches) {
+    const key = buildOpeningAdjustmentKey({
+      securityId: patch.securityId,
+      orderDate: patch.orderDate,
+      quantity: patch.quantity,
+      costBasisEur: patch.orderAmountEur,
+    });
+    const existing = openingAdjustmentsByKey.get(key) ?? [];
+    staleOpeningAdjustments.push(...existing);
+    openingAdjustmentsByKey.delete(key);
+  }
+
+  for (const openingPosition of plan.openingPositions) {
+    const key = buildOpeningAdjustmentKey(openingPosition);
+    const existing = openingAdjustmentsByKey.get(key) ?? [];
+    if (existing.length > 0) {
+      existingOpeningPositions.push(existing[0]!);
+      if (existing.length > 1) {
+        staleOpeningAdjustments.push(...existing.slice(1));
+      }
+      openingAdjustmentsByKey.delete(key);
+      continue;
+    }
+    openingPositionsToCreate.push(openingPosition);
+  }
+
+  return {
+    staleOpeningAdjustments,
+    existingOpeningPositions,
+    openingPositionsToCreate,
+  };
+}
+
 function isFundOrderDateHeader(value: string) {
   return /^\d{2}\/\d{2}\/\d{4}$/.test(value);
 }
@@ -281,6 +382,34 @@ function buildFundSecurityLookup(dataset: DomainDataset) {
   }
 
   return byName;
+}
+
+function normalizeExistingOpeningAdjustment(
+  adjustment: HoldingAdjustment,
+  securityNamesById: Map<string, string>,
+): FundOrderHistoryExistingOpeningAdjustment {
+  return {
+    adjustmentId: adjustment.id,
+    securityId: adjustment.securityId,
+    fundName: securityNamesById.get(adjustment.securityId) ?? adjustment.securityId,
+    orderDate: adjustment.effectiveDate,
+    quantity: normalizeDecimalString(adjustment.shareDelta),
+    costBasisEur: normalizeDecimalString(adjustment.costBasisDeltaEur ?? "0"),
+  };
+}
+
+function buildOpeningAdjustmentKey(input: {
+  securityId: string;
+  orderDate: string;
+  quantity: string;
+  costBasisEur: string;
+}) {
+  return [
+    input.securityId,
+    input.orderDate,
+    normalizeDecimalString(input.quantity),
+    normalizeDecimalString(input.costBasisEur),
+  ].join(":");
 }
 
 function buildFundBuyTransactionsBySecurityId(
@@ -344,4 +473,8 @@ function buildFundOrderUnitPriceOriginal(
 
 function absoluteDecimal(value: string) {
   return new Decimal(value).abs();
+}
+
+function normalizeDecimalString(value: string) {
+  return new Decimal(value).toFixed(8);
 }
