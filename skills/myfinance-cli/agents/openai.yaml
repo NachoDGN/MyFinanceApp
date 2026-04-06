@@ -1,0 +1,4 @@
+interface:
+  display_name: "MyFinance CLI"
+  short_description: "Use MyFinanceApp CLI and APIs safely"
+  default_prompt: "Use $myfinance-cli to query or operate MyFinanceApp through the repo CLI and HTTP surface without guessing command syntax or IDs."
