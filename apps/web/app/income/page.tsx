@@ -7,6 +7,7 @@ import {
   SimpleTable,
 } from "../../components/primitives";
 import { formatCurrency, getIncomeModel } from "../../lib/queries";
+import { convertBaseEurToDisplayAmount } from "../../lib/currency";
 
 export default async function IncomePage({
   searchParams,
@@ -81,7 +82,13 @@ export default async function IncomePage({
         <SectionCard title="Dividend and Interest Breakdown" subtitle="Investment income" span="span-6">
           <DistributionList rows={model.investmentIncomeRows.map((row) => ({
             label: row.descriptionRaw,
-            amountEur: row.amountBaseEur,
+            amountEur:
+              convertBaseEurToDisplayAmount(
+                model.dataset,
+                row.amountBaseEur,
+                model.currency,
+                row.transactionDate,
+              ) ?? "0.00",
           }))} currency={model.currency} />
         </SectionCard>
 
@@ -95,7 +102,15 @@ export default async function IncomePage({
             row.counterpartyName ?? row.merchantNormalized ?? row.descriptionRaw,
             row.transactionClass,
             row.categoryCode ?? "—",
-            formatCurrency(row.amountBaseEur, model.currency),
+            formatCurrency(
+              convertBaseEurToDisplayAmount(
+                model.dataset,
+                row.amountBaseEur,
+                model.currency,
+                row.transactionDate,
+              ),
+              model.currency,
+            ),
             row.classificationConfidence,
           ])}
         />

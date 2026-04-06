@@ -18,6 +18,11 @@ import {
   formatPercent,
   getInvestmentsModel,
 } from "../../lib/queries";
+import { convertBaseEurToDisplayAmount } from "../../lib/currency";
+import {
+  buildHoldingDisplayMetricsMap,
+  getHoldingDisplayMetricKey,
+} from "../../lib/investment-display";
 
 function normalizeInstrumentText(value: string | null | undefined) {
   return value?.trim().toUpperCase() ?? "";
@@ -145,26 +150,31 @@ export default async function InvestmentsPage({
     (safePage - 1) * pageSize,
     safePage * pageSize,
   );
-  const eurToDisplayRate =
-    model.currency === "EUR"
-      ? new Decimal(1)
-      : resolveFxRate(
-          model.dataset,
-          "EUR",
-          model.currency,
-          model.referenceDate,
-        );
-
   const toDisplayAmount = (amount: string | null | undefined) => {
-    if (amount === null || amount === undefined) return null;
-    return new Decimal(amount).mul(eurToDisplayRate).toFixed(2);
+    return convertBaseEurToDisplayAmount(
+      model.dataset,
+      amount,
+      model.currency,
+      model.referenceDate,
+    );
   };
 
   const safePercent = (numerator: Decimal, denominator: Decimal) =>
     denominator.eq(0) ? null : numerator.div(denominator).mul(100).toFixed(2);
 
-  const formatDisplayAmount = (amount: string | null | undefined) =>
-    formatCurrency(toDisplayAmount(amount), model.currency);
+  const formatDisplayAmount = (
+    amount: string | null | undefined,
+    effectiveDate = model.referenceDate,
+  ) =>
+    formatCurrency(
+      convertBaseEurToDisplayAmount(
+        model.dataset,
+        amount,
+        model.currency,
+        effectiveDate,
+      ),
+      model.currency,
+    );
 
   const formatCurrentPrice = (
     price: string | null | undefined,
@@ -238,6 +248,22 @@ export default async function InvestmentsPage({
     }
     return left.securityName.localeCompare(right.securityName);
   });
+  const holdingDisplayMetrics = buildHoldingDisplayMetricsMap(
+    model.dataset,
+    sortedHoldings,
+    model.currency,
+    model.referenceDate,
+  );
+  const getHoldingDisplayMetric = (
+    holding: (typeof sortedHoldings)[number],
+  ) =>
+    holdingDisplayMetrics.get(getHoldingDisplayMetricKey(holding)) ?? {
+      avgCostDisplay: null,
+      openCostBasisDisplay: null,
+      currentValueDisplay: toDisplayAmount(holding.currentValueEur),
+      unrealizedDisplay: null,
+      unrealizedDisplayPercent: null,
+    };
   const fundHoldings = sortedHoldings.filter((holding) =>
     holdingLooksLikeFund(securityById.get(holding.securityId)),
   );
@@ -250,39 +276,52 @@ export default async function InvestmentsPage({
   );
   const cashValueEur = new Decimal(model.holdings.brokerageCashEur);
   const totalPortfolioValueEur = pricedPortfolioValueEur.plus(cashValueEur);
+  const totalPortfolioValueDisplay = new Decimal(
+    toDisplayAmount(totalPortfolioValueEur.toFixed(2)) ?? 0,
+  );
+  const totalDisplayUnrealized = sortedHoldings
+    .reduce(
+      (sum, holding) =>
+        sum.plus(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
+      new Decimal(0),
+    )
+    .toFixed(2);
   const buildHoldingBucketSummary = (
     rows: typeof model.holdings.holdings,
     label: string,
   ) => {
-    const pricedRows = rows.filter(
-      (holding) =>
-        holding.currentValueEur !== null && holding.unrealizedPnlEur !== null,
-    );
-    const marketValueEur = pricedRows.reduce(
-      (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
-      new Decimal(0),
-    );
-    const unrealizedPnlEur = pricedRows.reduce(
-      (sum, holding) => sum.plus(holding.unrealizedPnlEur ?? 0),
-      new Decimal(0),
-    );
-    const costBasisEur = pricedRows.reduce(
+    const pricedRows = rows.filter((holding) => {
+      const metric = getHoldingDisplayMetric(holding);
+      return (
+        metric.currentValueDisplay !== null && metric.unrealizedDisplay !== null
+      );
+    });
+    const marketValueDisplay = pricedRows.reduce(
       (sum, holding) =>
-        sum.plus(
-          new Decimal(holding.currentValueEur ?? 0).minus(
-            holding.unrealizedPnlEur ?? 0,
-          ),
-        ),
+        sum.plus(getHoldingDisplayMetric(holding).currentValueDisplay ?? 0),
+      new Decimal(0),
+    );
+    const unrealizedPnlDisplay = pricedRows.reduce(
+      (sum, holding) =>
+        sum.plus(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
+      new Decimal(0),
+    );
+    const costBasisDisplay = pricedRows.reduce(
+      (sum, holding) =>
+        sum.plus(getHoldingDisplayMetric(holding).openCostBasisDisplay ?? 0),
       new Decimal(0),
     );
 
     return {
       label,
       count: rows.length,
-      marketValueEur: marketValueEur.toFixed(2),
-      unrealizedPnlEur: unrealizedPnlEur.toFixed(2),
-      unrealizedPnlPercent: safePercent(unrealizedPnlEur, costBasisEur),
-      allocationPercent: safePercent(marketValueEur, totalPortfolioValueEur),
+      marketValueDisplay: marketValueDisplay.toFixed(2),
+      unrealizedPnlDisplay: unrealizedPnlDisplay.toFixed(2),
+      unrealizedPnlPercent: safePercent(
+        unrealizedPnlDisplay,
+        costBasisDisplay,
+      ),
+      allocationPercent: safePercent(marketValueDisplay, totalPortfolioValueDisplay),
       missingQuoteCount: rows.length - pricedRows.length,
     };
   };
@@ -337,19 +376,16 @@ export default async function InvestmentsPage({
             />
             <InvestmentMetricCard
               label="Unrealized Gain"
-              value={formatCurrency(
-                model.metrics.unrealized.valueDisplay,
-                model.currency,
-              )}
+              value={formatCurrency(totalDisplayUnrealized, model.currency)}
               badge={`${model.metrics.unrealized.deltaPercent ?? "0.00"}%`}
               badgeTone={
-                Number(model.metrics.unrealized.valueDisplay ?? "0") >= 0
+                Number(totalDisplayUnrealized) >= 0
                   ? "accent"
                   : "neutral"
               }
               subtitle="Current open-position P/L"
               chartValues={model.holdings.holdings.map((holding) =>
-                Number(holding.unrealizedPnlEur ?? 0),
+                Number(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
               )}
             />
             <InvestmentMetricCard
@@ -410,7 +446,9 @@ export default async function InvestmentsPage({
 
             {[fundsSummary, stocksSummary].map((bucket) => {
               const positiveReturn =
-                Number(bucket.unrealizedPnlEur ?? "0") >= 0 ? "positive" : "negative";
+                Number(bucket.unrealizedPnlDisplay ?? "0") >= 0
+                  ? "positive"
+                  : "negative";
               const bucketCountLabel =
                 bucket.label === "Funds"
                   ? `${bucket.count} fund position${bucket.count === 1 ? "" : "s"}`
@@ -430,11 +468,15 @@ export default async function InvestmentsPage({
                     </span>
                   </div>
                   <div className="investment-summary-value">
-                    {formatDisplayAmount(bucket.marketValueEur)}
+                    {formatCurrency(bucket.marketValueDisplay, model.currency)}
                   </div>
                   <div className="investment-summary-meta">
                     <span className={`investment-return ${positiveReturn}`}>
-                      {formatDisplayAmount(bucket.unrealizedPnlEur)} /{" "}
+                      {formatCurrency(
+                        bucket.unrealizedPnlDisplay,
+                        model.currency,
+                      )}{" "}
+                      /{" "}
                       {formatPercent(bucket.unrealizedPnlPercent)}
                     </span>
                     {bucket.missingQuoteCount > 0 ? (
@@ -476,8 +518,9 @@ export default async function InvestmentsPage({
         >
           <div className="investment-position-list">
             {fundHoldings.map((holding) => {
+              const displayMetric = getHoldingDisplayMetric(holding);
               const positiveReturn =
-                Number(holding.unrealizedPnlEur ?? "0") >= 0
+                Number(displayMetric.unrealizedDisplay ?? "0") >= 0
                   ? "positive"
                   : "negative";
 
@@ -491,13 +534,21 @@ export default async function InvestmentsPage({
                       </p>
                     </div>
                     <div className="investment-position-values">
-                      <strong>{formatDisplayAmount(holding.currentValueEur)}</strong>
-                      {holding.currentValueEur ? (
+                      <strong>
+                        {formatCurrency(
+                          displayMetric.currentValueDisplay,
+                          model.currency,
+                        )}
+                      </strong>
+                      {displayMetric.currentValueDisplay ? (
                         <span
                           className={`investment-return ${positiveReturn}`}
                         >
-                          {formatDisplayAmount(holding.unrealizedPnlEur)} /{" "}
-                          {formatPercent(holding.unrealizedPnlPercent)}
+                          {formatCurrency(
+                            displayMetric.unrealizedDisplay,
+                            model.currency,
+                          )}{" "}
+                          / {formatPercent(displayMetric.unrealizedDisplayPercent)}
                         </span>
                       ) : (
                         <span className="muted">Current quote unavailable</span>
@@ -517,8 +568,9 @@ export default async function InvestmentsPage({
         >
           <div className="investment-position-list">
             {stockHoldings.map((holding) => {
+              const displayMetric = getHoldingDisplayMetric(holding);
               const positiveReturn =
-                Number(holding.unrealizedPnlEur ?? "0") >= 0
+                Number(displayMetric.unrealizedDisplay ?? "0") >= 0
                   ? "positive"
                   : "negative";
               const security = securityById.get(holding.securityId);
@@ -535,13 +587,21 @@ export default async function InvestmentsPage({
                       </p>
                     </div>
                     <div className="investment-position-values">
-                      <strong>{formatDisplayAmount(holding.currentValueEur)}</strong>
-                      {holding.currentValueEur ? (
+                      <strong>
+                        {formatCurrency(
+                          displayMetric.currentValueDisplay,
+                          model.currency,
+                        )}
+                      </strong>
+                      {displayMetric.currentValueDisplay ? (
                         <span
                           className={`investment-return ${positiveReturn}`}
                         >
-                          {formatDisplayAmount(holding.unrealizedPnlEur)} /{" "}
-                          {formatPercent(holding.unrealizedPnlPercent)}
+                          {formatCurrency(
+                            displayMetric.unrealizedDisplay,
+                            model.currency,
+                          )}{" "}
+                          / {formatPercent(displayMetric.unrealizedDisplayPercent)}
                         </span>
                       ) : (
                         <span className="muted">Current quote unavailable</span>
@@ -572,6 +632,7 @@ export default async function InvestmentsPage({
               holding.currentPrice,
               holding.currentPriceCurrency,
             );
+            const displayMetric = getHoldingDisplayMetric(holding);
 
             return [
               holding.securityName,
@@ -580,7 +641,7 @@ export default async function InvestmentsPage({
                 (account) => account.id === holding.accountId,
               )?.displayName ?? holding.accountId,
               formatQuantity(holding.quantity),
-              formatDisplayAmount(holding.avgCostEur),
+              formatCurrency(displayMetric.avgCostDisplay, model.currency),
               <div style={{ display: "grid", gap: 4 }}>
                 <span>{currentPrice.primary}</span>
                 {currentPrice.secondary ? (
@@ -594,8 +655,8 @@ export default async function InvestmentsPage({
                   </span>
                 ) : null}
               </div>,
-              formatDisplayAmount(holding.currentValueEur),
-              `${formatDisplayAmount(holding.unrealizedPnlEur)} (${formatPercent(holding.unrealizedPnlPercent)})`,
+              formatCurrency(displayMetric.currentValueDisplay, model.currency),
+              `${formatCurrency(displayMetric.unrealizedDisplay, model.currency)} (${formatPercent(displayMetric.unrealizedDisplayPercent)})`,
               holding.quoteFreshness.toUpperCase(),
             ];
           })}
@@ -751,7 +812,10 @@ export default async function InvestmentsPage({
                         {securityLabel}
                       </div>
                       <div className="investment-review-copy amount">
-                        {formatDisplayAmount(row.amountBaseEur)}
+                        {formatDisplayAmount(
+                          row.amountBaseEur,
+                          row.transactionDate,
+                        )}
                       </div>
                       <div className="investment-review-panel">
                         <ReviewEditorCell
@@ -835,7 +899,10 @@ export default async function InvestmentsPage({
                         {securityLabel}
                       </div>
                       <div className="investment-review-copy amount">
-                        {formatDisplayAmount(row.amountBaseEur)}
+                        {formatDisplayAmount(
+                          row.amountBaseEur,
+                          row.transactionDate,
+                        )}
                       </div>
                       <div className="investment-review-panel">
                         <ReviewEditorCell

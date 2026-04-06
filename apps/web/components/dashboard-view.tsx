@@ -13,6 +13,7 @@ import {
   TimelinePanel,
 } from "./primitives";
 import { formatCurrency, formatPercent, formatQuantity } from "../lib/queries";
+import { convertBaseEurToDisplayAmount } from "../lib/currency";
 
 export function DashboardView({
   pathname,
@@ -203,7 +204,15 @@ export function DashboardView({
               id: row.id,
               transactionDate: row.transactionDate,
               descriptionRaw: row.descriptionRaw,
-              amountDisplay: formatCurrency(row.amountBaseEur, model.currency),
+              amountDisplay: formatCurrency(
+                convertBaseEurToDisplayAmount(
+                  model.dataset,
+                  row.amountBaseEur,
+                  model.currency,
+                  row.transactionDate,
+                ),
+                model.currency,
+              ),
               positive: Number(row.amountBaseEur) > 0,
             }))}
         />

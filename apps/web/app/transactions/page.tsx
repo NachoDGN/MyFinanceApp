@@ -2,6 +2,7 @@ import { AppShell } from "../../components/app-shell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { formatCurrency, getTransactionsModel } from "../../lib/queries";
+import { convertBaseEurToDisplayAmount } from "../../lib/currency";
 
 export default async function TransactionsPage({
   searchParams,
@@ -69,7 +70,15 @@ export default async function TransactionsPage({
             model.dataset.entities.find((entity) => entity.id === row.economicEntityId)?.displayName ?? row.economicEntityId,
             row.descriptionRaw,
             row.merchantNormalized ?? "—",
-            formatCurrency(row.amountBaseEur, model.currency),
+            formatCurrency(
+              convertBaseEurToDisplayAmount(
+                model.dataset,
+                row.amountBaseEur,
+                model.currency,
+                row.transactionDate,
+              ),
+              model.currency,
+            ),
             row.transactionClass,
             row.categoryCode ?? "—",
             <ReviewEditorCell

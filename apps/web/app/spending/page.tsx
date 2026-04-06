@@ -8,6 +8,7 @@ import {
 } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { formatCurrency, getSpendingModel } from "../../lib/queries";
+import { convertBaseEurToDisplayAmount } from "../../lib/currency";
 
 export default async function SpendingPage({
   searchParams,
@@ -98,7 +99,15 @@ export default async function SpendingPage({
             model.dataset.entities.find((entity) => entity.id === row.economicEntityId)?.displayName ?? row.economicEntityId,
             row.descriptionRaw,
             row.merchantNormalized ?? "—",
-            formatCurrency(row.amountBaseEur, model.currency),
+            formatCurrency(
+              convertBaseEurToDisplayAmount(
+                model.dataset,
+                row.amountBaseEur,
+                model.currency,
+                row.transactionDate,
+              ),
+              model.currency,
+            ),
             row.categoryCode ?? "—",
             <ReviewEditorCell
               transactionId={row.id}
