@@ -727,6 +727,8 @@ export interface UpdateTransactionInput {
       | "reviewReason"
       | "excludeFromAnalytics"
       | "securityId"
+      | "quantity"
+      | "unitPriceOriginal"
       | "manualNotes"
     >
   >;

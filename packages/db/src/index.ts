@@ -3401,6 +3401,10 @@ class SqlFinanceRepository implements FinanceRepository {
         updatePayload.exclude_from_analytics = patch.excludeFromAnalytics;
       if (patch.securityId !== undefined)
         updatePayload.security_id = patch.securityId;
+      if (patch.quantity !== undefined)
+        updatePayload.quantity = patch.quantity;
+      if (patch.unitPriceOriginal !== undefined)
+        updatePayload.unit_price_original = patch.unitPriceOriginal;
       if (patch.manualNotes !== undefined)
         updatePayload.manual_notes = patch.manualNotes;
       if (Object.keys(input.patch).length > 0) {
@@ -3453,6 +3457,9 @@ class SqlFinanceRepository implements FinanceRepository {
         if (
           beforeTransaction.accountId === afterTransaction.accountId &&
           (beforeTransaction.securityId !== afterTransaction.securityId ||
+            beforeTransaction.quantity !== afterTransaction.quantity ||
+            beforeTransaction.unitPriceOriginal !==
+              afterTransaction.unitPriceOriginal ||
             beforeTransaction.transactionClass !==
               afterTransaction.transactionClass ||
             beforeTransaction.needsReview !== afterTransaction.needsReview ||

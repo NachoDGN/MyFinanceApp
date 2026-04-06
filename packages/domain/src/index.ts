@@ -1,4 +1,5 @@
 export * from "./finance";
+export * from "./fund-order-history";
 export * from "./import-debug";
 export * from "./import-template-inference";
 export * from "./repository";

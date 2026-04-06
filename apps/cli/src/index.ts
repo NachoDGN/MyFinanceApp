@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
+
 import { Command } from "commander";
 
 import {
@@ -9,10 +11,12 @@ import {
 } from "@myfinance/analytics";
 import { createFinanceRepository, getDbRuntimeConfig } from "@myfinance/db";
 import {
+  buildFundOrderHistoryImportPlan,
   createDefaultColumnMappings,
   createTemplateConfig,
   FinanceDomainService,
   isCanonicalFieldKey,
+  parseMyInvestorFundOrderHistoryText,
   resolvePeriodSelection,
   signModeOptions,
   todayIso,
@@ -175,6 +179,7 @@ program
   .option("--category <categoryCode>")
   .option("--entity <entitySlug>")
   .option("--security <securityId>")
+  .option("--quantity <quantity>")
   .option("--note <manualNote>")
   .option("--needs-review", "Mark the row as needs review")
   .option("--create-rule", "Also create a reusable rule")
@@ -192,6 +197,7 @@ program
         categoryCode: typeof options.category === "string" ? options.category : undefined,
         economicEntityId: entityId,
         securityId: typeof options.security === "string" ? options.security : undefined,
+        quantity: typeof options.quantity === "string" ? options.quantity : undefined,
         manualNotes: typeof options.note === "string" ? options.note : undefined,
         needsReview: options.needsReview ? true : undefined,
       },
@@ -517,6 +523,90 @@ positionsCommand
     },
   );
 
+positionsCommand
+  .command("import-fund-history")
+  .requiredOption("--account <accountId>")
+  .requiredOption("--entity <entitySlug>")
+  .requiredOption("--file <filePath>")
+  .option("--apply", "Persist the transaction quantity fixes and opening positions")
+  .option("--json", "Output JSON")
+  .action(
+    async (options: {
+      account: string;
+      entity: string;
+      file: string;
+      apply?: boolean;
+      json?: boolean;
+    }) => {
+      const dataset = await repository.getDataset();
+      const entityId = dataset.entities.find((row) => row.slug === options.entity)?.id;
+      if (!entityId) {
+        throw new Error(`Unknown entity slug: ${options.entity}`);
+      }
+
+      const sourceText = readFundHistoryText(options.file);
+      const parsedRows = parseMyInvestorFundOrderHistoryText(sourceText);
+      const plan = buildFundOrderHistoryImportPlan(dataset, options.account, parsedRows);
+      const applyChanges = Boolean(options.apply);
+
+      const patchedTransactions = [];
+      const createdOpeningPositions = [];
+
+      if (applyChanges) {
+        for (const patch of plan.matchedTransactionPatches) {
+          patchedTransactions.push(
+            await domain.updateTransaction({
+              transactionId: patch.transactionId,
+              patch: {
+                securityId: patch.securityId,
+                quantity: patch.quantity,
+                unitPriceOriginal: patch.unitPriceOriginal,
+              },
+              actorName: "cli",
+              sourceChannel: "cli",
+              apply: true,
+            }),
+          );
+        }
+
+        for (const openingPosition of plan.openingPositions) {
+          createdOpeningPositions.push(
+            await domain.addOpeningPosition({
+              accountId: options.account,
+              entityId,
+              securityId: openingPosition.securityId,
+              effectiveDate: openingPosition.orderDate,
+              shareDelta: openingPosition.quantity,
+              costBasisDeltaEur: openingPosition.costBasisEur,
+              actorName: "cli",
+              sourceChannel: "cli",
+              apply: true,
+            }),
+          );
+        }
+
+        await domain.runPendingJobs(true);
+      }
+
+      render(
+        {
+          schemaVersion: "v1",
+          applied: applyChanges,
+          parsedRowCount: plan.parsedRows.length,
+          finalizedRowCount: plan.finalizedRows.length,
+          rejectedRowCount: plan.rejectedRows.length,
+          unresolvedRows: plan.unresolvedRows,
+          matchedTransactionPatches: plan.matchedTransactionPatches,
+          openingPositions: plan.openingPositions,
+          patchedTransactionCount: patchedTransactions.length,
+          createdOpeningPositionCount: createdOpeningPositions.length,
+          generatedAt: new Date().toISOString(),
+        },
+        options.json,
+      );
+    },
+  );
+
 const pricesCommand = program.command("prices");
 
 pricesCommand
@@ -558,3 +648,12 @@ jobsCommand
   });
 
 program.parseAsync(process.argv);
+
+function readFundHistoryText(filePath: string) {
+  const buffer = readFileSync(filePath);
+  try {
+    return buffer.toString("utf8");
+  } catch {
+    return buffer.toString("latin1");
+  }
+}
