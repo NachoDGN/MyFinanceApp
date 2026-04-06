@@ -21,6 +21,26 @@ export type HoldingDisplayMetric = {
   unrealizedDisplayPercent: string | null;
 };
 
+function buildHoldingCostBasisDisplayFallback(
+  dataset: DomainDataset,
+  holding: HoldingRow,
+  displayCurrency: string,
+  referenceDate: string,
+) {
+  const quantity = new Decimal(holding.quantity);
+  if (quantity.lte(0)) {
+    return null;
+  }
+
+  const openCostBasisEur = new Decimal(holding.avgCostEur).mul(quantity);
+  return convertBaseEurToDisplayAmount(
+    dataset,
+    openCostBasisEur.toFixed(8),
+    displayCurrency,
+    referenceDate,
+  );
+}
+
 export function getHoldingDisplayMetricKey(holding: {
   entityId: string;
   accountId: string;
@@ -219,15 +239,23 @@ export function buildHoldingDisplayMetricsMap(
         displayCurrency,
         referenceDate,
       );
-      const openCostBasisDisplay =
+      const replayedOpenCostBasisDisplay =
         state && state.quantity.gt(0) && state.openCostBasisDisplay !== null
           ? state.openCostBasisDisplay.toFixed(2)
           : null;
+      const openCostBasisDisplay =
+        replayedOpenCostBasisDisplay ??
+        buildHoldingCostBasisDisplayFallback(
+          dataset,
+          holding,
+          displayCurrency,
+          referenceDate,
+        );
       const avgCostDisplay =
-        state &&
-        state.quantity.gt(0) &&
-        state.openCostBasisDisplay !== null
-          ? state.openCostBasisDisplay.div(state.quantity).toFixed(2)
+        openCostBasisDisplay !== null && new Decimal(holding.quantity).gt(0)
+          ? new Decimal(openCostBasisDisplay)
+              .div(holding.quantity)
+              .toFixed(2)
           : null;
       const unrealizedDisplay =
         currentValueDisplay !== null && openCostBasisDisplay !== null
