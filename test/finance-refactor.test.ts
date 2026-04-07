@@ -37,6 +37,7 @@ import {
   buildUnresolvedSourcePropagatedContextEntry,
   findSimilarResolvedTransactionsByDescriptionEmbedding,
   findSimilarUnresolvedTransactionsByDescriptionEmbedding,
+  mergeEnrichmentDecisionWithExistingTransaction,
   mergePropagatedContextHistory,
   selectReviewPropagationCandidateMatches,
   shouldRunInvestmentRebuildAfterReviewPropagation,
@@ -63,6 +64,85 @@ function cosineSimilarity(left: number[], right: number[]) {
   }
   return score;
 }
+
+test("classification merge preserves resolved trade quantity derived before delayed llm enrichment", () => {
+  const existingTransaction = createTransaction({
+    id: "resolved-before-classification",
+    transactionClass: "investment_trade_buy",
+    securityId: "security-vanguard-us500",
+    quantity: "1.44444444",
+    unitPriceOriginal: "68.94000000",
+    needsReview: false,
+    reviewReason: null,
+  });
+
+  const merged = mergeEnrichmentDecisionWithExistingTransaction(
+    existingTransaction,
+    {
+      transactionClass: "investment_trade_buy",
+      categoryCode: "stock_buy",
+      merchantNormalized: "MyInvestor",
+      counterpartyName: "MyInvestor",
+      economicEntityId: existingTransaction.economicEntityId,
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.99",
+      needsReview: true,
+      reviewReason:
+        'Parsed investment trade for "VANGUARD US 500 STOCK INDEX EU", but the system has not matched it to a tracked security yet.',
+      securityHint: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+      quantity: null,
+      unitPriceOriginal: null,
+      llmPayload: {
+        analysisStatus: "done",
+      },
+    },
+  );
+
+  assert.equal(merged.quantity, "1.44444444");
+  assert.equal(merged.unitPriceOriginal, "68.94000000");
+  assert.equal(merged.needsReview, false);
+  assert.equal(merged.reviewReason, null);
+});
+
+test("classification merge does not preserve resolved trade fields when class changes", () => {
+  const existingTransaction = createTransaction({
+    id: "resolved-before-reclassify",
+    transactionClass: "investment_trade_buy",
+    securityId: "security-vanguard-us500",
+    quantity: "1.44444444",
+    unitPriceOriginal: "68.94000000",
+    needsReview: false,
+    reviewReason: null,
+  });
+
+  const merged = mergeEnrichmentDecisionWithExistingTransaction(
+    existingTransaction,
+    {
+      transactionClass: "fee",
+      categoryCode: "broker_fee",
+      merchantNormalized: "MyInvestor",
+      counterpartyName: "MyInvestor",
+      economicEntityId: existingTransaction.economicEntityId,
+      classificationStatus: "llm",
+      classificationSource: "llm",
+      classificationConfidence: "0.71",
+      needsReview: true,
+      reviewReason: "Low-confidence fee classification.",
+      securityHint: null,
+      quantity: null,
+      unitPriceOriginal: null,
+      llmPayload: {
+        analysisStatus: "done",
+      },
+    },
+  );
+
+  assert.equal(merged.quantity, null);
+  assert.equal(merged.unitPriceOriginal, null);
+  assert.equal(merged.needsReview, true);
+  assert.equal(merged.reviewReason, "Low-confidence fee classification.");
+});
 
 function createSimilaritySql(
   rows: Array<{
@@ -6407,6 +6487,154 @@ test("investment cash balance prefers the last imported same-day statement row",
 
   assert.equal(balances[0]?.balanceBaseEur, "32.87000000");
   assert.equal(balances[0]?.asOfDate, "2026-03-24");
+});
+
+test("investment cash balance falls back to opening balance plus account flows", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-opening-balance",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+    openingBalanceOriginal: "5078.06",
+    openingBalanceCurrency: "EUR",
+    openingBalanceDate: "2023-09-20",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        id: "opening-transfer-in",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2023-09-20",
+        postedDate: "2023-09-20",
+        amountOriginal: "1200.00",
+        amountBaseEur: "1200.00",
+        descriptionRaw: "Transferencia entre cuentas",
+        descriptionClean: "TRANSFERENCIA ENTRE CUENTAS",
+        transactionClass: "transfer_internal",
+        categoryCode: "uncategorized_investment",
+      }),
+      createTransaction({
+        id: "opening-buy",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2023-09-21",
+        postedDate: "2023-09-21",
+        amountOriginal: "-6200.00",
+        amountBaseEur: "-6200.00",
+        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+        descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-opening-balance",
+        quantity: "100.00000000",
+      }),
+      createTransaction({
+        id: "opening-interest",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-24",
+        postedDate: "2026-03-24",
+        amountOriginal: "5.09",
+        amountBaseEur: "5.09",
+        descriptionRaw: "Broker interest",
+        descriptionClean: "BROKER INTEREST",
+        transactionClass: "interest",
+        categoryCode: "interest_income",
+      }),
+      createTransaction({
+        id: "opening-fee",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-24",
+        postedDate: "2026-03-24",
+        amountOriginal: "-41.00",
+        amountBaseEur: "-41.00",
+        descriptionRaw: "Broker fee",
+        descriptionClean: "BROKER FEE",
+        transactionClass: "fee",
+        categoryCode: "broker_fees",
+      }),
+    ],
+  });
+
+  const balances = getLatestInvestmentCashBalances(dataset, "2026-04-07");
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    referenceDate: "2026-04-07",
+  });
+
+  assert.equal(balances[0]?.balanceBaseEur, "42.15000000");
+  assert.equal(balances[0]?.balanceOriginal, "42.15000000");
+  assert.equal(balances[0]?.sourceKind, "computed");
+  assert.equal(model.holdings.brokerageCashEur, "42.15");
+});
+
+test("cash metric includes computed brokerage cash when statement balances are absent", () => {
+  const cashAccount = createAccount({
+    id: "cash-account-with-snapshot",
+    accountType: "checking",
+    assetDomain: "cash",
+    defaultCurrency: "EUR",
+  });
+  const investmentAccount = createAccount({
+    id: "brokerage-cash-metric",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+    openingBalanceOriginal: "5078.06",
+    openingBalanceCurrency: "EUR",
+    openingBalanceDate: "2023-09-20",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount, investmentAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: cashAccount.id,
+        asOfDate: "2026-04-07",
+        balanceOriginal: "1000.00",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "1000.00000000",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "brokerage-buy-for-cash-metric",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2023-09-21",
+        postedDate: "2023-09-21",
+        amountOriginal: "-5036.91",
+        amountBaseEur: "-5036.91",
+        descriptionRaw: "Initial purchases",
+        descriptionClean: "INITIAL PURCHASES",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-cash-metric",
+        quantity: "10.00000000",
+      }),
+    ],
+  });
+
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-07" },
+  );
+
+  assert.equal(cashMetric.valueBaseEur, "1041.15");
+  assert.equal(cashMetric.valueDisplay, "1041.15");
 });
 
 test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {

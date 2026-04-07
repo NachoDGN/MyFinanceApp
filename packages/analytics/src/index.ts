@@ -114,17 +114,24 @@ function currentCashTotal(
   asOfDate: string,
 ) {
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  return getLatestBalanceSnapshots(dataset.accountBalanceSnapshots, asOfDate)
-    .filter((snapshot) => {
-      const account = dataset.accounts.find(
-        (row) => row.id === snapshot.accountId,
-      );
-      return (
-        account &&
-        entityIds.has(account.entityId) &&
-        (scope.kind !== "account" || account.id === scope.accountId)
-      );
-    })
+  const inScope = (accountId: string, expectedAssetDomain: "cash" | "investment") => {
+    const account = dataset.accounts.find((row) => row.id === accountId);
+    return (
+      account?.assetDomain === expectedAssetDomain &&
+      entityIds.has(account.entityId) &&
+      (scope.kind !== "account" || account.id === scope.accountId)
+    );
+  };
+  const cashSnapshots = getLatestBalanceSnapshots(
+    dataset.accountBalanceSnapshots,
+    asOfDate,
+  ).filter((snapshot) => inScope(snapshot.accountId, "cash"));
+  const brokerageSnapshots = getLatestInvestmentCashBalances(
+    dataset,
+    asOfDate,
+  ).filter((snapshot) => inScope(snapshot.accountId, "investment"));
+
+  return [...cashSnapshots, ...brokerageSnapshots]
     .reduce(
       (sum, snapshot) => sum.plus(snapshot.balanceBaseEur),
       new Decimal(0),

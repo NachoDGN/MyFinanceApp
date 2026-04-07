@@ -508,6 +508,79 @@ function readImportedSourceRow(transaction: Transaction) {
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
+function computeInvestmentBalanceFromOpening(
+  dataset: DomainDataset,
+  account: DomainDataset["accounts"][number],
+  asOfDate: string,
+): AccountBalanceSnapshot | null {
+  if (
+    account.assetDomain !== "investment" ||
+    !account.openingBalanceOriginal ||
+    !account.openingBalanceDate ||
+    account.openingBalanceDate > asOfDate
+  ) {
+    return null;
+  }
+
+  const openingCurrency =
+    account.openingBalanceCurrency ?? account.defaultCurrency;
+  const scopedTransactions = dataset.transactions.filter(
+    (transaction) =>
+      transaction.accountId === account.id &&
+      transaction.transactionDate >= account.openingBalanceDate! &&
+      transaction.transactionDate <= asOfDate &&
+      !transaction.voidedAt,
+  );
+  const openingBalanceBaseEur = new Decimal(account.openingBalanceOriginal)
+    .mul(
+      resolveFxRate(
+        dataset,
+        openingCurrency,
+        "EUR",
+        account.openingBalanceDate,
+      ),
+    )
+    .toFixed(8);
+  const balanceBaseEur = scopedTransactions
+    .reduce(
+      (sum, transaction) => sum.plus(transaction.amountBaseEur),
+      new Decimal(openingBalanceBaseEur),
+    )
+    .toFixed(8);
+  const canComputeOriginal = scopedTransactions.every(
+    (transaction) => transaction.currencyOriginal === openingCurrency,
+  );
+  const balanceOriginal = canComputeOriginal
+    ? scopedTransactions
+        .reduce(
+          (sum, transaction) => sum.plus(transaction.amountOriginal),
+          new Decimal(account.openingBalanceOriginal),
+        )
+        .toFixed(8)
+    : openingCurrency === "EUR"
+      ? balanceBaseEur
+      : new Decimal(balanceBaseEur)
+          .div(resolveFxRate(dataset, openingCurrency, "EUR", asOfDate))
+          .toFixed(8);
+  const latestActivityDate = scopedTransactions.reduce(
+    (latestDate, transaction) =>
+      transaction.transactionDate > latestDate
+        ? transaction.transactionDate
+        : latestDate,
+    account.openingBalanceDate,
+  );
+
+  return {
+    accountId: account.id,
+    asOfDate: latestActivityDate,
+    balanceOriginal,
+    balanceCurrency: openingCurrency,
+    balanceBaseEur,
+    sourceKind: "computed",
+    importBatchId: null,
+  };
+}
+
 export function getLatestInvestmentCashBalances(
   dataset: DomainDataset,
   asOfDate = todayIso(),
@@ -561,33 +634,41 @@ export function getLatestInvestmentCashBalances(
         parseImportedBalance(transaction, account.defaultCurrency),
       );
 
-    if (!latestTransaction) {
+    if (latestTransaction) {
+      const parsedBalance = parseImportedBalance(
+        latestTransaction,
+        account.defaultCurrency,
+      );
+      if (!parsedBalance) {
+        continue;
+      }
+
+      const balanceBaseEur = new Decimal(parsedBalance.balanceOriginal)
+        .mul(
+          resolveFxRate(dataset, parsedBalance.balanceCurrency, "EUR", asOfDate),
+        )
+        .toFixed(8);
+
+      snapshotsByAccount.set(account.id, {
+        accountId: account.id,
+        asOfDate: latestTransaction.transactionDate,
+        balanceOriginal: parsedBalance.balanceOriginal,
+        balanceCurrency: parsedBalance.balanceCurrency,
+        balanceBaseEur,
+        sourceKind: "statement",
+        importBatchId: latestTransaction.importBatchId ?? null,
+      });
       continue;
     }
 
-    const parsedBalance = parseImportedBalance(
-      latestTransaction,
-      account.defaultCurrency,
+    const computedBalance = computeInvestmentBalanceFromOpening(
+      dataset,
+      account,
+      asOfDate,
     );
-    if (!parsedBalance) {
-      continue;
+    if (computedBalance) {
+      snapshotsByAccount.set(account.id, computedBalance);
     }
-
-    const balanceBaseEur = new Decimal(parsedBalance.balanceOriginal)
-      .mul(
-        resolveFxRate(dataset, parsedBalance.balanceCurrency, "EUR", asOfDate),
-      )
-      .toFixed(8);
-
-    snapshotsByAccount.set(account.id, {
-      accountId: account.id,
-      asOfDate: latestTransaction.transactionDate,
-      balanceOriginal: parsedBalance.balanceOriginal,
-      balanceCurrency: parsedBalance.balanceCurrency,
-      balanceBaseEur,
-      sourceKind: "statement",
-      importBatchId: latestTransaction.importBatchId ?? null,
-    });
   }
 
   return [...snapshotsByAccount.values()];
