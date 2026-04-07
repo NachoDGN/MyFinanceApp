@@ -498,20 +498,6 @@ export default async function InvestmentsPage({
         </SectionCard>
 
         <SectionCard
-          title="Allocation by Account"
-          subtitle="Broker split"
-          span="span-6"
-        >
-          <DistributionList
-            rows={model.accountAllocation.map((row) => ({
-              ...row,
-              amountEur: toDisplayAmount(row.amountEur) ?? "0.00",
-            }))}
-            currency={model.currency}
-          />
-        </SectionCard>
-
-        <SectionCard
           title="Funds"
           subtitle="Current value, unrealized EUR, and return %"
           span="span-6"
@@ -612,6 +598,20 @@ export default async function InvestmentsPage({
               );
             })}
           </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Allocation by Account"
+          subtitle="Broker split"
+          span="span-12"
+        >
+          <DistributionList
+            rows={model.accountAllocation.map((row) => ({
+              ...row,
+              amountEur: toDisplayAmount(row.amountEur) ?? "0.00",
+            }))}
+            currency={model.currency}
+          />
         </SectionCard>
 
         <SimpleTable

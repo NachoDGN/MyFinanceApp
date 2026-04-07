@@ -303,9 +303,6 @@ export function InvestmentAllocationCard({
 
   return (
     <section className="investment-allocation-panel">
-      <div className="investment-allocation-total">
-        {formatCurrency(total.toFixed(2), currency)}
-      </div>
       <div className="investment-allocation-layout">
         <div className="investment-allocation-donut">
           <svg

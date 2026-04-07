@@ -466,22 +466,6 @@ textarea {
   overflow: hidden;
 }
 
-.investment-allocation-total {
-  position: absolute;
-  top: 32px;
-  right: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 0 16px;
-  border-radius: var(--radius-pill);
-  background: rgba(0, 0, 0, 0.06);
-  color: var(--color-surface-dark);
-  font-size: 14px;
-  font-weight: 700;
-}
-
 .investment-allocation-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(240px, 0.8fr);
@@ -1495,11 +1479,6 @@ textarea {
   .investment-kpi-card {
     min-height: 280px;
     padding: 24px;
-  }
-
-  .investment-allocation-total {
-    position: static;
-    margin-bottom: 24px;
   }
 
   .investment-allocation-layout {
