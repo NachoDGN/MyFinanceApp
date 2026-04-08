@@ -1231,6 +1231,42 @@ async function queueJob(
   return jobId;
 }
 
+function isInvestmentTradeTransactionClass(transactionClass: string) {
+  return (
+    transactionClass === "investment_trade_buy" ||
+    transactionClass === "investment_trade_sell"
+  );
+}
+
+export function mergeEnrichmentDecisionWithExistingTransaction(
+  existingTransaction: Transaction,
+  decision: TransactionEnrichmentDecision,
+) {
+  if (
+    !isInvestmentTradeTransactionClass(decision.transactionClass) ||
+    !isInvestmentTradeTransactionClass(existingTransaction.transactionClass) ||
+    existingTransaction.transactionClass !== decision.transactionClass ||
+    !existingTransaction.securityId ||
+    !existingTransaction.quantity ||
+    existingTransaction.needsReview
+  ) {
+    return decision;
+  }
+
+  if (decision.quantity || decision.unitPriceOriginal || !decision.needsReview) {
+    return decision;
+  }
+
+  return {
+    ...decision,
+    quantity: existingTransaction.quantity,
+    unitPriceOriginal:
+      decision.unitPriceOriginal ?? existingTransaction.unitPriceOriginal ?? null,
+    needsReview: false,
+    reviewReason: null,
+  } satisfies TransactionEnrichmentDecision;
+}
+
 async function supportsJobType(sql: SqlClient, jobType: string) {
   const rows = await sql`
     select exists (
@@ -1975,19 +2011,26 @@ async function updateTransactionFromEnrichmentDecision(
     manualNotes?: string | null;
   } = {},
 ) {
+  const beforeRow = await selectTransactionRowById(sql, userId, transactionId);
+  const mergedDecision = beforeRow
+    ? mergeEnrichmentDecisionWithExistingTransaction(
+        mapFromSql<Transaction>(beforeRow),
+        decision,
+      )
+    : decision;
   const updatePayload: Record<string, unknown> = {
-    transaction_class: decision.transactionClass,
-    category_code: decision.categoryCode ?? null,
-    merchant_normalized: decision.merchantNormalized ?? null,
-    counterparty_name: decision.counterpartyName ?? null,
-    economic_entity_id: decision.economicEntityId,
-    classification_status: decision.classificationStatus,
-    classification_source: decision.classificationSource,
-    classification_confidence: decision.classificationConfidence,
-    quantity: decision.quantity ?? null,
-    unit_price_original: decision.unitPriceOriginal ?? null,
-    needs_review: decision.needsReview,
-    review_reason: decision.reviewReason ?? null,
+    transaction_class: mergedDecision.transactionClass,
+    category_code: mergedDecision.categoryCode ?? null,
+    merchant_normalized: mergedDecision.merchantNormalized ?? null,
+    counterparty_name: mergedDecision.counterpartyName ?? null,
+    economic_entity_id: mergedDecision.economicEntityId,
+    classification_status: mergedDecision.classificationStatus,
+    classification_source: mergedDecision.classificationSource,
+    classification_confidence: mergedDecision.classificationConfidence,
+    quantity: mergedDecision.quantity ?? null,
+    unit_price_original: mergedDecision.unitPriceOriginal ?? null,
+    needs_review: mergedDecision.needsReview,
+    review_reason: mergedDecision.reviewReason ?? null,
     updated_at: new Date().toISOString(),
   };
   if (options.manualNotes !== undefined) {
@@ -1998,7 +2041,7 @@ async function updateTransactionFromEnrichmentDecision(
     userId,
     transactionId,
     updatePayload,
-    llmPayload: decision.llmPayload,
+    llmPayload: mergedDecision.llmPayload,
   });
 }
 
@@ -4271,6 +4314,7 @@ class SqlFinanceRepository implements FinanceRepository {
               `;
 
               let failedTransactions = 0;
+              const investmentAccountIds = new Set<string>();
               for (const row of rows) {
                 const transaction = mapFromSql<Transaction>(row);
                 const account = latestDataset.accounts.find(
@@ -4280,6 +4324,9 @@ class SqlFinanceRepository implements FinanceRepository {
                   throw new Error(
                     `Account ${transaction.accountId} not found for classification.`,
                   );
+                }
+                if (account.assetDomain === "investment") {
+                  investmentAccountIds.add(account.id);
                 }
 
                 try {
@@ -4343,10 +4390,18 @@ class SqlFinanceRepository implements FinanceRepository {
                 where id = ${importBatchId}
                   and user_id = ${this.userId}
               `;
+              for (const accountId of investmentAccountIds) {
+                await queueJob(sql, "position_rebuild", {
+                  importBatchId,
+                  accountId,
+                  trigger: "classification_completion",
+                });
+              }
               await completeJob(sql, job.id, startedAt, {
                 ...payloadJson,
                 processedTransactions: rows.length,
                 failedTransactions,
+                queuedFollowUpPositionRebuilds: investmentAccountIds.size,
               });
               processedJobs.push({
                 id: job.id,
