@@ -16,6 +16,10 @@ import {
   type Scope,
   type Transaction,
 } from "@myfinance/domain";
+import {
+  buildEntityScopeOptions,
+  parseWorkspaceSettings,
+} from "./workspace-settings";
 
 export type RawSearchParams =
   | Promise<Record<string, string | string[] | undefined>>
@@ -33,35 +37,104 @@ function normalizeParam(
   return value;
 }
 
+function todayIsoInTimezone(timezone: string) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const year = parts.find((part) => part.type === "year")?.value;
+    const month = parts.find((part) => part.type === "month")?.value;
+    const day = parts.find((part) => part.type === "day")?.value;
+    if (year && month && day) {
+      return `${year}-${month}-${day}`;
+    }
+  } catch {
+    // Fallback to UTC if the configured timezone is invalid.
+  }
+
+  return new Date().toISOString().slice(0, 10);
+}
+
 export async function resolveAppState(searchParams: RawSearchParams) {
   const params = await searchParams;
   const dataset = await repository.getDataset();
-  const scopeParam = normalizeParam(params, "scope") ?? "consolidated";
-  const currency = normalizeParam(params, "currency") === "USD" ? "USD" : "EUR";
-  const periodParam = normalizeParam(params, "period") ?? "mtd";
+  const workspaceSettings = parseWorkspaceSettings(
+    dataset.profile.workspaceSettingsJson,
+    {
+      entities: dataset.entities,
+      profileDefaultBaseCurrency: dataset.profile.defaultBaseCurrency,
+    },
+  );
+  const requestedScopeParam =
+    normalizeParam(params, "scope") ?? workspaceSettings.preferredScope;
+  const currencyParam = normalizeParam(params, "currency");
+  const currency =
+    currencyParam === "USD"
+      ? "USD"
+      : currencyParam === "EUR"
+        ? "EUR"
+        : workspaceSettings.defaultDisplayCurrency;
+  const periodParam =
+    normalizeParam(params, "period") ?? workspaceSettings.defaultPeriodPreset;
   const entityBySlug = new Map(
     dataset.entities.map((entity) => [entity.slug, entity.id]),
   );
-  const scope: Scope = scopeParam.startsWith("account:")
-    ? { kind: "account", accountId: scopeParam.replace("account:", "") }
-    : scopeParam === "consolidated"
-      ? { kind: "consolidated" }
-      : { kind: "entity", entityId: entityBySlug.get(scopeParam) };
+  const requestedAccountId = requestedScopeParam.startsWith("account:")
+    ? requestedScopeParam.replace("account:", "")
+    : null;
+  const requestedEntityId = entityBySlug.get(requestedScopeParam);
+  const hasRequestedAccount =
+    requestedAccountId !== null &&
+    dataset.accounts.some((account) => account.id === requestedAccountId);
+  const hasRequestedEntity =
+    typeof requestedEntityId === "string" &&
+    dataset.entities.some((entity) => entity.id === requestedEntityId);
+  const scopeParam =
+    requestedScopeParam === "consolidated"
+      ? "consolidated"
+      : hasRequestedAccount
+        ? requestedScopeParam
+        : hasRequestedEntity
+          ? requestedScopeParam
+          : "consolidated";
+  const scope: Scope =
+    scopeParam.startsWith("account:") && requestedAccountId
+      ? { kind: "account", accountId: requestedAccountId }
+      : scopeParam === "consolidated"
+        ? { kind: "consolidated" }
+        : { kind: "entity", entityId: requestedEntityId };
+  const today = todayIsoInTimezone(dataset.profile.timezone);
   const referenceDate =
-    normalizeParam(params, "asOf") ?? getScopeLatestDate(dataset, scope);
+    normalizeParam(params, "asOf") ?? getScopeLatestDate(dataset, scope, today);
   const period = resolvePeriodSelection({
     preset: periodParam,
     start: normalizeParam(params, "start"),
     end: normalizeParam(params, "end"),
     referenceDate,
   });
+  const activeEntities = dataset.entities.filter((entity) => entity.active);
+  const entityScopeOptions = buildEntityScopeOptions(activeEntities);
+  if (
+    scope.kind === "entity" &&
+    scope.entityId &&
+    !activeEntities.some((entity) => entity.id === scope.entityId)
+  ) {
+    const selectedEntity = dataset.entities.find(
+      (entity) => entity.id === scope.entityId,
+    );
+    if (selectedEntity) {
+      entityScopeOptions.push({
+        value: selectedEntity.slug,
+        label: selectedEntity.displayName,
+      });
+    }
+  }
 
   const scopeOptions = [
-    { value: "consolidated", label: "Consolidated" },
-    ...dataset.entities.map((entity) => ({
-      value: entity.slug,
-      label: entity.displayName,
-    })),
+    ...entityScopeOptions,
     ...dataset.accounts.map((account) => ({
       value: `account:${account.id}`,
       label: `${account.displayName} (Account)`,
@@ -78,6 +151,15 @@ export async function resolveAppState(searchParams: RawSearchParams) {
     periodParam,
     period,
     scopeOptions,
+    workspaceSettings,
+    navigationState: {
+      scopeParam,
+      currency,
+      period: period.preset,
+      referenceDate,
+      start: period.preset === "custom" ? period.start : undefined,
+      end: period.preset === "custom" ? period.end : undefined,
+    },
   };
 }
 
@@ -283,7 +365,25 @@ export async function getInsightsModel(searchParams: RawSearchParams) {
 
 export async function getSettingsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  return state;
+  const supportedValuesOf = (
+    Intl as typeof Intl & {
+      supportedValuesOf?: (key: string) => string[];
+    }
+  ).supportedValuesOf;
+  const timezones =
+    typeof supportedValuesOf === "function"
+      ? supportedValuesOf("timeZone")
+      : [
+          "Europe/Madrid",
+          "Europe/London",
+          "UTC",
+          "America/New_York",
+          "America/Los_Angeles",
+        ];
+  return {
+    ...state,
+    timezones,
+  };
 }
 
 export async function getPromptsModel(searchParams: RawSearchParams) {

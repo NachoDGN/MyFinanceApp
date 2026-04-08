@@ -34,13 +34,21 @@ values (
 )
 on conflict (id) do nothing;
 
-insert into public.profiles (id, email, display_name, default_base_currency, timezone)
+insert into public.profiles (
+  id,
+  email,
+  display_name,
+  default_base_currency,
+  timezone,
+  workspace_settings_json
+)
 values (
   '00000000-0000-0000-0000-000000000001',
   'dev@myfinance.local',
   'Seeded Developer',
   'EUR',
-  'Europe/Madrid'
+  'Europe/Madrid',
+  '{"preferredScope":"consolidated","defaultDisplayCurrency":"EUR","defaultPeriodPreset":"mtd","defaultCashStaleAfterDays":7,"defaultInvestmentStaleAfterDays":3}'::jsonb
 )
 on conflict (id) do nothing;
 

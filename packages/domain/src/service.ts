@@ -1,10 +1,12 @@
 import type {
   AccountListResponse,
   ApplyRuleDraftInput,
+  CreateEntityInput,
   CreateAccountInput,
   CreateRuleInput,
   CreateTemplateInput,
   DeleteAccountInput,
+  DeleteEntityInput,
   DeleteHoldingAdjustmentInput,
   DeleteTemplateInput,
   HoldingsResponse,
@@ -17,6 +19,8 @@ import type {
   Scope,
   TemplateListResponse,
   TransactionListResponse,
+  UpdateEntityInput,
+  UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
   AddOpeningPositionInput,
 } from "./types";
@@ -28,6 +32,7 @@ import {
   getLatestBalanceSnapshots,
   getLatestInvestmentCashBalances,
   getDatasetLatestDate,
+  resolveAccountStaleThresholdDays,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   todayIso,
@@ -69,9 +74,11 @@ function buildQualitySummary(
           : dataset.accounts;
   const staleAccounts = scopedAccounts
     .map((account) => {
-      const threshold =
-        account.staleAfterDays ??
-        (account.assetDomain === "investment" ? 3 : 7);
+      const threshold = resolveAccountStaleThresholdDays(
+        dataset.profile,
+        account.assetDomain,
+        account.staleAfterDays,
+      );
       const ageDays =
         ageInDays(referenceDate, account.lastImportedAt) ?? threshold + 1;
       return { account, ageDays, threshold };
@@ -239,6 +246,22 @@ export class FinanceDomainService {
 
   commitImport(input: Parameters<FinanceRepository["commitImport"]>[0]) {
     return this.repository.commitImport(input);
+  }
+
+  updateWorkspaceProfile(input: UpdateWorkspaceProfileInput) {
+    return this.repository.updateWorkspaceProfile(input);
+  }
+
+  createEntity(input: CreateEntityInput) {
+    return this.repository.createEntity(input);
+  }
+
+  updateEntity(input: UpdateEntityInput) {
+    return this.repository.updateEntity(input);
+  }
+
+  deleteEntity(input: DeleteEntityInput) {
+    return this.repository.deleteEntity(input);
   }
 
   createAccount(input: CreateAccountInput) {

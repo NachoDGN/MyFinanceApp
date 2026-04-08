@@ -11,9 +11,11 @@ import type {
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
   AuditEvent,
+  CreateEntityInput,
   CreateAccountInput,
   CreateRuleInput,
   CreateTemplateInput,
+  DeleteEntityInput,
   DeleteHoldingAdjustmentInput,
   DeleteAccountInput,
   DeleteTemplateInput,
@@ -26,6 +28,8 @@ import type {
   ResetWorkspaceInput,
   ResetWorkspaceResult,
   Transaction,
+  UpdateEntityInput,
+  UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
   FileKind,
   ImportFileValidationIssue,
@@ -109,6 +113,18 @@ export interface SpreadsheetFileValidationResult {
 
 export interface FinanceRepository {
   getDataset(): Promise<DomainDataset>;
+  updateWorkspaceProfile(
+    input: UpdateWorkspaceProfileInput,
+  ): Promise<{ applied: boolean; profileId: string }>;
+  createEntity(
+    input: CreateEntityInput,
+  ): Promise<{ applied: boolean; entityId: string }>;
+  updateEntity(
+    input: UpdateEntityInput,
+  ): Promise<{ applied: boolean; entityId: string }>;
+  deleteEntity(
+    input: DeleteEntityInput,
+  ): Promise<{ applied: boolean; entityId: string }>;
   createAccount(
     input: CreateAccountInput,
   ): Promise<{ applied: boolean; accountId: string }>;

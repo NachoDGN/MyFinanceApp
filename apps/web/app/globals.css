@@ -1182,11 +1182,108 @@ textarea {
   max-width: 720px;
 }
 
+.dashboard-metrics-grid {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.dashboard-metrics-grid > .kpi-card {
+  grid-column: span 1;
+  min-height: 220px;
+}
+
+.dashboard-secondary-grid {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.dashboard-secondary-grid > .details-section {
+  grid-column: auto;
+}
+
+.dashboard-sidebar-stack {
+  display: grid;
+  gap: 24px;
+}
+
+.dashboard-side-card,
+.dashboard-action-card,
+.settings-entity-card {
+  background: #ffffff;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-card-border);
+}
+
+.dashboard-side-card,
+.dashboard-action-card {
+  padding: 32px;
+}
+
+.dashboard-action-card {
+  display: grid;
+  gap: 18px;
+}
+
+.dashboard-action-button {
+  width: 100%;
+}
+
 .metrics-row {
   grid-column: span 12;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 24px;
+}
+
+.dashboard-home-grid {
+  align-items: start;
+}
+
+.dashboard-metrics-grid {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.dashboard-metrics-grid .kpi-card {
+  grid-column: auto;
+  min-height: 220px;
+}
+
+.dashboard-secondary-grid {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.6fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.dashboard-sidebar-stack {
+  display: grid;
+  gap: 24px;
+}
+
+.dashboard-side-card,
+.dashboard-action-card {
+  background: #ffffff;
+  border: 1px solid var(--color-card-border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+}
+
+.dashboard-action-card {
+  display: grid;
+  gap: 20px;
+}
+
+.dashboard-action-button {
+  width: 100%;
 }
 
 .form-grid {
@@ -1239,6 +1336,40 @@ textarea {
   color: var(--color-text-main);
   font-size: 13px;
   font-weight: 500;
+}
+
+.settings-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.settings-entity-list {
+  display: grid;
+  gap: 20px;
+}
+
+.settings-entity-card {
+  padding: 24px;
+  display: grid;
+  gap: 18px;
+  background: linear-gradient(145deg, #ffffff 0%, #fffaf8 100%);
+}
+
+.settings-entity-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.settings-entity-meta {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .builder-panel {
@@ -1397,6 +1528,11 @@ textarea {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .dashboard-metrics-grid,
+  .dashboard-secondary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .allocation-card-body,
   .investment-allocation-layout,
   .investments-hero,
@@ -1434,6 +1570,10 @@ textarea {
   }
 
   .metrics-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-metrics-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1502,5 +1642,9 @@ textarea {
   .investment-position-values {
     width: 100%;
     text-align: left;
+  }
+
+  .settings-entity-head {
+    flex-direction: column;
   }
 }

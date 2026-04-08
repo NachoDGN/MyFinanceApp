@@ -1,6 +1,7 @@
 import { Decimal } from "decimal.js";
 
 import type {
+  AssetDomain,
   AccountBalanceSnapshot,
   DailyPortfolioSnapshot,
   DomainDataset,
@@ -13,6 +14,18 @@ import type {
 
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
+export type WorkspaceSettings = {
+  defaultDisplayCurrency: "EUR" | "USD";
+  defaultPeriodPreset: "mtd" | "ytd";
+  defaultCashStaleAfterDays: number;
+  defaultInvestmentStaleAfterDays: number;
+};
+export const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = {
+  defaultDisplayCurrency: "EUR",
+  defaultPeriodPreset: "mtd",
+  defaultCashStaleAfterDays: 7,
+  defaultInvestmentStaleAfterDays: 3,
+};
 const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
@@ -78,6 +91,79 @@ function toDate(value: string) {
 
 function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10);
+}
+
+function readWorkspaceNumber(
+  settings: Record<string, unknown> | null,
+  key: keyof WorkspaceSettings,
+  fallback: number,
+) {
+  const value = settings?.[key];
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 1 &&
+    value <= 365
+    ? Math.round(value)
+    : fallback;
+}
+
+export function resolveWorkspaceSettings(
+  profile: Pick<DomainDataset["profile"], "defaultBaseCurrency"> & {
+    workspaceSettingsJson?: Record<string, unknown> | null;
+  },
+): WorkspaceSettings {
+  const settings =
+    profile.workspaceSettingsJson &&
+    typeof profile.workspaceSettingsJson === "object" &&
+    !Array.isArray(profile.workspaceSettingsJson)
+      ? profile.workspaceSettingsJson
+      : null;
+
+  return {
+    defaultDisplayCurrency:
+      settings?.defaultDisplayCurrency === "USD"
+        ? "USD"
+        : settings?.defaultDisplayCurrency === "EUR"
+          ? "EUR"
+          : profile.defaultBaseCurrency === "USD"
+            ? "USD"
+            : DEFAULT_WORKSPACE_SETTINGS.defaultDisplayCurrency,
+    defaultPeriodPreset:
+      settings?.defaultPeriodPreset === "ytd"
+        ? "ytd"
+        : DEFAULT_WORKSPACE_SETTINGS.defaultPeriodPreset,
+    defaultCashStaleAfterDays: readWorkspaceNumber(
+      settings,
+      "defaultCashStaleAfterDays",
+      DEFAULT_WORKSPACE_SETTINGS.defaultCashStaleAfterDays,
+    ),
+    defaultInvestmentStaleAfterDays: readWorkspaceNumber(
+      settings,
+      "defaultInvestmentStaleAfterDays",
+      DEFAULT_WORKSPACE_SETTINGS.defaultInvestmentStaleAfterDays,
+    ),
+  };
+}
+
+export function resolveAccountStaleThresholdDays(
+  profile: Pick<DomainDataset["profile"], "defaultBaseCurrency"> & {
+    workspaceSettingsJson?: Record<string, unknown> | null;
+  },
+  assetDomain: AssetDomain,
+  accountStaleAfterDays?: number | null,
+) {
+  if (
+    typeof accountStaleAfterDays === "number" &&
+    Number.isFinite(accountStaleAfterDays) &&
+    accountStaleAfterDays >= 1
+  ) {
+    return Math.round(accountStaleAfterDays);
+  }
+
+  const settings = resolveWorkspaceSettings(profile);
+  return assetDomain === "investment"
+    ? settings.defaultInvestmentStaleAfterDays
+    : settings.defaultCashStaleAfterDays;
 }
 
 function safeDividePercent(numerator: Decimal, denominator: Decimal) {

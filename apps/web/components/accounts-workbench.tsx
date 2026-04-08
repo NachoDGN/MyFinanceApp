@@ -29,16 +29,25 @@ export function AccountsWorkbench({
   entities,
   templates,
   accounts,
+  defaultCurrency,
+  defaultCashStaleAfterDays,
+  defaultInvestmentStaleAfterDays,
 }: {
   entities: Entity[];
   templates: ImportTemplate[];
   accounts: ManagedAccount[];
+  defaultCurrency: string;
+  defaultCashStaleAfterDays: number;
+  defaultInvestmentStaleAfterDays: number;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [feedback, setFeedback] = useState<string | null>(null);
   const [accountType, setAccountType] = useState<AccountType>("checking");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [staleAfterDays, setStaleAfterDays] = useState(
+    String(defaultCashStaleAfterDays),
+  );
 
   const compatibleTemplates = useMemo(
     () =>
@@ -80,6 +89,7 @@ export function AccountsWorkbench({
         form.reset();
         setAccountType("checking");
         setSelectedTemplateId("");
+        setStaleAfterDays(String(defaultCashStaleAfterDays));
         setFeedback("Account created.");
         router.refresh();
       } catch (error) {
@@ -165,6 +175,11 @@ export function AccountsWorkbench({
                     ? currentValue
                     : "",
                 );
+                setStaleAfterDays(
+                  nextAccountType === "brokerage_account"
+                    ? String(defaultInvestmentStaleAfterDays)
+                    : String(defaultCashStaleAfterDays),
+                );
               }}
             >
               {accountTypeOptions.map((option) => (
@@ -197,7 +212,7 @@ export function AccountsWorkbench({
             <input
               className="input-field"
               name="defaultCurrency"
-              defaultValue="EUR"
+              defaultValue={defaultCurrency}
               required
             />
           </label>
@@ -248,6 +263,8 @@ export function AccountsWorkbench({
               type="number"
               min="1"
               max="365"
+              value={staleAfterDays}
+              onChange={(event) => setStaleAfterDays(event.target.value)}
             />
           </label>
           <label className="input-label">

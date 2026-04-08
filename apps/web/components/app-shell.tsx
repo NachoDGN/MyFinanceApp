@@ -38,6 +38,13 @@ export function AppShell({
   };
   scopeOptions: Array<{ value: string; label: string }>;
 }) {
+  const entityScopeOptions = scopeOptions.filter(
+    (option) =>
+      option.value === "consolidated" || !option.value.startsWith("account:"),
+  );
+  const isPrimaryNavActive = (href: string) =>
+    href === "/" ? pathname === "/" || pathname === "/dashboard" : pathname === href;
+
   return (
     <div className="page-shell">
       <nav className="top-nav">
@@ -46,7 +53,7 @@ export function AppShell({
           <a
             key={item.href}
             href={buildHref(item.href, state, {})}
-            className={`nav-item ${pathname === item.href ? "active" : ""}`}
+            className={`nav-item ${isPrimaryNavActive(item.href) ? "active" : ""}`}
           >
             {item.label}
           </a>
@@ -67,7 +74,7 @@ export function AppShell({
 
       <div className="filter-bar">
         <div className="filter-group">
-          {scopeOptions.slice(0, 4).map((option) => (
+          {entityScopeOptions.map((option) => (
             <a
               key={option.value}
               href={buildHref(pathname, state, { scopeParam: option.value })}

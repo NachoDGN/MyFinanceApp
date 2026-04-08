@@ -17,6 +17,7 @@ import {
   getLatestBalanceSnapshots,
   getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
+  resolveAccountStaleThresholdDays,
   getScopeLatestDate,
   isTransactionResolvedForAnalytics,
   resolveFxRate,
@@ -167,15 +168,15 @@ function currentValueComparison(
   dataset: DomainDataset,
   scope: Scope,
   selector: "cash" | "portfolio" | "networth" | "unrealized",
-  referenceDate: string,
+  period: PeriodSelection,
 ) {
-  const previousMonthEnd = shiftIsoDate(startOfMonthIso(referenceDate), -1);
-  const priorCash = currentCashTotal(dataset, scope, previousMonthEnd);
-  const priorPortfolio = currentPortfolioValue(dataset, scope, previousMonthEnd);
+  const comparisonDate = shiftIsoDate(period.start, -1);
+  const priorCash = currentCashTotal(dataset, scope, comparisonDate);
+  const priorPortfolio = currentPortfolioValue(dataset, scope, comparisonDate);
   const priorUnrealized = currentPortfolioUnrealized(
     dataset,
     scope,
-    previousMonthEnd,
+    comparisonDate,
   );
 
   if (selector === "cash") return priorCash;
@@ -219,11 +220,11 @@ function qualitySummary(
   dataset: DomainDataset,
   scope: Scope,
   referenceDate: string,
-): QualitySummary {
-  const currentPeriod = resolvePeriodSelection({
+  period: PeriodSelection = resolvePeriodSelection({
     preset: "mtd",
     referenceDate,
-  });
+  }),
+): QualitySummary {
   const scopedTransactions = filterTransactionsByScope(dataset, scope);
   const scopedAccounts =
     scope.kind === "consolidated"
@@ -240,9 +241,11 @@ function qualitySummary(
       const lastImportDate = account.lastImportedAt
         ? new Date(account.lastImportedAt)
         : null;
-      const threshold =
-        account.staleAfterDays ??
-        (account.assetDomain === "investment" ? 3 : 7);
+      const threshold = resolveAccountStaleThresholdDays(
+        dataset.profile,
+        account.assetDomain,
+        account.staleAfterDays,
+      );
       const ageDays = lastImportDate
         ? Math.floor(
             (Date.parse(`${referenceDate}T12:00:00Z`) -
@@ -264,7 +267,7 @@ function qualitySummary(
       .length,
     unclassifiedAmountMtdEur: filterTransactionsByPeriod(
       scopedTransactions,
-      currentPeriod,
+      period,
     )
       .filter((row) => row.categoryCode?.startsWith("uncategorized"))
       .reduce((sum, row) => sum.plus(amountMagnitudeEur(row)), new Decimal(0))
@@ -288,7 +291,7 @@ export function buildMetricResult(
   scope: Scope,
   displayCurrency: string,
   metricId: string,
-  options: { referenceDate?: string } = {},
+  options: { referenceDate?: string; period?: PeriodSelection } = {},
 ): MetricResult {
   const definition = metricRegistry.find(
     (metric) => metric.metricId === metricId,
@@ -298,10 +301,12 @@ export function buildMetricResult(
   }
 
   const referenceDate = options.referenceDate ?? todayIso();
-  const currentPeriod = resolvePeriodSelection({
-    preset: "mtd",
-    referenceDate,
-  });
+  const currentPeriod =
+    options.period ??
+    resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate,
+    });
   const comparisonPeriod = getPreviousComparablePeriod(currentPeriod);
   let valueBaseEur: string | null = null;
   let comparisonBaseEur: string | null = null;
@@ -316,7 +321,7 @@ export function buildMetricResult(
         dataset,
         scope,
         "networth",
-        referenceDate,
+        currentPeriod,
       );
       break;
     }
@@ -326,7 +331,7 @@ export function buildMetricResult(
         dataset,
         scope,
         "cash",
-        referenceDate,
+        currentPeriod,
       );
       break;
     case "income_mtd_total":
@@ -370,7 +375,7 @@ export function buildMetricResult(
         dataset,
         scope,
         "portfolio",
-        referenceDate,
+        currentPeriod,
       );
       break;
     case "portfolio_unrealized_pnl_current":
@@ -379,7 +384,7 @@ export function buildMetricResult(
         dataset,
         scope,
         "unrealized",
-        referenceDate,
+        currentPeriod,
       );
       break;
     case "pending_review_count":
@@ -392,6 +397,7 @@ export function buildMetricResult(
         dataset,
         scope,
         referenceDate,
+        currentPeriod,
       ).unclassifiedAmountMtdEur;
       break;
     case "stale_accounts_count":
@@ -454,10 +460,11 @@ export function buildMetricResult(
 export function buildInsights(
   dataset: DomainDataset,
   scope: Scope,
-  options: { referenceDate?: string } = {},
+  options: { referenceDate?: string; period?: PeriodSelection } = {},
 ): InsightCard[] {
   const referenceDate = options.referenceDate ?? todayIso();
-  const period = resolvePeriodSelection({ preset: "mtd", referenceDate });
+  const period =
+    options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
   const spendingMetric = buildMetricResult(
     dataset,
     scope,
@@ -465,9 +472,10 @@ export function buildInsights(
     "spending_mtd_total",
     {
       referenceDate,
+      period,
     },
   );
-  const quality = qualitySummary(dataset, scope, referenceDate);
+  const quality = qualitySummary(dataset, scope, referenceDate, period);
   const holdings = buildLiveHoldingRows(dataset, scope, referenceDate)
     .filter((row) => row.currentValueEur)
     .sort(
@@ -486,16 +494,16 @@ export function buildInsights(
 
   return [
     {
-      id: "spending-mtd",
-      title: "Spending pace for the current month",
+      id: "spending-period",
+      title: "Spending pace for the selected period",
       severity:
         Number(spendingMetric.deltaPercent ?? "0") > 0 ? "warning" : "info",
       body:
         Number(spendingMetric.deltaPercent ?? "0") > 0
-          ? "Outflows are ahead of the previous comparable month-to-date window."
-          : "Outflows are at or below the previous comparable month-to-date window.",
+          ? "Outflows are ahead of the previous comparable period."
+          : "Outflows are at or below the previous comparable period.",
       evidence: [
-        `Current MTD spending: ${spendingMetric.valueBaseEur ?? "0.00"} EUR`,
+        `Current-period spending: ${spendingMetric.valueBaseEur ?? "0.00"} EUR`,
         `Comparison window: ${spendingMetric.comparisonValueBaseEur ?? "0.00"} EUR`,
       ],
     },
@@ -541,7 +549,7 @@ export function buildInsights(
       evidence: [
         `Pending review: ${quality.pendingReviewCount}`,
         `Stale accounts: ${quality.staleAccountsCount}`,
-        `Unclassified amount MTD: ${quality.unclassifiedAmountMtdEur} EUR`,
+        `Unclassified amount: ${quality.unclassifiedAmountMtdEur} EUR`,
       ],
     },
   ];
@@ -570,6 +578,7 @@ export function buildDashboardSummary(
   ].map((metricId) =>
     buildMetricResult(dataset, input.scope, input.displayCurrency, metricId, {
       referenceDate,
+      period,
     }),
   );
 
@@ -695,8 +704,11 @@ export function buildDashboardSummary(
     portfolioAllocation,
     topHoldings: holdings.slice(0, 5),
     recentLargeTransactions,
-    insights: buildInsights(dataset, input.scope, { referenceDate }),
-    quality: qualitySummary(dataset, input.scope, referenceDate),
+    insights: buildInsights(dataset, input.scope, {
+      referenceDate,
+      period,
+    }),
+    quality: qualitySummary(dataset, input.scope, referenceDate, period),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -994,11 +1006,10 @@ export function buildInvestmentsReadModel(
     summary.period,
     [...investmentLedgerClasses],
   );
-  const ytdPeriod = resolvePeriodSelection({ preset: "ytd", referenceDate });
-  const ytdInvestmentRows = scopedTransactions(
+  const periodCashFlowRows = scopedTransactions(
     dataset,
     input.scope,
-    ytdPeriod,
+    summary.period,
     ["dividend", "interest", "transfer_internal"],
   ).filter((transaction) => isTransactionResolvedForAnalytics(transaction));
   const accountAllocation = aggregateAmountRows(
@@ -1021,7 +1032,10 @@ export function buildInvestmentsReadModel(
     }),
   );
   const processedRows = sortTransactionsNewestFirst(
-    filterTransactionsByScope(dataset, input.scope).filter((transaction) => {
+    filterTransactionsByPeriod(
+      filterTransactionsByScope(dataset, input.scope),
+      summary.period,
+    ).filter((transaction) => {
       const account = dataset.accounts.find(
         (candidate) => candidate.id === transaction.accountId,
       );
@@ -1044,30 +1058,30 @@ export function buildInvestmentsReadModel(
         input.scope,
         input.displayCurrency,
         "portfolio_market_value_current",
-        { referenceDate },
+        { referenceDate, period: summary.period },
       ),
       unrealized: buildMetricResult(
         dataset,
         input.scope,
         input.displayCurrency,
         "portfolio_unrealized_pnl_current",
-        { referenceDate },
+        { referenceDate, period: summary.period },
       ),
     },
-    dividendsYtd: sumTransactionAmounts(
-      ytdInvestmentRows.filter(
+    dividendsPeriod: sumTransactionAmounts(
+      periodCashFlowRows.filter(
         (transaction) => transaction.transactionClass === "dividend",
       ),
       (transaction) => new Decimal(transaction.amountBaseEur),
     ),
-    interestYtd: sumTransactionAmounts(
-      ytdInvestmentRows.filter(
+    interestPeriod: sumTransactionAmounts(
+      periodCashFlowRows.filter(
         (transaction) => transaction.transactionClass === "interest",
       ),
       (transaction) => new Decimal(transaction.amountBaseEur),
     ),
-    netContributionsYtd: sumTransactionAmounts(
-      ytdInvestmentRows.filter(
+    netContributionsPeriod: sumTransactionAmounts(
+      periodCashFlowRows.filter(
         (transaction) => transaction.transactionClass === "transfer_internal",
       ),
       (transaction) => new Decimal(transaction.amountBaseEur),

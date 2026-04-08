@@ -6678,6 +6678,108 @@ test("investments read model keeps resolved broker transfers visible in the inve
   assert.equal(model.investmentRows[0]?.transactionClass, "transfer_internal");
 });
 
+test("investments read model uses the selected period for income and contribution totals", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-period-totals",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createTransaction({
+        id: "dividend-march",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-03-15",
+        postedDate: "2026-03-15",
+        amountOriginal: "10.00",
+        amountBaseEur: "10.00",
+        descriptionRaw: "March dividend",
+        descriptionClean: "MARCH DIVIDEND",
+        transactionClass: "dividend",
+        categoryCode: "dividend_income",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "dividend-april",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "20.00",
+        amountBaseEur: "20.00",
+        descriptionRaw: "April dividend",
+        descriptionClean: "APRIL DIVIDEND",
+        transactionClass: "dividend",
+        categoryCode: "dividend_income",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "interest-april",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-03",
+        postedDate: "2026-04-03",
+        amountOriginal: "5.00",
+        amountBaseEur: "5.00",
+        descriptionRaw: "April interest",
+        descriptionClean: "APRIL INTEREST",
+        transactionClass: "interest",
+        categoryCode: "interest_income",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "transfer-april",
+        accountId: investmentAccount.id,
+        accountEntityId: investmentAccount.entityId,
+        economicEntityId: investmentAccount.entityId,
+        transactionDate: "2026-04-01",
+        postedDate: "2026-04-01",
+        amountOriginal: "100.00",
+        amountBaseEur: "100.00",
+        descriptionRaw: "Capital contribution",
+        descriptionClean: "CAPITAL CONTRIBUTION",
+        transactionClass: "transfer_internal",
+        categoryCode: "uncategorized_investment",
+        needsReview: false,
+      }),
+    ],
+  });
+
+  const mtdModel = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-05",
+    }),
+    referenceDate: "2026-04-05",
+  });
+  const ytdModel = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "ytd",
+      referenceDate: "2026-04-05",
+    }),
+    referenceDate: "2026-04-05",
+  });
+
+  assert.equal(mtdModel.dividendsPeriod, "20.00");
+  assert.equal(mtdModel.interestPeriod, "5.00");
+  assert.equal(mtdModel.netContributionsPeriod, "100.00");
+  assert.equal(mtdModel.investmentRows.length, 3);
+
+  assert.equal(ytdModel.dividendsPeriod, "30.00");
+  assert.equal(ytdModel.interestPeriod, "5.00");
+  assert.equal(ytdModel.netContributionsPeriod, "100.00");
+  assert.equal(ytdModel.investmentRows.length, 4);
+});
+
 test("investments read model exposes unresolved investment items outside the selected period", () => {
   const investmentAccount = createAccount({
     id: "brokerage-3",
@@ -6724,7 +6826,7 @@ test("investments read model exposes unresolved investment items outside the sel
   );
 });
 
-test("investments read model keeps processed rows available outside the selected period", () => {
+test("investments read model filters processed rows to the selected period", () => {
   const investmentAccount = createAccount({
     id: "brokerage-processed",
     accountType: "brokerage_account",
@@ -6763,11 +6865,7 @@ test("investments read model keeps processed rows available outside the selected
   });
 
   assert.equal(model.investmentRows.length, 0);
-  assert.equal(model.processedRows.length, 1);
-  assert.equal(
-    model.processedRows[0]?.descriptionRaw,
-    "ADVANCED MICRO DEVICES @ 2",
-  );
+  assert.equal(model.processedRows.length, 0);
 });
 
 test("unresolved investment rows do not contribute to rebuilt positions or YTD investment KPIs", () => {
@@ -6880,8 +6978,79 @@ test("unresolved investment rows do not contribute to rebuilt positions or YTD i
   );
 
   assert.equal(rebuilt.positions.length, 0);
-  assert.equal(model.dividendsYtd, "0.00");
+  assert.equal(model.dividendsPeriod, "0.00");
   assert.equal(model.unresolved.length, 2);
+});
+
+test("current-value metrics compare against the selected period start", () => {
+  const cashAccount = createAccount({
+    id: "cash-period-account",
+    displayName: "Cash Period Account",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: cashAccount.id,
+        asOfDate: "2025-12-31",
+        balanceOriginal: "1000.00",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "1000.00",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+      {
+        accountId: cashAccount.id,
+        asOfDate: "2026-03-31",
+        balanceOriginal: "1500.00",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "1500.00",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+      {
+        accountId: cashAccount.id,
+        asOfDate: "2026-04-03",
+        balanceOriginal: "1800.00",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "1800.00",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+  });
+
+  const mtdMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    {
+      referenceDate: "2026-04-03",
+      period: resolvePeriodSelection({
+        preset: "mtd",
+        referenceDate: "2026-04-03",
+      }),
+    },
+  );
+  const ytdMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    {
+      referenceDate: "2026-04-03",
+      period: resolvePeriodSelection({
+        preset: "ytd",
+        referenceDate: "2026-04-03",
+      }),
+    },
+  );
+
+  assert.equal(mtdMetric.deltaDisplay, "300.00");
+  assert.equal(ytdMetric.deltaDisplay, "800.00");
+  assert.equal(mtdMetric.comparisonValueBaseEur, "1500.00");
+  assert.equal(ytdMetric.comparisonValueBaseEur, "1000.00");
 });
 
 test("investments read model derives holdings and KPI deltas from live resolved transactions instead of stale snapshots", () => {

@@ -328,6 +328,21 @@ export default async function InvestmentsPage({
   const fundsSummary = buildHoldingBucketSummary(fundHoldings, "Funds");
   const stocksSummary = buildHoldingBucketSummary(stockHoldings, "Stocks & ETF");
   const cashAllocationPercent = safePercent(cashValueEur, totalPortfolioValueEur);
+  const periodLabel =
+    model.period.preset === "ytd"
+      ? "YTD"
+      : model.period.preset === "mtd"
+        ? "MTD"
+        : "Selected Period";
+  const comparisonLabel =
+    model.period.preset === "ytd"
+      ? "year-start"
+      : model.period.preset === "mtd"
+        ? "month-start"
+        : formatDate(model.period.start);
+  const periodInvestmentIncome = new Decimal(model.dividendsPeriod).plus(
+    model.interestPeriod,
+  );
   const processedLedgerColumns =
     "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)";
   const unresolvedLedgerColumns =
@@ -337,11 +352,7 @@ export default async function InvestmentsPage({
     <AppShell
       pathname="/investments"
       scopeOptions={model.scopeOptions}
-      state={{
-        scopeParam: model.scopeParam,
-        currency: model.currency,
-        period: model.period.preset,
-      }}
+      state={model.navigationState}
     >
       <div className="dashboard-grid">
         <div className="page-header">
@@ -369,7 +380,7 @@ export default async function InvestmentsPage({
                   ? "accent"
                   : "neutral"
               }
-              subtitle={`${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs month-end`}
+              subtitle={`${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs ${comparisonLabel}`}
               chartValues={model.holdings.holdings.map((holding) =>
                 Number(holding.currentValueEur ?? 0),
               )}
@@ -383,30 +394,32 @@ export default async function InvestmentsPage({
                   ? "accent"
                   : "neutral"
               }
-              subtitle="Current open-position P/L"
+              subtitle={`${formatCurrency(model.metrics.unrealized.deltaDisplay, model.currency)} vs ${comparisonLabel}`}
               chartValues={model.holdings.holdings.map((holding) =>
                 Number(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
               )}
             />
             <InvestmentMetricCard
-              label="Dividends YTD"
-              value={formatDisplayAmount(model.dividendsYtd)}
+              label={`Investment Income ${periodLabel}`}
+              value={formatDisplayAmount(periodInvestmentIncome.toFixed(2))}
               badge="Income"
-              subtitle="Investment income year to date"
+              subtitle={`${formatDisplayAmount(model.dividendsPeriod)} dividends + ${formatDisplayAmount(model.interestPeriod)} interest`}
               chartValues={model.investmentRows
-                .filter((row) => row.transactionClass === "dividend")
+                .filter((row) =>
+                  ["dividend", "interest"].includes(row.transactionClass),
+                )
                 .map((row) => Number(row.amountBaseEur))}
             />
             <InvestmentMetricCard
               label="Brokerage Cash"
               value={formatDisplayAmount(model.holdings.brokerageCashEur)}
-              badge={formatDisplayAmount(model.netContributionsYtd)}
+              badge={formatDisplayAmount(model.netContributionsPeriod)}
               subtitle="Latest broker cash balance"
               chartValues={[
                 Number(model.holdings.brokerageCashEur),
-                Number(model.dividendsYtd),
-                Number(model.interestYtd),
-                Number(model.netContributionsYtd),
+                Number(model.dividendsPeriod),
+                Number(model.interestPeriod),
+                Number(model.netContributionsPeriod),
               ]}
             />
           </div>

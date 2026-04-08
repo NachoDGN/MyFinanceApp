@@ -383,6 +383,7 @@ export function TimelinePanel({
   actions,
   transactions,
   currency,
+  viewAllHref,
 }: {
   title: string;
   actions?: ReactNode;
@@ -394,6 +395,7 @@ export function TimelinePanel({
     positive?: boolean;
   }>;
   currency: string;
+  viewAllHref?: string;
 }) {
   return (
     <div className="details-section">
@@ -441,7 +443,7 @@ export function TimelinePanel({
           Showing last {transactions.length} transactions
         </span>
         <a
-          href={`/transactions?currency=${currency}`}
+          href={viewAllHref ?? `/transactions?currency=${currency}`}
           className="view-all-link"
         >
           View Ledger →

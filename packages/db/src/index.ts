@@ -27,10 +27,12 @@ import {
   type AddOpeningPositionInput,
   type ApplyRuleDraftInput,
   type AuditEvent,
+  type CreateEntityInput,
   type CreateAccountInput,
   type CreateRuleInput,
   type CreateTemplateInput,
   type DeleteAccountInput,
+  type DeleteEntityInput,
   type DeleteHoldingAdjustmentInput,
   type DeleteTemplateInput,
   type DomainDataset,
@@ -43,6 +45,8 @@ import {
   type ResetWorkspaceInput,
   type ResetWorkspaceResult,
   type Transaction,
+  type UpdateEntityInput,
+  type UpdateWorkspaceProfileInput,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
 import {
@@ -3094,6 +3098,368 @@ class SqlFinanceRepository implements FinanceRepository {
 
   async getDataset(): Promise<DomainDataset> {
     return withSeededUserContext((sql) => loadDatasetForUser(sql, this.userId));
+  }
+
+  async updateWorkspaceProfile(input: UpdateWorkspaceProfileInput) {
+    return withSeededUserContext(async (sql) => {
+      const beforeRows = await sql`
+        select *
+        from public.profiles
+        where id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = beforeRows[0];
+      if (!beforeRow) {
+        throw new Error(`Profile ${this.userId} was not found.`);
+      }
+
+      const afterJson = {
+        ...mapFromSql<DomainDataset["profile"]>(beforeRow),
+        displayName: input.profile.displayName,
+        defaultBaseCurrency: input.profile.defaultBaseCurrency,
+        timezone: input.profile.timezone,
+        workspaceSettingsJson: input.profile.workspaceSettingsJson,
+      };
+
+      if (input.apply) {
+        await sql`
+          update public.profiles
+          set
+            display_name = ${input.profile.displayName},
+            default_base_currency = ${input.profile.defaultBaseCurrency},
+            timezone = ${input.profile.timezone},
+            workspace_settings_json = ${serializeJson(
+              sql,
+              input.profile.workspaceSettingsJson,
+            )}::jsonb
+          where id = ${this.userId}
+        `;
+
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "profile.update",
+          "profile",
+          this.userId,
+          mapFromSql<DomainDataset["profile"]>(beforeRow) as unknown as Record<
+            string,
+            unknown
+          >,
+          afterJson as unknown as Record<string, unknown>,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: "Updated workspace profile defaults.",
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        profileId: this.userId,
+      };
+    });
+  }
+
+  async createEntity(input: CreateEntityInput) {
+    return withSeededUserContext(async (sql) => {
+      const existingSlugRows = await sql`
+        select id
+        from public.entities
+        where user_id = ${this.userId}
+          and slug = ${input.entity.slug}
+        limit 1
+      `;
+      if (existingSlugRows[0]) {
+        throw new Error(`Entity slug "${input.entity.slug}" is already in use.`);
+      }
+
+      if (input.entity.entityKind === "personal") {
+        const personalRows = await sql`
+          select id
+          from public.entities
+          where user_id = ${this.userId}
+            and entity_kind = 'personal'
+          limit 1
+        `;
+        if (personalRows[0]) {
+          throw new Error(
+            "A personal entity already exists. Add companies instead of creating a second personal owner.",
+          );
+        }
+      }
+
+      const entityId = randomUUID();
+      const afterJson = {
+        id: entityId,
+        userId: this.userId,
+        slug: input.entity.slug,
+        displayName: input.entity.displayName,
+        legalName: input.entity.legalName ?? null,
+        entityKind: input.entity.entityKind,
+        baseCurrency: input.entity.baseCurrency,
+        active: true,
+      };
+
+      if (input.apply) {
+        await sql`
+          insert into public.entities (
+            id,
+            user_id,
+            slug,
+            display_name,
+            legal_name,
+            entity_kind,
+            base_currency,
+            active
+          ) values (
+            ${entityId},
+            ${this.userId},
+            ${input.entity.slug},
+            ${input.entity.displayName},
+            ${input.entity.legalName ?? null},
+            ${input.entity.entityKind},
+            ${input.entity.baseCurrency},
+            true
+          )
+        `;
+
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "entities.create",
+          "entity",
+          entityId,
+          null,
+          afterJson,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: `Created entity ${input.entity.displayName}.`,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        entityId,
+      };
+    });
+  }
+
+  async updateEntity(input: UpdateEntityInput) {
+    return withSeededUserContext(async (sql) => {
+      const beforeRows = await sql`
+        select *
+        from public.entities
+        where id = ${input.entityId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = beforeRows[0];
+      if (!beforeRow) {
+        throw new Error(`Entity ${input.entityId} not found.`);
+      }
+
+      const nextSlug = input.patch.slug ?? beforeRow.slug;
+      if (nextSlug !== beforeRow.slug) {
+        const duplicateSlugRows = await sql`
+          select id
+          from public.entities
+          where user_id = ${this.userId}
+            and slug = ${nextSlug}
+            and id <> ${input.entityId}
+          limit 1
+        `;
+        if (duplicateSlugRows[0]) {
+          throw new Error(`Entity slug "${nextSlug}" is already in use.`);
+        }
+      }
+
+      const afterJson = {
+        ...mapFromSql<DomainDataset["entities"][number]>(beforeRow),
+        slug: nextSlug,
+        displayName: input.patch.displayName ?? beforeRow.display_name,
+        legalName:
+          Object.prototype.hasOwnProperty.call(input.patch, "legalName")
+            ? input.patch.legalName ?? null
+            : beforeRow.legal_name,
+        baseCurrency: input.patch.baseCurrency ?? beforeRow.base_currency,
+      };
+
+      if (input.apply) {
+        await sql`
+          update public.entities
+          set
+            slug = ${nextSlug},
+            display_name = ${input.patch.displayName ?? beforeRow.display_name},
+            legal_name = ${
+              Object.prototype.hasOwnProperty.call(input.patch, "legalName")
+                ? input.patch.legalName ?? null
+                : beforeRow.legal_name
+            },
+            base_currency = ${input.patch.baseCurrency ?? beforeRow.base_currency}
+          where id = ${input.entityId}
+            and user_id = ${this.userId}
+        `;
+
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "entities.update",
+          "entity",
+          input.entityId,
+          mapFromSql<DomainDataset["entities"][number]>(beforeRow) as unknown as Record<
+            string,
+            unknown
+          >,
+          afterJson as unknown as Record<string, unknown>,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: `Updated entity ${afterJson.displayName}.`,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        entityId: input.entityId,
+      };
+    });
+  }
+
+  async deleteEntity(input: DeleteEntityInput) {
+    return withSeededUserContext(async (sql) => {
+      const beforeRows = await sql`
+        select *
+        from public.entities
+        where id = ${input.entityId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = beforeRows[0];
+      if (!beforeRow) {
+        throw new Error(`Entity ${input.entityId} not found.`);
+      }
+      if (beforeRow.entity_kind === "personal") {
+        throw new Error(
+          "The personal entity cannot be deleted. Keep one personal owner and add or remove company entities around it.",
+        );
+      }
+
+      const blockers = await sql`
+        with target as (
+          select ${input.entityId}::uuid as entity_id
+        )
+        select
+          (select count(*)::int from public.accounts where entity_id = target.entity_id) as accounts,
+          (
+            select count(*)::int
+            from public.transactions
+            where economic_entity_id = target.entity_id
+               or account_entity_id = target.entity_id
+          ) as transactions,
+          (
+            select count(*)::int
+            from public.holding_adjustments
+            where entity_id = target.entity_id
+          ) as holding_adjustments,
+          (
+            select count(*)::int
+            from public.investment_positions
+            where entity_id = target.entity_id
+          ) as investment_positions,
+          (
+            select count(*)::int
+            from public.daily_portfolio_snapshots
+            where entity_id = target.entity_id
+          ) as portfolio_snapshots
+        from target
+      `;
+      const blockerRow = blockers[0] as Record<string, number>;
+      const activeBlockers = Object.entries(blockerRow).filter(
+        ([, count]) => Number(count) > 0,
+      );
+      if (activeBlockers.length > 0) {
+        throw new Error(
+          `Entity cannot be removed because it is still referenced by ${activeBlockers
+            .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`)
+            .join(", ")}.`,
+        );
+      }
+
+      if (input.apply) {
+        await sql`
+          delete from public.entities
+          where id = ${input.entityId}
+            and user_id = ${this.userId}
+        `;
+
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "entities.delete",
+          "entity",
+          input.entityId,
+          mapFromSql<DomainDataset["entities"][number]>(beforeRow) as unknown as Record<
+            string,
+            unknown
+          >,
+          null,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: `Removed entity ${beforeRow.display_name}.`,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        entityId: input.entityId,
+      };
+    });
   }
 
   async createAccount(input: CreateAccountInput) {

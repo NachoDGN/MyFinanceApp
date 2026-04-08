@@ -102,6 +102,7 @@ export interface Profile {
   defaultBaseCurrency: CurrencyCode;
   timezone: string;
   createdAt: string;
+  workspaceSettingsJson: Record<string, unknown>;
 }
 
 export interface Entity {
@@ -654,6 +655,42 @@ export interface ImportExecutionInput {
 
 export interface CreateAccountInput {
   account: Omit<Account, "id" | "userId" | "lastImportedAt" | "createdAt">;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface UpdateWorkspaceProfileInput {
+  profile: Pick<Profile, "displayName" | "defaultBaseCurrency" | "timezone"> & {
+    workspaceSettingsJson: Record<string, unknown>;
+  };
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface CreateEntityInput {
+  entity: Pick<
+    Entity,
+    "slug" | "displayName" | "legalName" | "entityKind" | "baseCurrency"
+  >;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface UpdateEntityInput {
+  entityId: string;
+  patch: Partial<
+    Pick<Entity, "slug" | "displayName" | "legalName" | "baseCurrency">
+  >;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface DeleteEntityInput {
+  entityId: string;
   actorName: string;
   sourceChannel: AuditSourceChannel;
   apply: boolean;

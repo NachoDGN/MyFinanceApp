@@ -11,11 +11,7 @@ export default async function HomePage({
     <DashboardView
       pathname="/"
       scopeOptions={model.scopeOptions}
-      state={{
-        scopeParam: model.scopeParam,
-        currency: model.currency,
-        period: model.period.preset,
-      }}
+      state={model.navigationState}
       model={model}
     />
   );

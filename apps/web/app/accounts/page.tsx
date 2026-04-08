@@ -45,11 +45,7 @@ export default async function AccountsPage({
     <AppShell
       pathname="/accounts"
       scopeOptions={model.scopeOptions}
-      state={{
-        scopeParam: model.scopeParam,
-        currency: model.currency,
-        period: model.period.preset,
-      }}
+      state={model.navigationState}
     >
       <div className="dashboard-grid">
         <div className="page-header">
@@ -63,11 +59,22 @@ export default async function AccountsPage({
         </div>
 
         <AccountsWorkbench
-          entities={model.dataset.entities}
+          entities={model.dataset.entities.filter((entity) => entity.active)}
           templates={model.dataset.templates}
+          defaultCurrency={model.dataset.profile.defaultBaseCurrency}
+          defaultCashStaleAfterDays={
+            model.workspaceSettings.defaultCashStaleAfterDays
+          }
+          defaultInvestmentStaleAfterDays={
+            model.workspaceSettings.defaultInvestmentStaleAfterDays
+          }
           accounts={model.accounts.accounts.map((account) => {
             const snapshot = snapshots.get(account.id);
             const usageCount = blockingUsageCounts.get(account.id) ?? 0;
+            const workspaceDefaultThreshold =
+              account.assetDomain === "investment"
+                ? model.workspaceSettings.defaultInvestmentStaleAfterDays
+                : model.workspaceSettings.defaultCashStaleAfterDays;
             return {
               id: account.id,
               displayName: account.displayName,
@@ -86,7 +93,7 @@ export default async function AccountsPage({
               lastImport: account.lastImportedAt?.slice(0, 10) ?? "Never",
               staleThreshold: account.staleAfterDays
                 ? `${account.staleAfterDays} days`
-                : "—",
+                : `Workspace default · ${workspaceDefaultThreshold} days`,
               setupStatus: account.importTemplateDefaultId
                 ? "Template assigned"
                 : "Setup incomplete",

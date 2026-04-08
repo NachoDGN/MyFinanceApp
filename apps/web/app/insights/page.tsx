@@ -13,11 +13,7 @@ export default async function InsightsPage({
     <AppShell
       pathname="/insights"
       scopeOptions={model.scopeOptions}
-      state={{
-        scopeParam: model.scopeParam,
-        currency: model.currency,
-        period: model.period.preset,
-      }}
+      state={model.navigationState}
     >
       <div className="dashboard-grid">
         <div className="page-header">

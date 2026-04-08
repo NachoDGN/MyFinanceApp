@@ -28,6 +28,7 @@ import { NEW_SPREADSHEET_TEMPLATE_ID } from "./import-constants";
 
 const repository = createFinanceRepository();
 const domain = new FinanceDomainService(repository);
+const entitySlugPattern = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 
 const importFieldsSchema = z.object({
   accountId: z.string(),
@@ -117,6 +118,65 @@ const promptProfileUpdateSchema = z.object({
   sectionsJson: z.string().min(2),
 });
 
+function isSupportedTimeZone(value: string) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const workspaceProfileSchema = z.object({
+  displayName: z.string().trim().min(1),
+  defaultBaseCurrency: z.enum(["EUR", "USD"]).default("EUR"),
+  timezone: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(isSupportedTimeZone, "Choose a valid IANA timezone."),
+  preferredScope: z.string().trim().min(1).default("consolidated"),
+  defaultDisplayCurrency: z.enum(["EUR", "USD"]).default("EUR"),
+  defaultPeriodPreset: z.enum(["mtd", "ytd"]).default("mtd"),
+  defaultCashStaleAfterDays: z.coerce.number().int().min(1).max(365).default(7),
+  defaultInvestmentStaleAfterDays: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .default(3),
+});
+
+const entitySchema = z.object({
+  slug: z
+    .string()
+    .trim()
+    .min(1)
+    .regex(
+      entitySlugPattern,
+      "Use lowercase letters, numbers, hyphens, or underscores for the entity slug.",
+    ),
+  displayName: z.string().trim().min(1),
+  legalName: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+  entityKind: z.enum(["personal", "company"]).default("company"),
+  baseCurrency: z.enum(["EUR", "USD"]).default("EUR"),
+});
+
+const entityUpdateSchema = entitySchema
+  .pick({
+    slug: true,
+    displayName: true,
+    legalName: true,
+    baseCurrency: true,
+  })
+  .extend({
+    entityId: z.string().uuid(),
+  });
+
 function toAssetDomain(
   accountType: z.infer<typeof accountSchema>["accountType"],
 ) {
@@ -132,6 +192,21 @@ function parseAliases(value: string) {
         .filter(Boolean),
     ),
   ];
+}
+
+function revalidateWorkspacePaths() {
+  revalidatePath("/");
+  revalidatePath("/dashboard");
+  revalidatePath("/accounts");
+  revalidatePath("/imports");
+  revalidatePath("/income");
+  revalidatePath("/insights");
+  revalidatePath("/investments");
+  revalidatePath("/rules");
+  revalidatePath("/settings");
+  revalidatePath("/spending");
+  revalidatePath("/templates");
+  revalidatePath("/transactions");
 }
 
 async function withUploadedImport<T>(
@@ -407,6 +482,84 @@ export async function createAccountAction(
   revalidatePath("/accounts");
   revalidatePath("/imports");
   revalidatePath("/");
+  return result;
+}
+
+export async function updateWorkspaceProfileAction(
+  input: z.input<typeof workspaceProfileSchema>,
+) {
+  const profile = workspaceProfileSchema.parse(input);
+  const result = await domain.updateWorkspaceProfile({
+    profile: {
+      displayName: profile.displayName,
+      defaultBaseCurrency: profile.defaultBaseCurrency,
+      timezone: profile.timezone,
+      workspaceSettingsJson: {
+        preferredScope: profile.preferredScope,
+        defaultDisplayCurrency: profile.defaultDisplayCurrency,
+        defaultPeriodPreset: profile.defaultPeriodPreset,
+        defaultCashStaleAfterDays: profile.defaultCashStaleAfterDays,
+        defaultInvestmentStaleAfterDays:
+          profile.defaultInvestmentStaleAfterDays,
+      },
+    },
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function createEntityAction(
+  input: z.input<typeof entitySchema>,
+) {
+  const entity = entitySchema.parse(input);
+  const result = await domain.createEntity({
+    entity: {
+      slug: entity.slug,
+      displayName: entity.displayName,
+      legalName: entity.legalName,
+      entityKind: entity.entityKind,
+      baseCurrency: entity.baseCurrency,
+    },
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function updateEntityAction(
+  input: z.input<typeof entityUpdateSchema>,
+) {
+  const entity = entityUpdateSchema.parse(input);
+  const result = await domain.updateEntity({
+    entityId: entity.entityId,
+    patch: {
+      slug: entity.slug,
+      displayName: entity.displayName,
+      legalName: entity.legalName,
+      baseCurrency: entity.baseCurrency,
+    },
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function deleteEntityAction(entityId: string) {
+  const parsed = z.string().uuid().parse(entityId);
+  const result = await domain.deleteEntity({
+    entityId: parsed,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
   return result;
 }
 
