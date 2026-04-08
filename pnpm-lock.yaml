@@ -65,6 +65,9 @@ importers:
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@myfinance/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@myfinance/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data
