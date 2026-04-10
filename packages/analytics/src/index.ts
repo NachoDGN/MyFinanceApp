@@ -27,6 +27,7 @@ import {
   resolveScopeEntityIds,
   shiftIsoDate,
   startOfMonthIso,
+  startOfTrailingMonthsIso,
   todayIso,
 } from "@myfinance/domain";
 import { metricRegistry } from "./registry";
@@ -76,6 +77,41 @@ function amountMagnitudeEur(transaction: Transaction) {
   return new Decimal(transaction.amountBaseEur).abs();
 }
 
+function normalizeMatchingText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+}
+
+function humanizeTransactionClass(transactionClass: Transaction["transactionClass"]) {
+  return transactionClass
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function isUnmatchedCreditCardSettlement(transaction: Transaction) {
+  if (transaction.transactionClass !== "transfer_internal") {
+    return false;
+  }
+
+  if (
+    transaction.relatedAccountId ||
+    transaction.relatedTransactionId ||
+    transaction.transferMatchStatus === "matched"
+  ) {
+    return false;
+  }
+
+  const normalizedText = normalizeMatchingText(
+    `${transaction.descriptionRaw} ${transaction.descriptionClean}`,
+  );
+  return (
+    normalizedText.includes("LIQUIDACION") &&
+    normalizedText.includes("TARJETAS DE CREDITO")
+  );
+}
+
 function isIncomeLike(transaction: Transaction) {
   return ["income", "dividend", "interest"].includes(
     transaction.transactionClass,
@@ -95,20 +131,177 @@ function isExcludedIncome(transaction: Transaction) {
 }
 
 function isSpendingLike(transaction: Transaction) {
-  return ["expense", "fee", "refund"].includes(transaction.transactionClass);
+  return (
+    [
+      "expense",
+      "fee",
+      "refund",
+      "loan_principal_payment",
+      "loan_interest_payment",
+    ].includes(transaction.transactionClass) ||
+    isUnmatchedCreditCardSettlement(transaction)
+  );
 }
 
-function isExcludedSpending(transaction: Transaction) {
-  return [
-    "transfer_internal",
-    "transfer_external",
-    "investment_trade_buy",
-    "investment_trade_sell",
-    "owner_draw",
-    "reimbursement",
-    "loan_principal_payment",
-    "fx_conversion",
-  ].includes(transaction.transactionClass);
+function incomeContributionEur(transaction: Transaction) {
+  if (!isIncomeLike(transaction) || isExcludedIncome(transaction)) {
+    return null;
+  }
+
+  return new Decimal(transaction.amountBaseEur);
+}
+
+function spendingContributionEur(transaction: Transaction) {
+  if (!isSpendingLike(transaction)) {
+    return null;
+  }
+
+  if (transaction.transactionClass === "refund") {
+    return new Decimal(transaction.amountBaseEur).neg();
+  }
+
+  return amountMagnitudeEur(transaction);
+}
+
+function resolveSpendingCategoryBucket(
+  dataset: DomainDataset,
+  transaction: Transaction,
+) {
+  if (isUnmatchedCreditCardSettlement(transaction)) {
+    return {
+      categoryCode: "__credit_card_payments",
+      label: "Credit Card Payments",
+      categorized: false,
+    };
+  }
+
+  if (transaction.categoryCode) {
+    return {
+      categoryCode: transaction.categoryCode,
+      label:
+        dataset.categories.find(
+          (category) => category.code === transaction.categoryCode,
+        )?.displayName ??
+        transaction.categoryCode,
+      categorized: !transaction.categoryCode.startsWith("uncategorized"),
+    };
+  }
+
+  if (transaction.transactionClass === "loan_principal_payment") {
+    return {
+      categoryCode: "__loan_principal_payment",
+      label: "Loan Principal",
+      categorized: false,
+    };
+  }
+
+  if (transaction.transactionClass === "loan_interest_payment") {
+    return {
+      categoryCode: "__loan_interest_payment",
+      label: "Loan Interest",
+      categorized: false,
+    };
+  }
+
+  if (transaction.transactionClass === "fee") {
+    return {
+      categoryCode: "__fees",
+      label: "Fees",
+      categorized: false,
+    };
+  }
+
+  if (transaction.transactionClass === "refund") {
+    return {
+      categoryCode: "__refunds",
+      label: "Refunds",
+      categorized: false,
+    };
+  }
+
+  return {
+    categoryCode: `__${transaction.transactionClass}`,
+    label: humanizeTransactionClass(transaction.transactionClass),
+    categorized: false,
+  };
+}
+
+function resolveSpendingCounterpartyLabel(transaction: Transaction) {
+  if (isUnmatchedCreditCardSettlement(transaction)) {
+    return "Credit Card Settlement";
+  }
+
+  if (transaction.merchantNormalized?.trim()) {
+    return transaction.merchantNormalized.trim();
+  }
+
+  if (transaction.counterpartyName?.trim()) {
+    return transaction.counterpartyName.trim();
+  }
+
+  return transaction.descriptionClean || transaction.descriptionRaw;
+}
+
+function shiftMonthIso(value: string, months: number) {
+  const date = new Date(`${startOfMonthIso(value)}T00:00:00Z`);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildTrailingMonthlyFlowSeries(
+  dataset: DomainDataset,
+  scope: Scope,
+  referenceDate: string,
+  monthCount: number,
+) {
+  const seriesStart = startOfTrailingMonthsIso(referenceDate, monthCount);
+  const seriesEnd = startOfMonthIso(referenceDate);
+  const monthRows = new Map<
+    string,
+    {
+      month: string;
+      incomeEur: Decimal;
+      spendingEur: Decimal;
+    }
+  >();
+
+  for (let month = seriesStart; month <= seriesEnd; month = shiftMonthIso(month, 1)) {
+    monthRows.set(month, {
+      month,
+      incomeEur: new Decimal(0),
+      spendingEur: new Decimal(0),
+    });
+  }
+
+  const resolvedTransactions = filterTransactionsByScope(dataset, scope).filter(
+    (transaction) =>
+      isTransactionResolvedForAnalytics(transaction) &&
+      transaction.transactionDate >= seriesStart &&
+      transaction.transactionDate <= referenceDate,
+  );
+
+  for (const transaction of resolvedTransactions) {
+    const month = startOfMonthIso(transaction.transactionDate);
+    const row = monthRows.get(month);
+    if (!row) continue;
+
+    const income = incomeContributionEur(transaction);
+    if (income) {
+      row.incomeEur = row.incomeEur.plus(income);
+    }
+
+    const spending = spendingContributionEur(transaction);
+    if (spending) {
+      row.spendingEur = row.spendingEur.plus(spending);
+    }
+  }
+
+  return [...monthRows.values()].map((row) => ({
+    month: row.month,
+    incomeEur: row.incomeEur.toFixed(2),
+    spendingEur: row.spendingEur.toFixed(2),
+    operatingNetEur: row.incomeEur.minus(row.spendingEur).toFixed(2),
+  }));
 }
 
 function currentCashTotal(
@@ -200,18 +393,17 @@ function flowMetric(
 
   if (kind === "income") {
     return transactions
-      .filter((row) => isIncomeLike(row) && !isExcludedIncome(row))
-      .reduce((sum, row) => sum.plus(row.amountBaseEur), new Decimal(0))
+      .reduce((sum, row) => {
+        const contribution = incomeContributionEur(row);
+        return contribution ? sum.plus(contribution) : sum;
+      }, new Decimal(0))
       .toFixed(2);
   }
 
   return transactions
-    .filter((row) => isSpendingLike(row) && !isExcludedSpending(row))
     .reduce((sum, row) => {
-      if (row.transactionClass === "refund") {
-        return sum.minus(row.amountBaseEur);
-      }
-      return sum.plus(amountMagnitudeEur(row));
+      const contribution = spendingContributionEur(row);
+      return contribution ? sum.plus(contribution) : sum;
     }, new Decimal(0))
     .toFixed(2);
 }
@@ -591,49 +783,13 @@ export function buildDashboardSummary(
     }),
   );
 
-  const entityIds = new Set(resolveScopeEntityIds(dataset, input.scope));
-  const monthStart = startOfMonthIso(period.start);
-  const monthEnd = startOfMonthIso(period.end);
-  const monthLimit = period.preset === "24m" ? 24 : 12;
-  const monthlySeries = dataset.monthlyCashFlowRollups
-    .filter(
-      (row) =>
-        entityIds.has(row.entityId) &&
-        row.month >= monthStart &&
-        row.month <= monthEnd,
-    )
-    .reduce<
-      Array<{
-        month: string;
-        incomeEur: string;
-        spendingEur: string;
-        operatingNetEur: string;
-      }>
-    >((rows, row) => {
-      const current = rows.find((item) => item.month === row.month);
-      if (current) {
-        current.incomeEur = new Decimal(current.incomeEur)
-          .plus(row.incomeEur)
-          .toFixed(2);
-        current.spendingEur = new Decimal(current.spendingEur)
-          .plus(row.spendingEur)
-          .toFixed(2);
-        current.operatingNetEur = new Decimal(current.operatingNetEur)
-          .plus(row.operatingNetEur)
-          .toFixed(2);
-        return rows;
-      }
-
-      rows.push({
-        month: row.month,
-        incomeEur: row.incomeEur,
-        spendingEur: row.spendingEur,
-        operatingNetEur: row.operatingNetEur,
-      });
-      return rows;
-    }, [])
-    .sort((left, right) => left.month.localeCompare(right.month))
-    .slice(-monthLimit);
+  const monthLimit = period.preset === "24m" ? 24 : 6;
+  const monthlySeries = buildTrailingMonthlyFlowSeries(
+    dataset,
+    input.scope,
+    referenceDate,
+    monthLimit,
+  );
 
   const scopedTransactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, input.scope),
@@ -643,38 +799,35 @@ export function buildDashboardSummary(
     isTransactionResolvedForAnalytics(transaction),
   );
   const spendingByCategory = [
-    ...new Map(
-      resolvedScopedTransactions
-        .filter((row) => row.transactionClass === "expense" && row.categoryCode)
-        .map((row) => [
-          row.categoryCode as string,
-          {
-            categoryCode: row.categoryCode as string,
-            label:
-              dataset.categories.find(
-                (category) => category.code === row.categoryCode,
-              )?.displayName ??
-              row.categoryCode ??
-              "Uncategorized",
-            amountEur: "0.00",
-          },
-        ]),
-    ).values(),
+    ...resolvedScopedTransactions
+      .reduce((totals, transaction) => {
+        const contribution = spendingContributionEur(transaction);
+        if (!contribution) {
+          return totals;
+        }
+
+        const bucket = resolveSpendingCategoryBucket(dataset, transaction);
+        const current = totals.get(bucket.categoryCode) ?? {
+          categoryCode: bucket.categoryCode,
+          label: bucket.label,
+          amountEur: new Decimal(0),
+        };
+
+        current.amountEur = current.amountEur.plus(contribution);
+        totals.set(bucket.categoryCode, current);
+        return totals;
+      }, new Map<
+        string,
+        { categoryCode: string; label: string; amountEur: Decimal }
+      >())
+      .values(),
   ]
     .map((row) => ({
-      ...row,
-      amountEur: resolvedScopedTransactions
-        .filter(
-          (transaction) =>
-            transaction.categoryCode === row.categoryCode &&
-            transaction.transactionClass === "expense",
-        )
-        .reduce(
-          (sum, transaction) => sum.plus(amountMagnitudeEur(transaction)),
-          new Decimal(0),
-        )
-        .toFixed(2),
+      categoryCode: row.categoryCode,
+      label: row.label,
+      amountEur: row.amountEur.toFixed(2),
     }))
+    .filter((row) => new Decimal(row.amountEur).gt(0))
     .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
 
   const holdings = buildLiveHoldingRows(dataset, input.scope, referenceDate).sort(
@@ -891,11 +1044,11 @@ export function buildSpendingReadModel(
   },
 ) {
   const summary = buildDashboardSummary(dataset, input);
-  const transactions = scopedTransactions(
-    dataset,
-    input.scope,
-    summary.period,
-    ["expense", "fee", "refund"],
+  const transactions = sortTransactionsNewestFirst(
+    filterTransactionsByPeriod(
+      filterTransactionsByScope(dataset, input.scope),
+      summary.period,
+    ).filter((transaction) => isSpendingLike(transaction)),
   );
   const resolvedTransactions = transactions.filter((transaction) =>
     isTransactionResolvedForAnalytics(transaction),
@@ -903,20 +1056,25 @@ export function buildSpendingReadModel(
   const spendMetric = findMetric(summary, "spending_mtd_total");
   const merchantRows = aggregateAmountRows(
     resolvedTransactions,
-    (transaction) =>
-      transaction.merchantNormalized ?? transaction.descriptionClean,
-    (transaction) =>
-      transaction.transactionClass === "refund"
-        ? new Decimal(transaction.amountBaseEur).neg()
-        : amountMagnitudeEur(transaction),
+    (transaction) => resolveSpendingCounterpartyLabel(transaction),
+    (transaction) => spendingContributionEur(transaction) ?? new Decimal(0),
   );
+  const uncategorizedSpendEur = resolvedTransactions
+    .reduce((sum, transaction) => {
+      const contribution = spendingContributionEur(transaction);
+      if (!contribution) {
+        return sum;
+      }
+
+      const bucket = resolveSpendingCategoryBucket(dataset, transaction);
+      return bucket.categorized ? sum : sum.plus(contribution);
+    }, new Decimal(0))
+    .toFixed(2);
   const coverage = spendMetric?.valueBaseEur
     ? new Decimal(1)
-        .minus(
-          new Decimal(summary.quality.unclassifiedAmountMtdEur).div(
-            Decimal.max(new Decimal(spendMetric.valueBaseEur), new Decimal(1)),
-          ),
-        )
+        .minus(new Decimal(uncategorizedSpendEur).div(
+          Decimal.max(new Decimal(spendMetric.valueBaseEur), new Decimal(1)),
+        ))
         .mul(100)
         .toFixed(2)
     : "100.00";
@@ -925,12 +1083,14 @@ export function buildSpendingReadModel(
     summary,
     transactions,
     spendMetric,
+    trendSeries: summary.monthlySeries,
     trailingThreeMonthAverage: averageMonthlySeries(
       summary.monthlySeries,
       "spendingEur",
       3,
     ),
     coverage,
+    uncategorizedSpendEur,
     topCategory: summary.spendingByCategory[0],
     merchantRows,
     topMerchant: merchantRows[0] ?? null,

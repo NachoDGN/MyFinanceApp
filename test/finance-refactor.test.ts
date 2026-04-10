@@ -5802,6 +5802,100 @@ test("spending read model respects the selected period when building merchant to
   ]);
 });
 
+test("spending read model treats unmatched card settlements and loan payments as spend without double counting matched transfers", () => {
+  const dataset = createDataset({
+    transactions: [
+      createTransaction({
+        id: "card-settlement",
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-120.00",
+        amountBaseEur: "-120.00",
+        transactionClass: "transfer_internal",
+        categoryCode: null,
+        merchantNormalized: null,
+        counterpartyName: null,
+        descriptionRaw: "Liquidacion de las tarjetas de credito del contrato 123",
+        descriptionClean:
+          "LIQUIDACION DE LAS TARJETAS DE CREDITO DEL CONTRATO 123",
+      }),
+      createTransaction({
+        id: "loan-payment",
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-80.00",
+        amountBaseEur: "-80.00",
+        transactionClass: "loan_principal_payment",
+        categoryCode: null,
+        merchantNormalized: "Loan Servicer",
+        descriptionRaw: "Mortgage payment",
+        descriptionClean: "MORTGAGE PAYMENT",
+      }),
+      createTransaction({
+        id: "groceries",
+        transactionDate: "2026-04-01",
+        postedDate: "2026-04-01",
+        amountOriginal: "-45.00",
+        amountBaseEur: "-45.00",
+        transactionClass: "expense",
+        categoryCode: "groceries",
+        merchantNormalized: "MARKET",
+        descriptionRaw: "Groceries",
+        descriptionClean: "GROCERIES",
+      }),
+      createTransaction({
+        id: "matched-transfer",
+        transactionDate: "2026-04-03",
+        postedDate: "2026-04-03",
+        amountOriginal: "-200.00",
+        amountBaseEur: "-200.00",
+        transactionClass: "transfer_internal",
+        categoryCode: null,
+        descriptionRaw: "Broker transfer",
+        descriptionClean: "BROKER TRANSFER",
+        relatedAccountId: "credit-card-account",
+        relatedTransactionId: "credit-card-transaction",
+        transferMatchStatus: "matched",
+      }),
+      createTransaction({
+        id: "prior-month",
+        transactionDate: "2026-03-15",
+        postedDate: "2026-03-15",
+        amountOriginal: "-60.00",
+        amountBaseEur: "-60.00",
+        transactionClass: "expense",
+        categoryCode: "groceries",
+        merchantNormalized: "MARKET",
+        descriptionRaw: "Groceries",
+        descriptionClean: "GROCERIES",
+      }),
+    ],
+  });
+
+  const model = buildSpendingReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-03",
+    }),
+    referenceDate: "2026-04-03",
+  });
+
+  assert.equal(model.spendMetric?.valueBaseEur, "245.00");
+  assert.equal(model.transactions.length, 3);
+  assert.equal(model.topCategory?.label, "Credit Card Payments");
+  assert.equal(model.topCategory?.amountEur, "120.00");
+  assert.deepEqual(model.merchantRows[0], {
+    label: "Credit Card Settlement",
+    amountEur: "120.00",
+  });
+  assert.equal(model.uncategorizedSpendEur, "200.00");
+  assert.equal(model.coverage, "18.37");
+  assert.equal(model.trendSeries.length, 6);
+  assert.equal(model.trendSeries.at(-1)?.spendingEur, "245.00");
+});
+
 test("template config builder converts typed inputs into stored JSON rules", () => {
   const config = createTemplateConfig({
     columnMappings: [
