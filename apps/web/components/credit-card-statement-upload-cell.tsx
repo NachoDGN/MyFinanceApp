@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 
 import { commitCreditCardStatementImportAction } from "../app/actions";
 import { NEW_SPREADSHEET_TEMPLATE_ID } from "../app/import-constants";
@@ -17,6 +17,7 @@ type CreditCardStatementUploadCellProps = {
   linkedCreditCardAccountName?: string | null;
   linkedImportFilename?: string | null;
   templateOptions: TemplateOption[];
+  variant?: "default" | "statement";
 };
 
 export function CreditCardStatementUploadCell({
@@ -25,14 +26,21 @@ export function CreditCardStatementUploadCell({
   linkedCreditCardAccountName,
   linkedImportFilename,
   templateOptions,
+  variant = "default",
 }: CreditCardStatementUploadCellProps) {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState(
-    templateOptions[0]?.id ?? NEW_SPREADSHEET_TEMPLATE_ID,
+    NEW_SPREADSHEET_TEMPLATE_ID,
   );
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  const panelClassName =
+    variant === "statement"
+      ? "statement-upload-panel"
+      : "statement-upload-panel statement-upload-panel-compact";
 
   if (statementStatus === "not_applicable") {
     return <span className="muted">—</span>;
@@ -40,17 +48,19 @@ export function CreditCardStatementUploadCell({
 
   if (statementStatus === "uploaded") {
     return (
-      <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
-        <span className="pill">Statement linked</span>
+      <div className={panelClassName}>
+        <span className="statement-alert statement-alert-success">
+          Statement linked
+        </span>
         {linkedCreditCardAccountName ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <p className="statement-helper-text">
             Card ledger: {linkedCreditCardAccountName}
-          </span>
+          </p>
         ) : null}
         {linkedImportFilename ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <p className="statement-helper-text">
             Imported from {linkedImportFilename}
-          </span>
+          </p>
         ) : null}
       </div>
     );
@@ -76,7 +86,9 @@ export function CreditCardStatementUploadCell({
     };
 
     const details = [
-      result.rowCountInserted ? `${result.rowCountInserted} statement rows` : null,
+      result.rowCountInserted
+        ? `${result.rowCountInserted} statement rows`
+        : null,
       result.statementNetAmountBaseEur
         ? `${Number(result.statementNetAmountBaseEur).toFixed(2)} EUR validated`
         : null,
@@ -89,43 +101,68 @@ export function CreditCardStatementUploadCell({
     ]
       .filter(Boolean)
       .join(" · ");
+
+    setSelectedFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
     setMessage(details || "Statement imported.");
     router.refresh();
   }
 
   return (
-    <div style={{ display: "grid", gap: 8, minWidth: 260 }}>
-      <span className="pill warning">Statement needed</span>
-      <label className="input-label" style={{ gap: 6 }}>
-        Template
-        <select
-          className="input-select"
-          value={selectedTemplateId}
-          onChange={(event) => setSelectedTemplateId(event.target.value)}
-          disabled={isPending}
-        >
-          <option value={NEW_SPREADSHEET_TEMPLATE_ID}>
-            New spreadsheet (infer template with AI)
-          </option>
-          {templateOptions.map((template) => (
-            <option key={template.id} value={template.id}>
-              {template.name}
+    <div className={panelClassName}>
+      <span className="statement-alert statement-alert-warning">
+        Statement needed
+      </span>
+      <label className="statement-field">
+        <span className="statement-field-label">Template</span>
+        <div className="statement-select-shell">
+          <select
+            className="statement-select"
+            value={selectedTemplateId}
+            onChange={(event) => setSelectedTemplateId(event.target.value)}
+            disabled={isPending}
+          >
+            <option value={NEW_SPREADSHEET_TEMPLATE_ID}>
+              New statement parser with AI
             </option>
-          ))}
-        </select>
+            {templateOptions.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
+              </option>
+            ))}
+          </select>
+        </div>
       </label>
-      <label className="input-label" style={{ gap: 6 }}>
-        Statement file
+
+      <div className="statement-field">
+        <span className="statement-field-label">Statement file</span>
         <input
-          className="input-field"
+          ref={fileInputRef}
+          className="statement-hidden-file-input"
           type="file"
-          accept=".csv,.xls,.xlsx,.xlsm,.xltx,.xltm"
+          accept=".csv,.xls,.xlsx,.xlsm,.xltx,.xltm,.pdf"
           disabled={isPending}
           onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
         />
-      </label>
+        <div className="statement-file-picker">
+          <button
+            className="statement-file-button"
+            type="button"
+            disabled={isPending}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Choose File
+          </button>
+          <span className="statement-file-name">
+            {selectedFile?.name ?? "No file chosen"}
+          </span>
+        </div>
+      </div>
+
       <button
-        className="btn-pill"
+        className="statement-primary-button"
         type="button"
         disabled={isPending || !selectedFile}
         onClick={() =>
@@ -140,16 +177,13 @@ export function CreditCardStatementUploadCell({
           })
         }
       >
-        {isPending ? "Importing…" : "Upload statement"}
+        {isPending ? "Uploading…" : "Upload statement"}
       </button>
-      <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+
+      <p className="statement-helper-text">
         The imported statement must net exactly to this settlement payment.
-      </span>
-      {message ? (
-        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
-          {message}
-        </span>
-      ) : null}
+      </p>
+      {message ? <p className="statement-helper-text">{message}</p> : null}
     </div>
   );
 }

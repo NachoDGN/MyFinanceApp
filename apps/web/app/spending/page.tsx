@@ -46,8 +46,9 @@ function buildTrendPoints(values: number[], width: number, height: number) {
 function buildLinePath(points: Array<{ x: number; y: number }>) {
   if (points.length === 0) return "";
   return points
-    .map((point, index) =>
-      `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`,
+    .map(
+      (point, index) =>
+        `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`,
     )
     .join(" ");
 }
@@ -78,8 +79,7 @@ function formatCategoryLabel(
   if (categoryCode) {
     return (
       dataset.categories.find((category) => category.code === categoryCode)
-        ?.displayName ??
-      categoryCode
+        ?.displayName ?? categoryCode
     );
   }
 
@@ -113,6 +113,19 @@ function formatDeltaBadge(deltaPercent: string | null | undefined) {
   }
 
   return `${numeric.toFixed(2)}%`;
+}
+
+function formatStatementDateParts(value: string) {
+  const date = new Date(`${value}T00:00:00Z`);
+  return {
+    monthDay: new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+    }).format(date),
+    year: new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+    }).format(date),
+  };
 }
 
 export default async function SpendingPage({
@@ -149,7 +162,8 @@ export default async function SpendingPage({
   const largestTransactions = [...model.transactions]
     .sort(
       (left, right) =>
-        Math.abs(Number(right.amountBaseEur)) - Math.abs(Number(left.amountBaseEur)),
+        Math.abs(Number(right.amountBaseEur)) -
+        Math.abs(Number(left.amountBaseEur)),
     )
     .slice(0, 12);
 
@@ -163,29 +177,36 @@ export default async function SpendingPage({
         <section className="spending-hero">
           <div className="spending-hero-copy">
             <span className="spending-kicker">Spending overview</span>
-            <h1 className="spending-title">Cash outflows, merchant concentration, and category pressure</h1>
+            <h1 className="spending-title">
+              Cash outflows, merchant concentration, and category pressure
+            </h1>
             <p className="spending-subtitle">
-              Personal cash spending stays personal. Company cash spending stays company.
-              Credit-card statement liquidations are excluded from spend until the related card
-              ledger is imported, because they represent prior-period purchases rather than fresh
-              April spending.
+              Personal cash spending stays personal. Company cash spending stays
+              company. Credit-card statement liquidations are excluded from
+              spend until the related card ledger is imported, because they
+              represent prior-period purchases rather than fresh April spending.
             </p>
             {model.excludedCreditCardSettlementCount > 0 ? (
               <div className="spending-context-note">
-                Excluded {model.excludedCreditCardSettlementCount} credit-card settlement payment
-                {model.excludedCreditCardSettlementCount === 1 ? "" : "s"} totaling{" "}
+                Excluded {model.excludedCreditCardSettlementCount} credit-card
+                settlement payment
+                {model.excludedCreditCardSettlementCount === 1 ? "" : "s"}{" "}
+                totaling{" "}
                 {formatCurrency(
                   model.excludedCreditCardSettlementAmountEur,
                   model.currency,
                 )}
-                . Their underlying card purchases stay out of the KPI layer until the matching
-                statement is uploaded against the settlement row.
+                . Their underlying card purchases stay out of the KPI layer
+                until the matching statement is uploaded against the settlement
+                row.
               </div>
             ) : null}
           </div>
           <div className="spending-hero-meta">
             <span className="spending-hero-pill">
-              {model.navigationState.period === "ytd" ? "Year to date" : "Month to date"}
+              {model.navigationState.period === "ytd"
+                ? "Year to date"
+                : "Month to date"}
             </span>
             <span className="spending-hero-note">
               {trendRows.length > 0
@@ -196,79 +217,125 @@ export default async function SpendingPage({
         </section>
 
         {model.creditCardSettlementRows.length > 0 ? (
-          <section className="spending-transactions-card">
-            <div className="spending-card-header">
+          <section className="statement-resolution-card">
+            <div className="statement-resolution-header">
               <div>
-                <span className="spending-card-label">Statement resolution</span>
-                <h2 className="spending-card-title">Credit-card settlement rows awaiting statement upload</h2>
+                <span className="statement-resolution-kicker">
+                  Statement Resolution
+                </span>
+                <h2 className="statement-resolution-title">
+                  Credit-card settlement rows awaiting statement upload
+                </h2>
               </div>
             </div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Account</th>
-                    <th>Description</th>
-                    <th>Payment</th>
-                    <th>Statement</th>
-                    <th>Review</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {model.creditCardSettlementRows.map((row) => (
-                    <tr key={row.id}>
-                      <td>{formatDate(row.transactionDate)}</td>
-                      <td>
-                        {model.dataset.accounts.find(
-                          (account) => account.id === row.accountId,
-                        )?.displayName ?? row.accountId}
-                      </td>
-                      <td>{row.descriptionRaw}</td>
-                      <td>
+            <div className="statement-resolution-column-headings">
+              <div>Date</div>
+              <div>Account</div>
+              <div>Description</div>
+              <div className="statement-resolution-amount-heading">Payment</div>
+              <div>Statement</div>
+              <div>Review</div>
+            </div>
+            <div className="statement-resolution-list">
+              {model.creditCardSettlementRows.map((row) => {
+                const statementDate = formatStatementDateParts(
+                  row.transactionDate,
+                );
+                const accountName =
+                  model.dataset.accounts.find(
+                    (account) => account.id === row.accountId,
+                  )?.displayName ?? row.accountId;
+
+                return (
+                  <div className="statement-resolution-row" key={row.id}>
+                    <div className="statement-resolution-cell">
+                      <span className="statement-resolution-mobile-label">
+                        Date
+                      </span>
+                      <div className="statement-resolution-date">
+                        <span>{statementDate.monthDay}</span>
+                        <span>{statementDate.year}</span>
+                      </div>
+                    </div>
+
+                    <div className="statement-resolution-cell">
+                      <span className="statement-resolution-mobile-label">
+                        Account
+                      </span>
+                      <div className="statement-resolution-text">
+                        {accountName}
+                      </div>
+                    </div>
+
+                    <div className="statement-resolution-cell">
+                      <span className="statement-resolution-mobile-label">
+                        Description
+                      </span>
+                      <div className="statement-resolution-text statement-resolution-description">
+                        {row.descriptionRaw}
+                      </div>
+                    </div>
+
+                    <div className="statement-resolution-cell">
+                      <span className="statement-resolution-mobile-label">
+                        Payment
+                      </span>
+                      <div className="statement-resolution-amount">
                         {formatDisplayAmount(
                           row.amountBaseEur,
                           model.currency,
                           row.transactionDate,
                           model.dataset,
                         )}
-                      </td>
-                      <td>
-                        <CreditCardStatementUploadCell
-                          settlementTransactionId={row.id}
-                          statementStatus={row.creditCardStatementStatus}
-                          linkedCreditCardAccountName={
-                            model.dataset.accounts.find(
-                              (account) =>
-                                account.id === row.linkedCreditCardAccountId,
-                            )?.displayName ?? null
-                          }
-                          linkedImportFilename={
-                            importBatchBySettlementId.get(row.id)?.originalFilename ??
-                            null
-                          }
-                          templateOptions={creditCardTemplates}
-                        />
-                      </td>
-                      <td>
-                        <ReviewEditorCell
-                          transactionId={row.id}
-                          needsReview={row.needsReview}
-                          reviewReason={row.reviewReason}
-                          manualNotes={row.manualNotes}
-                          transactionClass={row.transactionClass}
-                          classificationSource={row.classificationSource}
-                          quantity={row.quantity}
-                          llmPayload={row.llmPayload}
-                          creditCardStatementStatus={row.creditCardStatementStatus}
-                          descriptionRaw={row.descriptionRaw}
-                          descriptionClean={row.descriptionClean}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+
+                    <div className="statement-resolution-cell">
+                      <span className="statement-resolution-mobile-label">
+                        Statement
+                      </span>
+                      <CreditCardStatementUploadCell
+                        settlementTransactionId={row.id}
+                        statementStatus={row.creditCardStatementStatus}
+                        linkedCreditCardAccountName={
+                          model.dataset.accounts.find(
+                            (account) =>
+                              account.id === row.linkedCreditCardAccountId,
+                          )?.displayName ?? null
+                        }
+                        linkedImportFilename={
+                          importBatchBySettlementId.get(row.id)
+                            ?.originalFilename ?? null
+                        }
+                        templateOptions={creditCardTemplates}
+                        variant="statement"
+                      />
+                    </div>
+
+                    <div className="statement-resolution-cell">
+                      <span className="statement-resolution-mobile-label">
+                        Review
+                      </span>
+                      <ReviewEditorCell
+                        transactionId={row.id}
+                        needsReview={row.needsReview}
+                        reviewReason={row.reviewReason}
+                        manualNotes={row.manualNotes}
+                        transactionClass={row.transactionClass}
+                        classificationSource={row.classificationSource}
+                        quantity={row.quantity}
+                        llmPayload={row.llmPayload}
+                        creditCardStatementStatus={
+                          row.creditCardStatementStatus
+                        }
+                        descriptionRaw={row.descriptionRaw}
+                        descriptionClean={row.descriptionClean}
+                        variant="statement"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
         ) : null}
@@ -283,11 +350,18 @@ export default async function SpendingPage({
                 </span>
               </div>
               <div className="spending-primary-value">
-                {formatCurrency(model.spendMetric?.valueDisplay, model.currency)}
+                {formatCurrency(
+                  model.spendMetric?.valueDisplay,
+                  model.currency,
+                )}
               </div>
               <div className="spending-primary-footer">
                 <span>
-                  {formatCurrency(model.spendMetric?.deltaDisplay, model.currency)} from prior pace
+                  {formatCurrency(
+                    model.spendMetric?.deltaDisplay,
+                    model.currency,
+                  )}{" "}
+                  from prior pace
                 </span>
               </div>
             </article>
@@ -296,7 +370,9 @@ export default async function SpendingPage({
               <div className="spending-card-header">
                 <div>
                   <span className="spending-card-label">Coverage</span>
-                  <h2 className="spending-card-title">Categorized spend share</h2>
+                  <h2 className="spending-card-title">
+                    Categorized spend share
+                  </h2>
                 </div>
                 <span className="spending-inline-pill">
                   {formatCurrency(model.uncategorizedSpendEur, model.currency)}
@@ -304,7 +380,8 @@ export default async function SpendingPage({
               </div>
               <div className="spending-coverage-value">{model.coverage}%</div>
               <p className="spending-card-note">
-                Amount still sitting in uncategorized or proxy buckets this period.
+                Amount still sitting in uncategorized or proxy buckets this
+                period.
               </p>
             </article>
 
@@ -312,17 +389,27 @@ export default async function SpendingPage({
               <div className="spending-card-header">
                 <div>
                   <span className="spending-card-label">Distribution</span>
-                  <h2 className="spending-card-title">Top spending categories</h2>
+                  <h2 className="spending-card-title">
+                    Top spending categories
+                  </h2>
                 </div>
               </div>
               <div className="spending-breakdown-list">
                 {model.summary.spendingByCategory.slice(0, 6).map((row) => {
-                  const share = spendTotal > 0 ? (Number(row.amountEur) / spendTotal) * 100 : 0;
+                  const share =
+                    spendTotal > 0
+                      ? (Number(row.amountEur) / spendTotal) * 100
+                      : 0;
                   return (
-                    <div className="spending-breakdown-row" key={row.categoryCode}>
+                    <div
+                      className="spending-breakdown-row"
+                      key={row.categoryCode}
+                    >
                       <div className="spending-breakdown-head">
                         <div>
-                          <div className="spending-breakdown-label">{row.label}</div>
+                          <div className="spending-breakdown-label">
+                            {row.label}
+                          </div>
                           <div className="spending-breakdown-share">
                             {share.toFixed(0)}% of total
                           </div>
@@ -334,7 +421,9 @@ export default async function SpendingPage({
                       <div className="spending-breakdown-track">
                         <div
                           className="spending-breakdown-fill"
-                          style={{ width: `${Math.min(share, 100).toFixed(2)}%` }}
+                          style={{
+                            width: `${Math.min(share, 100).toFixed(2)}%`,
+                          }}
                         />
                       </div>
                     </div>
@@ -342,7 +431,8 @@ export default async function SpendingPage({
                 })}
                 {model.summary.spendingByCategory.length === 0 ? (
                   <div className="spending-empty-state">
-                    No resolved spending categories are available for the selected scope.
+                    No resolved spending categories are available for the
+                    selected scope.
                   </div>
                 ) : null}
               </div>
@@ -353,7 +443,9 @@ export default async function SpendingPage({
             <article className="spending-trend-card">
               <div className="spending-card-header">
                 <div>
-                  <span className="spending-card-label accent">Trend analysis</span>
+                  <span className="spending-card-label accent">
+                    Trend analysis
+                  </span>
                   <h2 className="spending-trend-title">Monthly spend trend</h2>
                 </div>
                 <span className="spending-inline-pill">
@@ -361,9 +453,18 @@ export default async function SpendingPage({
                 </span>
               </div>
               <div className="spending-trend-chart">
-                <svg viewBox={`0 0 ${chartWidth} ${chartHeight + 40}`} preserveAspectRatio="none">
+                <svg
+                  viewBox={`0 0 ${chartWidth} ${chartHeight + 40}`}
+                  preserveAspectRatio="none"
+                >
                   <defs>
-                    <linearGradient id="spendingAreaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <linearGradient
+                      id="spendingAreaGradient"
+                      x1="0%"
+                      y1="0%"
+                      x2="0%"
+                      y2="100%"
+                    >
                       <stop offset="0%" stopColor="rgba(255,75,43,0.34)" />
                       <stop offset="100%" stopColor="rgba(255,75,43,0)" />
                     </linearGradient>
@@ -399,9 +500,9 @@ export default async function SpendingPage({
                 <div className="spending-trend-labels">
                   {trendRows.map((row) => (
                     <span key={row.month}>
-                      {new Intl.DateTimeFormat("en-US", { month: "short" }).format(
-                        new Date(`${row.month}T00:00:00Z`),
-                      )}
+                      {new Intl.DateTimeFormat("en-US", {
+                        month: "short",
+                      }).format(new Date(`${row.month}T00:00:00Z`))}
                     </span>
                   ))}
                 </div>
@@ -412,9 +513,14 @@ export default async function SpendingPage({
               <article className="spending-stat-card">
                 <span className="spending-card-label">Trailing 3-mo avg</span>
                 <div className="spending-stat-value">
-                  {formatCurrency(model.trailingThreeMonthAverage, model.currency)}
+                  {formatCurrency(
+                    model.trailingThreeMonthAverage,
+                    model.currency,
+                  )}
                 </div>
-                <p className="spending-card-note">Average monthly spend based on the latest trend window.</p>
+                <p className="spending-card-note">
+                  Average monthly spend based on the latest trend window.
+                </p>
               </article>
 
               <article className="spending-stat-card">
@@ -446,12 +552,17 @@ export default async function SpendingPage({
               <div className="spending-card-header">
                 <div>
                   <span className="spending-card-label">Detailed view</span>
-                  <h2 className="spending-card-title">Largest current-period merchant buckets</h2>
+                  <h2 className="spending-card-title">
+                    Largest current-period merchant buckets
+                  </h2>
                 </div>
               </div>
               <div className="spending-merchant-list">
                 {model.merchantRows.slice(0, 6).map((row, index) => (
-                  <div className="spending-merchant-row" key={`${row.label}-${index}`}>
+                  <div
+                    className="spending-merchant-row"
+                    key={`${row.label}-${index}`}
+                  >
                     <div className="spending-merchant-icon">
                       {row.label.slice(0, 1).toUpperCase()}
                     </div>
@@ -482,7 +593,9 @@ export default async function SpendingPage({
           <div className="spending-card-header">
             <div>
               <span className="spending-card-label">Ledger detail</span>
-              <h2 className="spending-card-title">Largest current-period outflows</h2>
+              <h2 className="spending-card-title">
+                Largest current-period outflows
+              </h2>
             </div>
           </div>
           <div className="table-wrap">
@@ -504,11 +617,14 @@ export default async function SpendingPage({
                   <tr key={row.id}>
                     <td>{formatDate(row.transactionDate)}</td>
                     <td>
-                      {model.dataset.accounts.find((account) => account.id === row.accountId)
-                        ?.displayName ?? row.accountId}
+                      {model.dataset.accounts.find(
+                        (account) => account.id === row.accountId,
+                      )?.displayName ?? row.accountId}
                     </td>
                     <td>{row.descriptionRaw}</td>
-                    <td>{row.merchantNormalized ?? row.counterpartyName ?? "—"}</td>
+                    <td>
+                      {row.merchantNormalized ?? row.counterpartyName ?? "—"}
+                    </td>
                     <td>{row.transactionClass.replace(/_/g, " ")}</td>
                     <td>
                       {formatCategoryLabel(
@@ -536,7 +652,9 @@ export default async function SpendingPage({
                         classificationSource={row.classificationSource}
                         quantity={row.quantity}
                         llmPayload={row.llmPayload}
-                        creditCardStatementStatus={row.creditCardStatementStatus}
+                        creditCardStatementStatus={
+                          row.creditCardStatementStatus
+                        }
                         descriptionRaw={row.descriptionRaw}
                         descriptionClean={row.descriptionClean}
                       />

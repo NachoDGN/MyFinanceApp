@@ -9,7 +9,7 @@ export type AccountType =
   | "credit_card"
   | "other";
 export type AssetDomain = "cash" | "investment";
-export type FileKind = "csv" | "xls" | "xlsx";
+export type FileKind = "csv" | "xls" | "xlsx" | "pdf";
 export type ImportBatchStatus =
   | "previewed"
   | "committed"

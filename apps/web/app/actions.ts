@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -59,7 +59,7 @@ const templateSchema = z.object({
     "credit_card",
     "other",
   ]),
-  fileKind: z.enum(["csv", "xls", "xlsx"]),
+  fileKind: z.enum(["csv", "xls", "xlsx", "pdf"]),
   sheetName: z.string().nullable().optional(),
   headerRowIndex: z.coerce.number().int().min(1).default(1),
   rowsToSkipBeforeHeader: z.coerce.number().int().min(0).default(0),
@@ -82,15 +82,12 @@ const templateSchema = z.object({
   active: z.boolean().default(true),
 });
 
-const nullableDayCountSchema = z.preprocess(
-  (value) => {
-    if (value === "" || value === null || value === undefined) {
-      return null;
-    }
-    return value;
-  },
-  z.coerce.number().int().min(1).max(365).nullable(),
-);
+const nullableDayCountSchema = z.preprocess((value) => {
+  if (value === "" || value === null || value === undefined) {
+    return null;
+  }
+  return value;
+}, z.coerce.number().int().min(1).max(365).nullable());
 
 const accountFieldsSchema = z.object({
   institutionName: z.string().trim().min(1),
@@ -251,13 +248,14 @@ function revalidateWorkspacePaths() {
   revalidatePath("/transactions");
 }
 
-async function withUploadedSpreadsheetFile<T>(
+async function withUploadedImportFile<T>(
   formData: FormData,
   options: {
     logContext?: Record<string, unknown>;
     onValidatedUpload: (input: {
       originalFilename: string;
       filePath: string;
+      fileKind: Awaited<ReturnType<typeof validateSpreadsheetFile>>["fileKind"];
       fileValidationIssues: Awaited<
         ReturnType<typeof validateSpreadsheetFile>
       >["issues"];
@@ -300,11 +298,13 @@ async function withUploadedSpreadsheetFile<T>(
     const result = await options.onValidatedUpload({
       originalFilename: file.name,
       filePath,
+      fileKind: validation.fileKind,
       fileValidationIssues: validation.issues,
     });
     if (result && typeof result === "object" && !Array.isArray(result)) {
       return {
         ...(result as Record<string, unknown>),
+        fileKind: validation.fileKind,
         fileValidationIssues: validation.issues,
       } as T;
     }
@@ -368,6 +368,64 @@ function buildCreditCardInferenceAccount(
   };
 }
 
+function buildCreditCardPdfTemplate(input: {
+  userId: string;
+  account: Pick<Account, "institutionName" | "accountType" | "defaultCurrency">;
+  originalFilename: string;
+}) {
+  const fileLabel = basename(input.originalFilename).replace(/\.[^.]+$/, "");
+
+  return {
+    userId: input.userId,
+    name: `${input.account.institutionName} ${input.account.accountType} ${fileLabel} pdf auto`,
+    institutionName: input.account.institutionName,
+    compatibleAccountType: input.account.accountType,
+    fileKind: "pdf" as const,
+    sheetName: null,
+    headerRowIndex: 1,
+    rowsToSkipBeforeHeader: 0,
+    rowsToSkipAfterHeader: 0,
+    delimiter: null,
+    encoding: null,
+    decimalSeparator: null,
+    thousandsSeparator: null,
+    dateFormat: "%Y-%m-%d",
+    defaultCurrency: input.account.defaultCurrency,
+    columnMapJson: {},
+    signLogicJson: {},
+    normalizationRulesJson: {
+      parser_kind: "credit_card_statement_pdf",
+      date_day_first: true,
+    },
+    active: true,
+  };
+}
+
+function findReusableCreditCardPdfTemplate(
+  dataset: Awaited<ReturnType<typeof repository.getDataset>>,
+  institutionName: string,
+) {
+  return (
+    dataset.templates.find((template) => {
+      const parserKind =
+        template.normalizationRulesJson &&
+        typeof template.normalizationRulesJson === "object" &&
+        !Array.isArray(template.normalizationRulesJson) &&
+        "parser_kind" in template.normalizationRulesJson
+          ? (template.normalizationRulesJson as { parser_kind?: unknown })
+              .parser_kind
+          : null;
+
+      return (
+        template.compatibleAccountType === "credit_card" &&
+        template.fileKind === "pdf" &&
+        template.institutionName === institutionName &&
+        parserKind === "credit_card_statement_pdf"
+      );
+    }) ?? null
+  );
+}
+
 async function withUploadedImport<T>(
   mode: "preview" | "commit",
   formData: FormData,
@@ -382,7 +440,7 @@ async function withUploadedImport<T>(
     accountId: formData.get("accountId"),
     templateId: formData.get("templateId"),
   });
-  return withUploadedSpreadsheetFile(formData, {
+  return withUploadedImportFile(formData, {
     logContext: {
       accountId: fields.accountId,
       templateId: fields.templateId,
@@ -511,28 +569,65 @@ export async function commitCreditCardStatementImportAction(
     templateId: formData.get("templateId"),
   });
 
-  const result = await withUploadedSpreadsheetFile(formData, {
+  const result = await withUploadedImportFile(formData, {
     logContext: {
       settlementTransactionId: fields.settlementTransactionId,
       templateId: fields.templateId,
       mode: "credit-card-statement-commit",
     },
-    onValidatedUpload: async ({ originalFilename, filePath }) => {
+    onValidatedUpload: async ({ originalFilename, filePath, fileKind }) => {
       let resolvedTemplateId = fields.templateId;
       let resolvedTemplateName: string | null = null;
+      const dataset = await repository.getDataset();
+      const { seededUserId } = getDbRuntimeConfig();
+      const inferenceAccount = buildCreditCardInferenceAccount(
+        dataset,
+        fields.settlementTransactionId,
+        seededUserId,
+      );
 
-      if (fields.templateId === NEW_SPREADSHEET_TEMPLATE_ID) {
-        const dataset = await repository.getDataset();
-        const { seededUserId } = getDbRuntimeConfig();
+      if (fileKind === "pdf") {
+        if (fields.templateId !== NEW_SPREADSHEET_TEMPLATE_ID) {
+          const selectedTemplate = dataset.templates.find(
+            (candidate) => candidate.id === fields.templateId,
+          );
+          if (selectedTemplate?.fileKind !== "pdf") {
+            throw new Error(
+              "PDF credit-card statements require the AI PDF parser template.",
+            );
+          }
+        }
+
+        if (fields.templateId === NEW_SPREADSHEET_TEMPLATE_ID) {
+          const reusableTemplate = findReusableCreditCardPdfTemplate(
+            dataset,
+            inferenceAccount.institutionName,
+          );
+          if (reusableTemplate) {
+            resolvedTemplateId = reusableTemplate.id;
+          } else {
+            const pdfTemplate = buildCreditCardPdfTemplate({
+              userId: seededUserId,
+              account: inferenceAccount,
+              originalFilename,
+            });
+            const createResult = await domain.createTemplate({
+              template: pdfTemplate,
+              actorName: "web-credit-card-statement",
+              sourceChannel: "web",
+              apply: true,
+            });
+            resolvedTemplateId = createResult.templateId;
+            resolvedTemplateName = pdfTemplate.name;
+            revalidatePath("/templates");
+          }
+        }
+      } else if (fields.templateId === NEW_SPREADSHEET_TEMPLATE_ID) {
         const promptOverrides = await getPromptOverrides();
         const inferredTemplate = await inferImportTemplateDraft(
           {
             userId: seededUserId,
-            account: buildCreditCardInferenceAccount(
-              dataset,
-              fields.settlementTransactionId,
-              seededUserId,
-            ),
+            account: inferenceAccount,
             filePath,
             originalFilename,
           },
@@ -547,6 +642,15 @@ export async function commitCreditCardStatementImportAction(
         resolvedTemplateId = createResult.templateId;
         resolvedTemplateName = inferredTemplate.name;
         revalidatePath("/templates");
+      } else {
+        const selectedTemplate = dataset.templates.find(
+          (candidate) => candidate.id === fields.templateId,
+        );
+        if (selectedTemplate?.fileKind === "pdf") {
+          throw new Error(
+            "Spreadsheet credit-card statements need a spreadsheet template, not the PDF parser template.",
+          );
+        }
       }
 
       const committed = await domain.commitCreditCardStatementImport({
