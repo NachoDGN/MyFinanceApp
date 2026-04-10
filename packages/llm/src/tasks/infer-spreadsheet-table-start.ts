@@ -34,7 +34,7 @@ const spreadsheetTableStartJsonSchema = {
 } satisfies Record<string, unknown>;
 
 export interface InferSpreadsheetTableStartInput {
-  fileKind: "csv" | "xlsx";
+  fileKind: "csv" | "xls" | "xlsx";
   sheetPreviews: ReadonlyArray<{
     sheetName: string | null;
     previewCsv: string;

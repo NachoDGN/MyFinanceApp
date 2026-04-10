@@ -10,7 +10,17 @@ export const accountTypeOptions = [
   "other",
 ] as const satisfies readonly AccountType[];
 
-export const fileKindOptions = ["csv", "xlsx"] as const satisfies readonly FileKind[];
+export const fileKindOptions = [
+  "csv",
+  "xlsx",
+  "xls",
+] as const satisfies readonly FileKind[];
+
+export function isWorkbookFileKind(
+  fileKind: FileKind,
+): fileKind is Exclude<FileKind, "csv"> {
+  return fileKind === "xlsx" || fileKind === "xls";
+}
 
 export const signModeOptions = [
   "signed_amount",
@@ -45,24 +55,77 @@ export type TemplateColumnMapping = {
 };
 
 export const canonicalFieldOptions = [
-  { key: "transaction_date", label: "Transaction date", detail: "Required booking date", required: true },
-  { key: "posted_date", label: "Posted date", detail: "Optional bank-posted date" },
-  { key: "description_raw", label: "Description", detail: "Human-readable transaction text" },
+  {
+    key: "transaction_date",
+    label: "Transaction date",
+    detail: "Required booking date",
+    required: true,
+  },
+  {
+    key: "posted_date",
+    label: "Posted date",
+    detail: "Optional bank-posted date",
+  },
+  {
+    key: "description_raw",
+    label: "Description",
+    detail: "Human-readable transaction text",
+  },
   {
     key: "amount_original_signed",
     label: "Signed amount",
     detail: "Required unless you use separate debit and credit columns",
   },
-  { key: "currency_original", label: "Currency", detail: "Original transaction currency" },
-  { key: "balance_original", label: "Balance", detail: "Running account balance after the movement" },
-  { key: "external_reference", label: "Reference", detail: "Transfer id, trade id, or provider reference" },
-  { key: "transaction_type_raw", label: "Transaction type", detail: "Provider-specific type code or label" },
-  { key: "security_symbol", label: "Security symbol", detail: "Ticker or instrument symbol" },
-  { key: "security_name", label: "Security name", detail: "Instrument name when no symbol is present" },
-  { key: "quantity", label: "Quantity", detail: "Share or unit count for investments" },
-  { key: "unit_price_original", label: "Unit price", detail: "Per-unit price for trades" },
-  { key: "fees_original", label: "Fees", detail: "Commission or transaction fee" },
-  { key: "fx_rate", label: "FX rate", detail: "Optional conversion rate from the statement" },
+  {
+    key: "currency_original",
+    label: "Currency",
+    detail: "Original transaction currency",
+  },
+  {
+    key: "balance_original",
+    label: "Balance",
+    detail: "Running account balance after the movement",
+  },
+  {
+    key: "external_reference",
+    label: "Reference",
+    detail: "Transfer id, trade id, or provider reference",
+  },
+  {
+    key: "transaction_type_raw",
+    label: "Transaction type",
+    detail: "Provider-specific type code or label",
+  },
+  {
+    key: "security_symbol",
+    label: "Security symbol",
+    detail: "Ticker or instrument symbol",
+  },
+  {
+    key: "security_name",
+    label: "Security name",
+    detail: "Instrument name when no symbol is present",
+  },
+  {
+    key: "quantity",
+    label: "Quantity",
+    detail: "Share or unit count for investments",
+  },
+  {
+    key: "unit_price_original",
+    label: "Unit price",
+    detail: "Per-unit price for trades",
+  },
+  {
+    key: "fees_original",
+    label: "Fees",
+    detail: "Commission or transaction fee",
+  },
+  {
+    key: "fx_rate",
+    label: "FX rate",
+    detail: "Optional conversion rate from the statement",
+  },
 ] as const satisfies readonly {
   key: CanonicalFieldKey;
   label: string;
@@ -96,7 +159,9 @@ function buildColumnMap(mappings: TemplateColumnMapping[]) {
     const source = mapping.source.trim();
     if (!source) continue;
     if (columnMap[mapping.target]) {
-      throw new Error(`${fieldLabelByKey[mapping.target]} is mapped more than once.`);
+      throw new Error(
+        `${fieldLabelByKey[mapping.target]} is mapped more than once.`,
+      );
     }
     columnMap[mapping.target] = source;
   }
@@ -145,7 +210,9 @@ function buildSignLogic(input: {
   if (input.signMode === "amount_direction_column") {
     const directionColumn = input.directionColumn?.trim();
     if (!directionColumn) {
-      throw new Error("Direction column is required when sign is encoded separately.");
+      throw new Error(
+        "Direction column is required when sign is encoded separately.",
+      );
     }
     const debitValues = splitValues(input.debitValuesText);
     const creditValues = splitValues(input.creditValuesText);

@@ -184,7 +184,7 @@ export function ImportWorkbench({
           <input
             className="input-field"
             type="file"
-            accept=".csv,.xlsx"
+            accept=".csv,.xls,.xlsx,.xlsm,.xltx,.xltm"
             onChange={(event) =>
               setSelectedFile(event.target.files?.[0] ?? null)
             }
@@ -306,7 +306,8 @@ export function ImportWorkbench({
               {JSON.stringify(result.parseErrors, null, 2)}
             </pre>
           ) : null}
-          {result.fileValidationIssues && result.fileValidationIssues.length > 0 ? (
+          {result.fileValidationIssues &&
+          result.fileValidationIssues.length > 0 ? (
             <div style={{ marginTop: 20 }}>
               <span className="label-sm">File Validator</span>
               <h3

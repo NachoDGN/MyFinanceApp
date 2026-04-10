@@ -9,6 +9,7 @@ import {
   canonicalFieldOptions,
   createDefaultColumnMappings,
   fileKindOptions,
+  isWorkbookFileKind,
   signModeOptions,
   type TemplateColumnMapping,
   type TemplateSignMode,
@@ -84,10 +85,9 @@ export function TemplateWorkbench({
         formData.get("compatibleAccountType") ?? "",
       ) as ImportTemplate["compatibleAccountType"],
       fileKind,
-      sheetName:
-        fileKind === "xlsx"
-          ? String(formData.get("sheetName") ?? "") || null
-          : null,
+      sheetName: isWorkbookFileKind(fileKind)
+        ? String(formData.get("sheetName") ?? "") || null
+        : null,
       headerRowIndex: Number(formData.get("headerRowIndex") ?? 1),
       rowsToSkipBeforeHeader: Number(
         formData.get("rowsToSkipBeforeHeader") ?? 0,
@@ -306,7 +306,7 @@ export function TemplateWorkbench({
             ))}
           </select>
         </label>
-        {fileKind === "xlsx" ? (
+        {isWorkbookFileKind(fileKind) ? (
           <label className="input-label">
             Worksheet
             <input

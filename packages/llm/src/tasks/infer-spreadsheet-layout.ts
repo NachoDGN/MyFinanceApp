@@ -124,7 +124,7 @@ const spreadsheetLayoutJsonSchema = {
 
 export interface InferSpreadsheetLayoutInput {
   tablePreviewCsv: string;
-  fileKind: "csv" | "xlsx";
+  fileKind: "csv" | "xls" | "xlsx";
   sheetName?: string | null;
   canonicalFields: readonly string[];
   accountType: string;

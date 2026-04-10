@@ -123,7 +123,7 @@ export function RulesWorkbench({ model }: { model: RulesWorkbenchModel }) {
             Describe the rule you want
             <textarea
               className="input-textarea"
-              placeholder="Example: Whenever my Santander personal card description contains NOTION, classify it as a Company A software expense and set the merchant to NOTION."
+              placeholder="Example: Whenever my Santander personal card description contains NOTION, classify it as a personal subscriptions expense and set the merchant to NOTION."
               value={requestText}
               onChange={(event) => setRequestText(event.target.value)}
             />

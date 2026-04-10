@@ -16,6 +16,10 @@ import {
   type SimilarAccountTransactionPromptContext,
 } from "@myfinance/classification";
 import {
+  assertCategoryCodeAllowedForAccount,
+  assertEconomicEntityAllowedForAccount,
+  assertRuleOutputsAllowedForScope,
+  assertTransactionClassAllowedForAccount,
   parseRuleDraftRequest,
   buildImportedTransactions,
   getDatasetLatestDate,
@@ -4069,6 +4073,52 @@ class SqlFinanceRepository implements FinanceRepository {
       }
 
       const patch = camelizeValue(input.patch);
+      const requiresClassificationValidation =
+        patch.transactionClass !== undefined ||
+        patch.categoryCode !== undefined ||
+        patch.economicEntityId !== undefined ||
+        input.createRuleFromTransaction === true;
+      const dataset = requiresClassificationValidation
+        ? await loadDatasetForUser(sql, this.userId)
+        : null;
+      const account =
+        dataset?.accounts.find((candidate) => candidate.id === beforeRow.account_id) ??
+        null;
+      if (requiresClassificationValidation && !account) {
+        throw new Error(
+          `Account ${beforeRow.account_id} was not found for transaction ${input.transactionId}.`,
+        );
+      }
+
+      if (account && patch.transactionClass !== undefined) {
+        assertTransactionClassAllowedForAccount(
+          account,
+          patch.transactionClass,
+          "Manual transaction class",
+        );
+      }
+      if (dataset && account && patch.categoryCode !== undefined && patch.categoryCode) {
+        assertCategoryCodeAllowedForAccount(
+          dataset,
+          account,
+          patch.categoryCode,
+          "Manual category",
+        );
+      }
+      if (
+        dataset &&
+        account &&
+        patch.economicEntityId !== undefined &&
+        patch.economicEntityId
+      ) {
+        assertEconomicEntityAllowedForAccount(
+          dataset,
+          account,
+          patch.economicEntityId,
+          "Manual economic entity",
+        );
+      }
+
       const updatePayload: Record<string, unknown> = {
         updated_at: new Date().toISOString(),
       };
@@ -4178,6 +4228,24 @@ class SqlFinanceRepository implements FinanceRepository {
         if (input.createRuleFromTransaction) {
           const persistedTransaction = mapFromSql<Transaction>(after[0]);
           generatedRuleId = randomUUID();
+          const persistedAccount =
+            account ??
+            (await loadDatasetForUser(sql, this.userId)).accounts.find(
+              (candidate) => candidate.id === persistedTransaction.accountId,
+            ) ??
+            null;
+          const outputsJson: Record<string, unknown> = {
+            transaction_class: persistedTransaction.transactionClass,
+            category_code: persistedTransaction.categoryCode,
+          };
+          if (
+            persistedAccount &&
+            persistedAccount.assetDomain !== "cash" &&
+            persistedTransaction.economicEntityId !== persistedAccount.entityId
+          ) {
+            outputsJson.economic_entity_id_override =
+              persistedTransaction.economicEntityId;
+          }
           await sql`
             insert into public.classification_rules (
               id,
@@ -4199,12 +4267,7 @@ class SqlFinanceRepository implements FinanceRepository {
                 normalized_description_regex:
                   persistedTransaction.descriptionClean,
               })}::jsonb,
-              ${serializeJson(sql, {
-                transaction_class: persistedTransaction.transactionClass,
-                category_code: persistedTransaction.categoryCode,
-                economic_entity_id_override:
-                  persistedTransaction.economicEntityId,
-              })}::jsonb,
+              ${serializeJson(sql, outputsJson)}::jsonb,
               ${persistedTransaction.id},
               true
             )
@@ -4226,6 +4289,12 @@ class SqlFinanceRepository implements FinanceRepository {
   async createRule(input: CreateRuleInput) {
     const result = await withSeededUserContext(async (sql) => {
       const ruleId = randomUUID();
+      const dataset = await loadDatasetForUser(sql, this.userId);
+      assertRuleOutputsAllowedForScope(
+        dataset,
+        input.scopeJson,
+        input.outputsJson,
+      );
       if (input.apply) {
         await sql`
           insert into public.classification_rules (

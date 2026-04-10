@@ -40,11 +40,15 @@ type CommonOptions = {
 
 async function resolveScope(scopeValue = "consolidated") {
   const dataset = await repository.getDataset();
-  if (scopeValue === "consolidated") return { dataset, scope: { kind: "consolidated" as const } };
+  if (scopeValue === "consolidated")
+    return { dataset, scope: { kind: "consolidated" as const } };
   if (scopeValue.startsWith("account:")) {
     return {
       dataset,
-      scope: { kind: "account" as const, accountId: scopeValue.replace("account:", "") },
+      scope: {
+        kind: "account" as const,
+        accountId: scopeValue.replace("account:", ""),
+      },
     };
   }
   const entity = dataset.entities.find((row) => row.slug === scopeValue);
@@ -115,7 +119,10 @@ program
 
 program
   .command("dashboard summary")
-  .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
+  .option(
+    "--scope <scope>",
+    "consolidated, personal, company_a, company_b, or account:<id>",
+  )
   .option("--currency <currency>", "EUR or USD", "EUR")
   .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
@@ -136,21 +143,33 @@ program
 program
   .command("metrics get")
   .argument("<metricId>")
-  .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
+  .option(
+    "--scope <scope>",
+    "consolidated, personal, company_a, company_b, or account:<id>",
+  )
   .option("--currency <currency>", "EUR or USD", "EUR")
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (metricId: string, options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
-    const metric = buildMetricResult(dataset, scope, getDisplayCurrency(options), metricId, {
-      referenceDate: options.asOf,
-    });
+    const metric = buildMetricResult(
+      dataset,
+      scope,
+      getDisplayCurrency(options),
+      metricId,
+      {
+        referenceDate: options.asOf,
+      },
+    );
     render(metric, options.json);
   });
 
 program
   .command("insights list")
-  .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
+  .option(
+    "--scope <scope>",
+    "consolidated, personal, company_a, company_b, or account:<id>",
+  )
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
@@ -165,7 +184,10 @@ program
 
 program
   .command("transactions list")
-  .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
+  .option(
+    "--scope <scope>",
+    "consolidated, personal, company_a, company_b, or account:<id>",
+  )
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
     const { scope } = await resolveScope(options.scope);
@@ -186,29 +208,42 @@ program
   .option("--create-rule", "Also create a reusable rule")
   .option("--apply", "Persist the change")
   .option("--json", "Output JSON")
-  .action(async (transactionId: string, options: CommonOptions & Record<string, string | boolean | undefined>) => {
-    const dataset = await repository.getDataset();
-    const entityId = typeof options.entity === "string"
-      ? dataset.entities.find((row) => row.slug === options.entity)?.id
-      : undefined;
-    const result = await domain.updateTransaction({
-      transactionId,
-      patch: {
-        transactionClass: typeof options.class === "string" ? (options.class as never) : undefined,
-        categoryCode: typeof options.category === "string" ? options.category : undefined,
-        economicEntityId: entityId,
-        securityId: typeof options.security === "string" ? options.security : undefined,
-        quantity: typeof options.quantity === "string" ? options.quantity : undefined,
-        manualNotes: typeof options.note === "string" ? options.note : undefined,
-        needsReview: options.needsReview ? true : undefined,
-      },
-      createRuleFromTransaction: Boolean(options.createRule),
-      actorName: "cli",
-      sourceChannel: "cli",
-      apply: Boolean(options.apply),
-    });
-    render(result, options.json);
-  });
+  .action(
+    async (
+      transactionId: string,
+      options: CommonOptions & Record<string, string | boolean | undefined>,
+    ) => {
+      const dataset = await repository.getDataset();
+      const entityId =
+        typeof options.entity === "string"
+          ? dataset.entities.find((row) => row.slug === options.entity)?.id
+          : undefined;
+      const result = await domain.updateTransaction({
+        transactionId,
+        patch: {
+          transactionClass:
+            typeof options.class === "string"
+              ? (options.class as never)
+              : undefined,
+          categoryCode:
+            typeof options.category === "string" ? options.category : undefined,
+          economicEntityId: entityId,
+          securityId:
+            typeof options.security === "string" ? options.security : undefined,
+          quantity:
+            typeof options.quantity === "string" ? options.quantity : undefined,
+          manualNotes:
+            typeof options.note === "string" ? options.note : undefined,
+          needsReview: options.needsReview ? true : undefined,
+        },
+        createRuleFromTransaction: Boolean(options.createRule),
+        actorName: "cli",
+        sourceChannel: "cli",
+        apply: Boolean(options.apply),
+      });
+      render(result, options.json);
+    },
+  );
 
 const importsCommand = program.command("imports");
 
@@ -216,22 +251,35 @@ importsCommand
   .command("preview")
   .requiredOption("--account <accountId>")
   .requiredOption("--template <templateId>")
-  .requiredOption("--file <filePath>", "Local file path passed to the pandas ingest wrapper")
+  .requiredOption(
+    "--file <filePath>",
+    "Local file path passed to the pandas ingest wrapper",
+  )
   .option("--json", "Output JSON")
-  .action(async (options: { account: string; template: string; file: string; json?: boolean }) => {
-    const result = await domain.previewImport({
-      accountId: options.account,
-      templateId: options.template,
-      filePath: options.file,
-    });
-    render(result, options.json);
-  });
+  .action(
+    async (options: {
+      account: string;
+      template: string;
+      file: string;
+      json?: boolean;
+    }) => {
+      const result = await domain.previewImport({
+        accountId: options.account,
+        templateId: options.template,
+        filePath: options.file,
+      });
+      render(result, options.json);
+    },
+  );
 
 importsCommand
   .command("commit")
   .requiredOption("--account <accountId>")
   .requiredOption("--template <templateId>")
-  .requiredOption("--file <filePath>", "Local file path passed to the pandas ingest wrapper")
+  .requiredOption(
+    "--file <filePath>",
+    "Local file path passed to the pandas ingest wrapper",
+  )
   .option("--apply", "Persist the commit")
   .option("--json", "Output JSON")
   .action(
@@ -273,14 +321,26 @@ templatesCommand
   .requiredOption("--account-type <accountType>")
   .requiredOption("--file-kind <fileKind>")
   .requiredOption("--default-currency <currency>")
-  .option("--map <target=source>", "Add a canonical field mapping", (value, rows: string[] = []) => [...rows, value], [])
-  .option("--sign-mode <mode>", `signed_amount, amount_direction_column, or debit_credit_columns`, "signed_amount")
+  .option(
+    "--map <target=source>",
+    "Add a canonical field mapping",
+    (value, rows: string[] = []) => [...rows, value],
+    [],
+  )
+  .option(
+    "--sign-mode <mode>",
+    `signed_amount, amount_direction_column, or debit_credit_columns`,
+    "signed_amount",
+  )
   .option("--invert-sign", "Invert the parsed amount sign")
   .option("--direction-column <column>")
   .option("--debit-column <column>")
   .option("--credit-column <column>")
   .option("--debit-values <values>", "Comma-separated values treated as debits")
-  .option("--credit-values <values>", "Comma-separated values treated as credits")
+  .option(
+    "--credit-values <values>",
+    "Comma-separated values treated as credits",
+  )
   .option("--date-day-first", "Parse ambiguous dates as day-first")
   .option("--date-month-first", "Parse ambiguous dates as month-first")
   .option("--apply", "Persist the template")
@@ -290,7 +350,7 @@ templatesCommand
       name: string;
       institution: string;
       accountType: string;
-      fileKind: "csv" | "xlsx";
+      fileKind: "csv" | "xls" | "xlsx";
       defaultCurrency: string;
       map?: string[];
       signMode?: string;
@@ -305,21 +365,27 @@ templatesCommand
       apply?: boolean;
       json?: boolean;
     }) => {
-      if (!signModeOptions.includes((options.signMode ?? "signed_amount") as never)) {
+      if (
+        !signModeOptions.includes(
+          (options.signMode ?? "signed_amount") as never,
+        )
+      ) {
         throw new Error(`Unsupported sign mode: ${options.signMode}`);
       }
 
-      const { columnMapJson, signLogicJson, normalizationRulesJson } = createTemplateConfig({
-        columnMappings: parseTemplateMappings(options.map),
-        signMode: (options.signMode ?? "signed_amount") as (typeof signModeOptions)[number],
-        invertSign: Boolean(options.invertSign),
-        directionColumn: options.directionColumn,
-        debitColumn: options.debitColumn,
-        creditColumn: options.creditColumn,
-        debitValuesText: options.debitValues,
-        creditValuesText: options.creditValues,
-        dateDayFirst: options.dateMonthFirst ? false : true,
-      });
+      const { columnMapJson, signLogicJson, normalizationRulesJson } =
+        createTemplateConfig({
+          columnMappings: parseTemplateMappings(options.map),
+          signMode: (options.signMode ??
+            "signed_amount") as (typeof signModeOptions)[number],
+          invertSign: Boolean(options.invertSign),
+          directionColumn: options.directionColumn,
+          debitColumn: options.debitColumn,
+          creditColumn: options.creditColumn,
+          debitValuesText: options.debitValues,
+          creditValuesText: options.creditValues,
+          dateDayFirst: options.dateMonthFirst ? false : true,
+        });
       const { seededUserId } = getDbRuntimeConfig();
       const result = await domain.createTemplate({
         template: {
@@ -373,11 +439,7 @@ rulesCommand
   .option("--apply", "Persist the draft job")
   .option("--json", "Output JSON")
   .action(
-    async (options: {
-      text: string;
-      apply?: boolean;
-      json?: boolean;
-    }) => {
+    async (options: { text: string; apply?: boolean; json?: boolean }) => {
       const result = await domain.queueRuleDraft({
         requestText: options.text,
         actorName: "cli",
@@ -393,21 +455,15 @@ rulesCommand
   .requiredOption("--job <jobId>")
   .option("--apply", "Persist the resulting rule")
   .option("--json", "Output JSON")
-  .action(
-    async (options: {
-      job: string;
-      apply?: boolean;
-      json?: boolean;
-    }) => {
-      const result = await domain.applyRuleDraft({
-        jobId: options.job,
-        actorName: "cli",
-        sourceChannel: "cli",
-        apply: Boolean(options.apply),
-      });
-      render(result, options.json);
-    },
-  );
+  .action(async (options: { job: string; apply?: boolean; json?: boolean }) => {
+    const result = await domain.applyRuleDraft({
+      jobId: options.job,
+      actorName: "cli",
+      sourceChannel: "cli",
+      apply: Boolean(options.apply),
+    });
+    render(result, options.json);
+  });
 
 rulesCommand
   .command("create")
@@ -446,7 +502,10 @@ const investmentsCommand = program.command("investments");
 
 investmentsCommand
   .command("holdings")
-  .option("--scope <scope>", "consolidated, personal, company_a, company_b, or account:<id>")
+  .option(
+    "--scope <scope>",
+    "consolidated, personal, company_a, company_b, or account:<id>",
+  )
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
     const { scope } = await resolveScope(options.scope);
@@ -505,7 +564,9 @@ positionsCommand
       json?: boolean;
     }) => {
       const dataset = await repository.getDataset();
-      const entityId = dataset.entities.find((row) => row.slug === options.entity)?.id;
+      const entityId = dataset.entities.find(
+        (row) => row.slug === options.entity,
+      )?.id;
       if (!entityId) {
         throw new Error(`Unknown entity slug: ${options.entity}`);
       }
@@ -529,7 +590,10 @@ positionsCommand
   .requiredOption("--account <accountId>")
   .requiredOption("--entity <entitySlug>")
   .requiredOption("--file <filePath>")
-  .option("--apply", "Persist the transaction quantity fixes and opening positions")
+  .option(
+    "--apply",
+    "Persist the transaction quantity fixes and opening positions",
+  )
   .option("--json", "Output JSON")
   .action(
     async (options: {
@@ -540,14 +604,20 @@ positionsCommand
       json?: boolean;
     }) => {
       const dataset = await repository.getDataset();
-      const entityId = dataset.entities.find((row) => row.slug === options.entity)?.id;
+      const entityId = dataset.entities.find(
+        (row) => row.slug === options.entity,
+      )?.id;
       if (!entityId) {
         throw new Error(`Unknown entity slug: ${options.entity}`);
       }
 
       const sourceText = readFundHistoryText(options.file);
       const parsedRows = parseMyInvestorFundOrderHistoryText(sourceText);
-      const plan = buildFundOrderHistoryImportPlan(dataset, options.account, parsedRows);
+      const plan = buildFundOrderHistoryImportPlan(
+        dataset,
+        options.account,
+        parsedRows,
+      );
       const reconciliation = reconcileFundOrderHistoryImportPlan(
         dataset,
         options.account,
@@ -635,28 +705,30 @@ pricesCommand
   .option("--symbol <symbol>")
   .option("--apply", "Persist the refreshed price downstream")
   .option("--json", "Output JSON")
-  .action(async (options: { symbol?: string; apply?: boolean; json?: boolean }) => {
-    const dataset = await repository.getDataset();
-    const provider = createMarketDataProvider(dataset);
-    const symbols = options.symbol
-      ? [options.symbol]
-      : dataset.securities.map((security) => security.displaySymbol);
-    const quotes = await Promise.all(
-      symbols.map(async (symbol) => ({
-        symbol,
-        quote: await provider.getLatestQuote(symbol),
-      })),
-    );
-    render(
-      {
-        schemaVersion: "v1",
-        applied: Boolean(options.apply),
-        quotes,
-        generatedAt: new Date().toISOString(),
-      },
-      options.json,
-    );
-  });
+  .action(
+    async (options: { symbol?: string; apply?: boolean; json?: boolean }) => {
+      const dataset = await repository.getDataset();
+      const provider = createMarketDataProvider(dataset);
+      const symbols = options.symbol
+        ? [options.symbol]
+        : dataset.securities.map((security) => security.displaySymbol);
+      const quotes = await Promise.all(
+        symbols.map(async (symbol) => ({
+          symbol,
+          quote: await provider.getLatestQuote(symbol),
+        })),
+      );
+      render(
+        {
+          schemaVersion: "v1",
+          applied: Boolean(options.apply),
+          quotes,
+          generatedAt: new Date().toISOString(),
+        },
+        options.json,
+      );
+    },
+  );
 
 const jobsCommand = program.command("jobs");
 

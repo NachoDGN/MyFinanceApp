@@ -24,7 +24,6 @@ const supportedOutputKeys = [
   "category_code",
   "merchant_normalized",
   "counterparty_name",
-  "economic_entity_id_override",
   "review_suppression",
 ] as const;
 
@@ -100,9 +99,6 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
       matchedCategory?.code ??
       (transactionClass === "income" ? "uncategorized_income" : "uncategorized_expense"),
   };
-  if (matchedEntity) {
-    outputsJson.economic_entity_id_override = matchedEntity.id;
-  }
   if (merchantMatch) {
     outputsJson.merchant_normalized = merchantMatch.trim().toUpperCase();
   }

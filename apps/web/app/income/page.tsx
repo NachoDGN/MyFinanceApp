@@ -6,6 +6,7 @@ import {
   SectionCard,
   SimpleTable,
 } from "../../components/primitives";
+import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { formatCurrency, getIncomeModel } from "../../lib/queries";
 import { convertBaseEurToDisplayAmount } from "../../lib/currency";
 
@@ -90,7 +91,7 @@ export default async function IncomePage({
 
         <SimpleTable
           span="span-12"
-          headers={["Date", "Entity", "Account", "Source", "Class", "Category", "Amount", "Confidence"]}
+          headers={["Date", "Entity", "Account", "Source", "Class", "Category", "Amount", "Review", "Confidence"]}
           rows={model.transactions.map((row) => [
             row.transactionDate,
             model.dataset.entities.find((entity) => entity.id === row.economicEntityId)?.displayName ?? row.economicEntityId,
@@ -107,6 +108,16 @@ export default async function IncomePage({
               ),
               model.currency,
             ),
+            <ReviewEditorCell
+              transactionId={row.id}
+              needsReview={row.needsReview}
+              reviewReason={row.reviewReason}
+              manualNotes={row.manualNotes}
+              transactionClass={row.transactionClass}
+              classificationSource={row.classificationSource}
+              quantity={row.quantity}
+              llmPayload={row.llmPayload}
+            />,
             row.classificationConfidence,
           ])}
         />

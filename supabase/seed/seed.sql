@@ -162,19 +162,40 @@ on conflict (id) do nothing;
 insert into public.categories (code, display_name, parent_code, scope_kind, direction_kind, sort_order, active, metadata_json)
 values
   ('groceries', 'Groceries', null, 'personal', 'expense', 1, true, '{}'::jsonb),
-  ('shopping', 'Shopping', null, 'personal', 'expense', 2, true, '{}'::jsonb),
-  ('software', 'Software', null, 'company', 'expense', 3, true, '{}'::jsonb),
-  ('contractors', 'Contractors', null, 'company', 'expense', 4, true, '{}'::jsonb),
-  ('salary', 'Salary', null, 'system', 'income', 5, true, '{}'::jsonb),
-  ('client_payment', 'Client Payment', null, 'company', 'income', 6, true, '{}'::jsonb),
-  ('dividend', 'Dividend', null, 'investment', 'income', 7, true, '{}'::jsonb),
-  ('interest', 'Interest', null, 'investment', 'income', 8, true, '{}'::jsonb),
-  ('stock_buy', 'Stock Buy', null, 'investment', 'investment', 9, true, '{}'::jsonb),
-  ('broker_fee', 'Broker Fee', null, 'investment', 'investment', 10, true, '{}'::jsonb),
-  ('cash_transfer_to_broker', 'Cash Transfer To Broker', null, 'investment', 'neutral', 11, true, '{}'::jsonb),
-  ('cash_transfer_from_broker', 'Cash Transfer From Broker', null, 'investment', 'neutral', 12, true, '{}'::jsonb),
-  ('uncategorized_expense', 'Uncategorized Expense', null, 'system', 'expense', 13, true, '{}'::jsonb),
-  ('uncategorized_investment', 'Uncategorized Investment', null, 'investment', 'investment', 14, true, '{}'::jsonb)
+  ('rent', 'Rent', null, 'personal', 'expense', 2, true, '{}'::jsonb),
+  ('mortgage', 'Mortgage', null, 'personal', 'expense', 3, true, '{}'::jsonb),
+  ('utilities', 'Utilities', null, 'personal', 'expense', 4, true, '{}'::jsonb),
+  ('dining', 'Dining', null, 'personal', 'expense', 5, true, '{}'::jsonb),
+  ('transport', 'Transport', null, 'personal', 'expense', 6, true, '{}'::jsonb),
+  ('subscriptions', 'Subscriptions', null, 'personal', 'expense', 7, true, '{}'::jsonb),
+  ('insurance', 'Insurance', null, 'personal', 'expense', 8, true, '{}'::jsonb),
+  ('health', 'Health', null, 'personal', 'expense', 9, true, '{}'::jsonb),
+  ('travel', 'Travel', null, 'personal', 'expense', 10, true, '{}'::jsonb),
+  ('shopping', 'Shopping', null, 'personal', 'expense', 11, true, '{}'::jsonb),
+  ('entertainment', 'Entertainment', null, 'personal', 'expense', 12, true, '{}'::jsonb),
+  ('education', 'Education', null, 'personal', 'expense', 13, true, '{}'::jsonb),
+  ('home_maintenance', 'Home Maintenance', null, 'personal', 'expense', 14, true, '{}'::jsonb),
+  ('tax', 'Tax', null, 'personal', 'expense', 15, true, '{}'::jsonb),
+  ('cash_withdrawal', 'Cash Withdrawal', null, 'personal', 'neutral', 16, true, '{}'::jsonb),
+  ('business_income', 'Business Income', null, 'personal', 'income', 17, true, '{}'::jsonb),
+  ('salary', 'Salary', null, 'system', 'income', 18, true, '{}'::jsonb),
+  ('dividend_income', 'Dividend Income', null, 'system', 'income', 19, true, '{}'::jsonb),
+  ('interest_income', 'Interest Income', null, 'system', 'income', 20, true, '{}'::jsonb),
+  ('transfer_between_accounts', 'Transfer Between Accounts', null, 'system', 'neutral', 21, true, '{}'::jsonb),
+  ('atm_fee', 'ATM Fee', null, 'system', 'expense', 22, true, '{}'::jsonb),
+  ('bank_fee', 'Bank Fee', null, 'system', 'expense', 23, true, '{}'::jsonb),
+  ('software', 'Software', null, 'company', 'expense', 24, true, '{}'::jsonb),
+  ('contractors', 'Contractors', null, 'company', 'expense', 25, true, '{}'::jsonb),
+  ('client_payment', 'Client Payment', null, 'company', 'income', 26, true, '{}'::jsonb),
+  ('dividend', 'Dividend', null, 'investment', 'income', 27, true, '{}'::jsonb),
+  ('interest', 'Interest', null, 'investment', 'income', 28, true, '{}'::jsonb),
+  ('stock_buy', 'Stock Buy', null, 'investment', 'investment', 29, true, '{}'::jsonb),
+  ('broker_fee', 'Broker Fee', null, 'investment', 'investment', 30, true, '{}'::jsonb),
+  ('cash_transfer_to_broker', 'Cash Transfer To Broker', null, 'investment', 'neutral', 31, true, '{}'::jsonb),
+  ('cash_transfer_from_broker', 'Cash Transfer From Broker', null, 'investment', 'neutral', 32, true, '{}'::jsonb),
+  ('uncategorized_expense', 'Uncategorized Expense', null, 'system', 'expense', 33, true, '{}'::jsonb),
+  ('uncategorized_income', 'Uncategorized Income', null, 'system', 'income', 34, true, '{}'::jsonb),
+  ('uncategorized_investment', 'Uncategorized Investment', null, 'investment', 'investment', 35, true, '{}'::jsonb)
 on conflict (code) do nothing;
 
 insert into public.import_batches (
@@ -339,7 +360,7 @@ insert into public.transactions (
 values
   ('00000000-0000-0000-0000-000000000501', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000201', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000401', 'tx-salary-2026-04-01', null, '2026-04-01', '2026-04-01', 4200.00, 'EUR', 4200.00, 1.0, 'Payroll ACME Europe', 'PAYROLL ACME EUROPE', 'ACME EUROPE', 'Employer', 'income', 'salary', null, null, null, 'not_transfer', false, 'none', 'rule', 'user_rule', 1.0, false, null, false, null, null, '{"source":"santander"}', null, null, null),
   ('00000000-0000-0000-0000-000000000502', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000202', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000102', null, 'tx-client-2026-04-01', null, '2026-04-01', '2026-04-01', 6800.00, 'EUR', 6800.00, 1.0, 'Client payout / UX retainer', 'CLIENT PAYOUT UX RETAINER', 'CLIENT A', 'Client A', 'income', 'client_payment', null, null, null, 'not_transfer', false, 'none', 'rule', 'user_rule', 1.0, false, null, false, null, null, '{"source":"bbva"}', null, null, null),
-  ('00000000-0000-0000-0000-000000000504', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000201', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000102', '00000000-0000-0000-0000-000000000401', 'tx-company-software-2026-04-02', null, '2026-04-02', '2026-04-02', -320.00, 'EUR', -320.00, 1.0, 'Notion Enterprise Renewal', 'NOTION ENTERPRISE RENEWAL', 'NOTION', null, 'expense', 'software', null, null, null, 'not_transfer', true, 'expected', 'manual_override', 'manual', 1.0, false, null, false, 'Paid personally, attributable to Company A.', null, '{"source":"santander"}', null, null, null),
+  ('00000000-0000-0000-0000-000000000504', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000201', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000401', 'tx-notion-subscription-2026-04-02', null, '2026-04-02', '2026-04-02', -32.00, 'EUR', -32.00, 1.0, 'Notion subscription', 'NOTION SUBSCRIPTION', 'NOTION', null, 'expense', 'subscriptions', null, null, null, 'not_transfer', false, 'none', 'manual_override', 'manual', 1.0, false, null, false, 'Personal productivity subscription charged to the Santander checking account.', null, '{"source":"santander"}', null, null, null),
   ('00000000-0000-0000-0000-000000000505', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000201', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000401', 'tx-broker-transfer-out-2026-04-02', 'xfer-2026-04-02-2000', '2026-04-02', '2026-04-02', -2000.00, 'EUR', -2000.00, 1.0, 'Transfer to IBKR account', 'TRANSFER TO IBKR ACCOUNT', null, 'Interactive Brokers', 'transfer_internal', 'cash_transfer_to_broker', '00000000-0000-0000-0000-000000000601', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000506', 'matched', false, 'none', 'transfer_match', 'transfer_matcher', 1.0, false, null, false, null, null, '{"source":"santander"}', null, null, null),
   ('00000000-0000-0000-0000-000000000506', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000402', 'tx-broker-transfer-in-2026-04-02', 'xfer-2026-04-02-2000', '2026-04-02', '2026-04-02', 2000.00, 'EUR', 2000.00, 1.0, 'Bank transfer received', 'BANK TRANSFER RECEIVED', null, 'Santander', 'transfer_internal', 'cash_transfer_from_broker', '00000000-0000-0000-0000-000000000601', '00000000-0000-0000-0000-000000000201', '00000000-0000-0000-0000-000000000505', 'matched', false, 'none', 'transfer_match', 'transfer_matcher', 1.0, false, null, false, null, null, '{"source":"ibkr"}', null, null, null),
   ('00000000-0000-0000-0000-000000000507', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000204', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000101', '00000000-0000-0000-0000-000000000402', 'tx-amd-buy-2026-04-02', null, '2026-04-02', '2026-04-02', -134.20, 'EUR', -134.20, 1.0, 'ADVANCED MICRO DEVICES @ 1', 'ADVANCED MICRO DEVICES @ 1', 'AMD', null, 'investment_trade_buy', 'stock_buy', null, null, null, 'not_transfer', false, 'none', 'investment_parser', 'investment_parser', 0.96, false, null, false, 'Quantity derived from descriptor.', null, '{"source":"ibkr"}', '00000000-0000-0000-0000-000000000901', 1.000000, 132.00),
@@ -353,7 +374,7 @@ insert into public.classification_rules (
 )
 values
   ('00000000-0000-0000-0000-000000000701', '00000000-0000-0000-0000-000000000001', 10, true, '{"account_id":"00000000-0000-0000-0000-000000000202"}', '{"normalized_description_regex":"CLIENT PAYOUT"}', '{"transaction_class":"income","category_code":"client_payment"}', '00000000-0000-0000-0000-000000000502', false, 12, '2026-04-01T08:00:00Z'),
-  ('00000000-0000-0000-0000-000000000702', '00000000-0000-0000-0000-000000000001', 20, true, '{"global":true}', '{"merchant_equals":"NOTION"}', '{"transaction_class":"expense","category_code":"software","economic_entity_id_override":"00000000-0000-0000-0000-000000000102"}', '00000000-0000-0000-0000-000000000504', true, 3, '2026-04-02T07:21:00Z')
+  ('00000000-0000-0000-0000-000000000702', '00000000-0000-0000-0000-000000000001', 20, true, '{"account_id":"00000000-0000-0000-0000-000000000201"}', '{"merchant_equals":"NOTION"}', '{"transaction_class":"expense","category_code":"subscriptions","merchant_normalized":"NOTION"}', '00000000-0000-0000-0000-000000000504', true, 3, '2026-04-02T07:21:00Z')
 on conflict (id) do nothing;
 
 insert into public.jobs (id, job_type, payload_json, status, attempts, available_at)
@@ -361,7 +382,7 @@ values
   (
     '00000000-0000-0000-0000-000000000900',
     'rule_parse',
-    '{"requestText":"Whenever my Santander personal card description contains NOTION, classify it as a Company A software expense and set the merchant to NOTION.","parsedRule":{"title":"Notion company software override","summary":"Routes Notion card rows into Company A software so the personal card booking does not distort personal spend.","priority":25,"scopeJson":{"account_id":"00000000-0000-0000-0000-000000000201"},"conditionsJson":{"normalized_description_regex":"NOTION"},"outputsJson":{"transaction_class":"expense","category_code":"software","merchant_normalized":"NOTION","economic_entity_id_override":"00000000-0000-0000-0000-000000000102"},"confidence":"0.94","explanation":["The request named a specific merchant and a single economic entity override.","The rule is scoped to the named Santander personal account for safety."],"parseSource":"llm","model":"gpt-4.1-mini","generatedAt":"2026-04-03T08:25:00Z"},"appliedRuleId":"00000000-0000-0000-0000-000000000702"}',
+    '{"requestText":"Whenever my Santander personal card description contains NOTION, classify it as a personal subscriptions expense and set the merchant to NOTION.","parsedRule":{"title":"Notion personal subscription rule","summary":"Keeps recurring Notion charges in personal subscriptions for the Santander personal account.","priority":25,"scopeJson":{"account_id":"00000000-0000-0000-0000-000000000201"},"conditionsJson":{"normalized_description_regex":"NOTION"},"outputsJson":{"transaction_class":"expense","category_code":"subscriptions","merchant_normalized":"NOTION"},"confidence":"0.94","explanation":["The request named a specific merchant and a personal spending category.","The rule is scoped to the named Santander personal account for safety."],"parseSource":"llm","model":"gpt-4.1-mini","generatedAt":"2026-04-03T08:25:00Z"},"appliedRuleId":"00000000-0000-0000-0000-000000000702"}',
     'completed',
     1,
     '2026-04-03T08:20:00Z'

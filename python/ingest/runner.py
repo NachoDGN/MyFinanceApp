@@ -30,6 +30,7 @@ TABLE_PREVIEW_ROW_LIMIT = 8
 TABLE_PREVIEW_COLUMN_LIMIT = 12
 CSV_DELIMITER_CANDIDATES = [",", ";", "\t", "|"]
 OPENXML_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+LEGACY_EXCEL_SUFFIXES = {".xls"}
 STRICT_OPENXML_MAIN_NAMESPACE = b"http://purl.oclc.org/ooxml/spreadsheetml/main"
 STRICT_OPENXML_REL_NAMESPACE = b"http://purl.oclc.org/ooxml/officeDocument/relationships"
 TRANSITIONAL_OPENXML_MAIN_NAMESPACE = (
@@ -128,9 +129,52 @@ def index_to_column_letter(index: int) -> str:
 
 def infer_file_kind(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
+    if suffix in LEGACY_EXCEL_SUFFIXES:
+        return "xls"
     if suffix in OPENXML_EXCEL_SUFFIXES:
         return "xlsx"
     return "csv"
+
+
+def is_excel_file_kind(file_kind: str) -> bool:
+    return file_kind in {"xls", "xlsx"}
+
+
+def excel_engine_for_kind(file_kind: str) -> str | None:
+    if file_kind == "xls":
+        return "xlrd"
+    return None
+
+
+def open_excel_file(file_path: Path, *, file_kind: str) -> pd.ExcelFile:
+    engine = excel_engine_for_kind(file_kind)
+    if engine:
+        return pd.ExcelFile(file_path, engine=engine)
+    return pd.ExcelFile(file_path)
+
+
+def read_excel_frame(
+    file_path: Path,
+    *,
+    file_kind: str,
+    sheet_name: str | int,
+    header: int | None,
+    dtype: Any,
+    nrows: int | None = None,
+) -> pd.DataFrame:
+    options: dict[str, Any] = {
+        "sheet_name": sheet_name,
+        "header": header,
+        "dtype": dtype,
+    }
+    if nrows is not None:
+        options["nrows"] = nrows
+
+    engine = excel_engine_for_kind(file_kind)
+    if engine:
+        options["engine"] = engine
+
+    return pd.read_excel(file_path, **options)
 
 
 def normalize_strict_openxml_bytes(data: bytes) -> bytes:
@@ -177,13 +221,18 @@ def compatible_excel_path(file_path: Path):
         yield converted_path
 
 
-def list_excel_preview_sheet_names(file_path: Path) -> list[str]:
-    workbook = pd.ExcelFile(file_path)
+def list_excel_preview_sheet_names(file_path: Path, *, file_kind: str) -> list[str]:
+    workbook = open_excel_file(file_path, file_kind=file_kind)
     try:
         if workbook.sheet_names:
             return workbook.sheet_names
     finally:
         workbook.close()
+
+    if file_kind == "xls":
+        raise ValueError(
+            "The uploaded spreadsheet does not contain any worksheet tabs with rows and columns to preview."
+        )
 
     openpyxl_workbook = load_workbook(file_path, read_only=True, data_only=True)
     non_tabular_sheet_names: list[str] = []
@@ -289,9 +338,10 @@ def load_raw_preview_frame(
             delimiter=delimiter or ",",
             encoding=encoding or "utf-8",
         )
-    elif file_kind == "xlsx":
-        frame = pd.read_excel(
+    elif is_excel_file_kind(file_kind):
+        frame = read_excel_frame(
             file_path,
+            file_kind=file_kind,
             sheet_name=sheet_name or 0,
             header=None,
             dtype=object,
@@ -366,11 +416,22 @@ def format_excel_date_token(value: date, token: str) -> str:
     return value.isoformat()
 
 
-def load_xlsx_display_frame(
+def load_excel_display_frame(
     file_path: Path,
     *,
+    file_kind: str,
     sheet_name: str | None = None,
 ) -> pd.DataFrame:
+    if file_kind == "xls":
+        frame = read_excel_frame(
+            file_path,
+            file_kind=file_kind,
+            sheet_name=sheet_name or 0,
+            header=None,
+            dtype=object,
+        )
+        return frame.fillna("")
+
     rows: list[list[Any]] = []
 
     with compatible_excel_path(file_path) as compatible_path:
@@ -429,7 +490,10 @@ def build_workbook_preview(file_path: Path) -> dict[str, Any]:
 
     sheet_previews = []
     with compatible_excel_path(file_path) as compatible_path:
-        for sheet_name in list_excel_preview_sheet_names(compatible_path)[:3]:
+        for sheet_name in list_excel_preview_sheet_names(
+            compatible_path,
+            file_kind=file_kind,
+        )[:3]:
             frame = load_raw_preview_frame(
                 compatible_path,
                 file_kind=file_kind,
@@ -473,7 +537,10 @@ def build_workbook_validation(file_path: Path) -> dict[str, Any]:
         )
 
     with compatible_excel_path(file_path) as compatible_path:
-        for sheet_name in list_excel_preview_sheet_names(compatible_path)[:3]:
+        for sheet_name in list_excel_preview_sheet_names(
+            compatible_path,
+            file_kind=file_kind,
+        )[:3]:
             frame = load_raw_preview_frame(
                 compatible_path,
                 file_kind=file_kind,
@@ -546,9 +613,13 @@ def build_table_preview(
             header=header_zero_index,
             dtype=object,
         )
-    elif file_kind == "xlsx":
+    elif is_excel_file_kind(file_kind):
         frame = apply_header_row(
-            load_xlsx_display_frame(file_path, sheet_name=sheet_name),
+            load_excel_display_frame(
+                file_path,
+                file_kind=file_kind,
+                sheet_name=sheet_name,
+            ),
             header_row_index=header_row_index,
         )
     else:
@@ -891,10 +962,11 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
             header=header_zero_index,
             dtype=object,
         )
-    elif file_kind == "xlsx":
+    elif is_excel_file_kind(file_kind):
         frame = apply_header_row(
-            load_xlsx_display_frame(
+            load_excel_display_frame(
                 file_path,
+                file_kind=file_kind,
                 sheet_name=template.get("sheet_name") or None,
             ),
             header_row_index=header_row_index,

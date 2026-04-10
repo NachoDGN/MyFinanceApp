@@ -16,7 +16,7 @@ import {
   inspectSpreadsheetWorkbook,
   previewSpreadsheetTable,
 } from "./repository";
-import { canonicalFieldKeys } from "./template-config";
+import { canonicalFieldKeys, isWorkbookFileKind } from "./template-config";
 import type { Account, ImportTemplate } from "./types";
 
 export interface InferImportTemplateDraftInput {
@@ -121,7 +121,8 @@ function resolvePreviewSheetName(
 
   const normalizedInferredSheetName = normalizeSheetName(inferredSheetName);
   const normalizedExactMatch = availableSheetNames.find(
-    (sheetName) => normalizeSheetName(sheetName) === normalizedInferredSheetName,
+    (sheetName) =>
+      normalizeSheetName(sheetName) === normalizedInferredSheetName,
   );
   if (normalizedExactMatch) {
     return normalizedExactMatch;
@@ -206,7 +207,7 @@ export async function inferImportTemplateDraft(
   const workbookPreview = await inspectWorkbook(input.filePath);
   if (workbookPreview.sheetPreviews.length === 0) {
     throw new Error(
-      workbookPreview.fileKind === "xlsx"
+      isWorkbookFileKind(workbookPreview.fileKind)
         ? "The uploaded spreadsheet does not contain any worksheet tabs with rows and columns to preview."
         : "No spreadsheet preview could be generated from the uploaded file.",
     );
@@ -238,15 +239,14 @@ export async function inferImportTemplateDraft(
   const rowsToSkipBeforeHeader =
     tableStart.rows_to_skip_before_header ??
     Math.max(tableStart.header_row_index - 1, 0);
-  const resolvedSheetName =
-    workbookPreview.fileKind === "xlsx"
-      ? resolvePreviewSheetName(
-          workbookPreview.sheetPreviews,
-          tableStart.sheet_name,
-        )
-      : null;
+  const resolvedSheetName = isWorkbookFileKind(workbookPreview.fileKind)
+    ? resolvePreviewSheetName(
+        workbookPreview.sheetPreviews,
+        tableStart.sheet_name,
+      )
+    : null;
   if (
-    workbookPreview.fileKind === "xlsx" &&
+    isWorkbookFileKind(workbookPreview.fileKind) &&
     tableStart.sheet_name &&
     resolvedSheetName !== tableStart.sheet_name
   ) {

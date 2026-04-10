@@ -16,7 +16,14 @@ import type {
   DomainDataset,
   Transaction,
 } from "@myfinance/domain";
-import { buildLiveHoldingRows, getDatasetLatestDate } from "@myfinance/domain";
+import {
+  buildAllowedCategoriesForAccount,
+  buildAllowedTransactionClassesForAccount,
+  buildLiveHoldingRows,
+  getAllowedCategoryCodesForAccount,
+  getDatasetLatestDate,
+  resolveConstrainedEconomicEntityId,
+} from "@myfinance/domain";
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -319,29 +326,6 @@ export function parseInvestmentEvent(transaction: Transaction): {
 
   return { transactionClass: "unknown" };
 }
-
-const allowedTransactionClasses = [
-  "income",
-  "expense",
-  "transfer_internal",
-  "transfer_external",
-  "suspected_internal_transfer_pending",
-  "investment_trade_buy",
-  "investment_trade_sell",
-  "dividend",
-  "interest",
-  "fee",
-  "refund",
-  "reimbursement",
-  "owner_contribution",
-  "owner_draw",
-  "loan_inflow",
-  "loan_principal_payment",
-  "loan_interest_payment",
-  "fx_conversion",
-  "balance_adjustment",
-  "unknown",
-] as const;
 
 type DeterministicClassification = {
   transactionClass: string;
@@ -1611,16 +1595,70 @@ function buildDeterministicClassification(
 ): DeterministicClassification {
   const matchedRule = applyRuleMatch(transaction, dataset.rules);
   if (matchedRule) {
+    const allowedTransactionClasses = new Set(
+      buildAllowedTransactionClassesForAccount(account),
+    );
+    const allowedCategoryCodes = getAllowedCategoryCodesForAccount(
+      dataset,
+      account,
+    );
+    const requestedTransactionClass =
+      typeof matchedRule.outputsJson.transaction_class === "string"
+        ? matchedRule.outputsJson.transaction_class
+        : null;
+    const requestedCategoryCode =
+      typeof matchedRule.outputsJson.category_code === "string"
+        ? matchedRule.outputsJson.category_code
+        : null;
+    const requestedEconomicEntityId =
+      typeof matchedRule.outputsJson.economic_entity_id_override === "string"
+        ? matchedRule.outputsJson.economic_entity_id_override
+        : null;
+    const rejectedRuleOutputs: string[] = [];
+    if (
+      requestedTransactionClass &&
+      !allowedTransactionClasses.has(
+        requestedTransactionClass as Transaction["transactionClass"],
+      )
+    ) {
+      rejectedRuleOutputs.push("transaction class");
+    }
+    if (requestedCategoryCode && !allowedCategoryCodes.has(requestedCategoryCode)) {
+      rejectedRuleOutputs.push("category");
+    }
+    if (
+      requestedEconomicEntityId &&
+      resolveConstrainedEconomicEntityId(
+        dataset,
+        account,
+        requestedEconomicEntityId,
+        transaction.economicEntityId,
+      ) !== requestedEconomicEntityId
+    ) {
+      rejectedRuleOutputs.push("economic entity");
+    }
+
+    const transactionClass =
+      requestedTransactionClass &&
+      allowedTransactionClasses.has(
+        requestedTransactionClass as Transaction["transactionClass"],
+      )
+        ? requestedTransactionClass
+        : transaction.transactionClass;
+    const categoryCode =
+      requestedCategoryCode && allowedCategoryCodes.has(requestedCategoryCode)
+        ? requestedCategoryCode
+        : (transaction.categoryCode ?? getFallbackCategory(transaction, account));
+    const economicEntityId = resolveConstrainedEconomicEntityId(
+      dataset,
+      account,
+      requestedEconomicEntityId,
+      transaction.economicEntityId,
+    );
+
     return {
-      transactionClass:
-        typeof matchedRule.outputsJson.transaction_class === "string"
-          ? matchedRule.outputsJson.transaction_class
-          : transaction.transactionClass,
-      categoryCode:
-        typeof matchedRule.outputsJson.category_code === "string"
-          ? matchedRule.outputsJson.category_code
-          : (transaction.categoryCode ??
-            getFallbackCategory(transaction, account)),
+      transactionClass,
+      categoryCode,
       merchantNormalized:
         typeof matchedRule.outputsJson.merchant_normalized === "string"
           ? matchedRule.outputsJson.merchant_normalized
@@ -1629,16 +1667,20 @@ function buildDeterministicClassification(
         typeof matchedRule.outputsJson.counterparty_name === "string"
           ? matchedRule.outputsJson.counterparty_name
           : (transaction.counterpartyName ?? null),
-      economicEntityId:
-        typeof matchedRule.outputsJson.economic_entity_id_override === "string"
-          ? matchedRule.outputsJson.economic_entity_id_override
-          : transaction.economicEntityId,
+      economicEntityId,
       classificationStatus: "rule",
       classificationSource: "user_rule",
-      classificationConfidence: "1.00",
-      explanation: "Matched an existing saved classification rule.",
-      needsReview: false,
-      reviewReason: null,
+      classificationConfidence:
+        rejectedRuleOutputs.length === 0 ? "1.00" : "0.00",
+      explanation:
+        rejectedRuleOutputs.length === 0
+          ? "Matched an existing saved classification rule."
+          : "A saved rule matched, but some requested outputs were incompatible with this account.",
+      needsReview: rejectedRuleOutputs.length > 0,
+      reviewReason:
+        rejectedRuleOutputs.length > 0
+          ? `Saved rule requested an incompatible ${rejectedRuleOutputs.join(", ")} for this account.`
+          : null,
       securityHint: null,
       quantity: transaction.quantity ?? null,
       unitPriceOriginal: transaction.unitPriceOriginal ?? null,
@@ -1736,12 +1778,14 @@ function buildDeterministicClassification(
 export function getTransactionClassifierConfig() {
   const defaultModel =
     process.env.LLM_TRANSACTION_MODEL ??
+    process.env.GEMINI_TRANSACTION_MODEL ??
     process.env.OPENAI_TRANSACTION_MODEL ??
-    "gpt-4.1-mini";
+    "gemini-3-flash-preview";
   return {
     model: defaultModel,
     lowConfidenceCutoff: Number(
       process.env.LLM_TRANSACTION_LOW_CONFIDENCE ??
+        process.env.GEMINI_TRANSACTION_LOW_CONFIDENCE ??
         process.env.OPENAI_TRANSACTION_LOW_CONFIDENCE ??
         "0.70",
     ),
@@ -1787,7 +1831,9 @@ function getTransactionReviewModel(
   trigger?: TransactionEnrichmentOptions["trigger"],
 ) {
   if (trigger === "manual_resolved_review") {
-    return getResolvedTransactionReviewModel();
+    return account.assetDomain === "investment"
+      ? getResolvedTransactionReviewModel()
+      : getTransactionClassifierConfig().model;
   }
 
   return account.assetDomain === "investment"
@@ -1801,24 +1847,6 @@ export function isTransactionClassifierConfigured() {
 
 export function isInvestmentTransactionClassifierConfigured() {
   return isModelConfigured(getInvestmentTransactionClassifierConfig().model);
-}
-
-function buildAllowedCategories(dataset: DomainDataset, account: Account) {
-  const entityKind =
-    dataset.entities.find((entity) => entity.id === account.entityId)
-      ?.entityKind ?? "personal";
-  const scopeKinds =
-    account.assetDomain === "investment"
-      ? new Set(["investment", "system", "both"])
-      : new Set([
-          entityKind === "company" ? "company" : "personal",
-          "system",
-          "both",
-        ]);
-
-  return dataset.categories.filter((category) =>
-    scopeKinds.has(category.scopeKind),
-  );
 }
 
 async function requestLlmClassification(
@@ -1838,6 +1866,10 @@ async function requestLlmClassification(
     deterministic,
   );
   const model = getTransactionReviewModel(account, options?.trigger);
+  const allowedTransactionClasses = buildAllowedTransactionClassesForAccount(
+    account,
+  );
+  const allowedCategories = buildAllowedCategoriesForAccount(dataset, account);
   const reviewExamples = buildHistoricalReviewExamples(
     dataset,
     account,
@@ -1908,12 +1940,10 @@ async function requestLlmClassification(
         accountType: account.accountType,
       },
       allowedTransactionClasses,
-      allowedCategories: buildAllowedCategories(dataset, account).map(
-        (category) => ({
-          code: category.code,
-          displayName: category.displayName,
-        }),
-      ),
+      allowedCategories: allowedCategories.map((category) => ({
+        code: category.code,
+        displayName: category.displayName,
+      })),
       transaction: {
         transactionDate: transaction.transactionDate,
         postedDate: transaction.postedDate ?? null,
@@ -2082,10 +2112,13 @@ export async function enrichImportedTransaction(
     options,
   );
   const { lowConfidenceCutoff } = getTransactionClassifierConfig();
-  const allowedCategoryCodes = new Set(
-    dataset.categories.map((category) => category.code),
+  const allowedCategoryCodes = getAllowedCategoryCodesForAccount(
+    dataset,
+    account,
   );
-  const allowedClassSet = new Set<string>(allowedTransactionClasses);
+  const allowedClassSet = new Set<string>(
+    buildAllowedTransactionClassesForAccount(account),
+  );
 
   let transactionClass = deterministic.transactionClass;
   let categoryCode = deterministic.categoryCode;
@@ -2115,9 +2148,10 @@ export async function enrichImportedTransaction(
         ? llm.categoryCode
         : deterministic.categoryCode;
 
-    const deterministicWins = new Set(["user_rule", "transfer_matcher"]).has(
-      deterministic.classificationSource,
-    );
+    const deterministicWins =
+      new Set(["user_rule", "transfer_matcher"]).has(
+        deterministic.classificationSource,
+      ) && !deterministic.needsReview;
     const shouldApplyLlm =
       !deterministicWins &&
       (deterministic.classificationSource !== "investment_parser" ||
@@ -2134,7 +2168,12 @@ export async function enrichImportedTransaction(
     if (shouldApplyLlm) {
       transactionClass = llmTransactionClass;
       categoryCode = llmCategoryCode;
-      economicEntityId = llm.economicEntityId ?? deterministic.economicEntityId;
+      economicEntityId = resolveConstrainedEconomicEntityId(
+        dataset,
+        account,
+        llm.economicEntityId,
+        deterministic.economicEntityId,
+      );
       if (isTradeTransactionClass(llmTransactionClass)) {
         quantity = llmQuantity ?? deterministic.quantity;
         unitPriceOriginal =

@@ -53,7 +53,7 @@ const templateSchema = z.object({
     "credit_card",
     "other",
   ]),
-  fileKind: z.enum(["csv", "xlsx"]),
+  fileKind: z.enum(["csv", "xls", "xlsx"]),
   sheetName: z.string().nullable().optional(),
   headerRowIndex: z.coerce.number().int().min(1).default(1),
   rowsToSkipBeforeHeader: z.coerce.number().int().min(0).default(0),

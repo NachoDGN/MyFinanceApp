@@ -28,7 +28,7 @@ export default async function SpendingPage({
           <div>
             <h1 className="page-title">Spending</h1>
             <p className="page-subtitle">
-              Outflows are grouped by economic attribution, so cross-entity expenses follow the entity that actually owns the spend.
+              Outflows stay attached to the owning account's entity, so personal-account spending remains personal and company-account spending remains company.
             </p>
           </div>
         </div>
