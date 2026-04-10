@@ -157,9 +157,24 @@ export default async function SpendingPage({
             <h1 className="spending-title">Cash outflows, merchant concentration, and category pressure</h1>
             <p className="spending-subtitle">
               Personal cash spending stays personal. Company cash spending stays company.
-              Unmatched credit-card settlements are temporarily counted as spend until the
-              related card ledger is imported and matched.
+              Credit-card statement liquidations are excluded from spend until the related card
+              ledger is imported, because they represent prior-period purchases rather than fresh
+              April spending.
             </p>
+            {model.excludedCreditCardSettlementCount > 0 &&
+            !model.hasImportedCreditCardAccount ? (
+              <div className="spending-context-note">
+                Excluded {model.excludedCreditCardSettlementCount} Santander card settlement
+                payment
+                {model.excludedCreditCardSettlementCount === 1 ? "" : "s"} totaling{" "}
+                {formatCurrency(
+                  model.excludedCreditCardSettlementAmountEur,
+                  model.currency,
+                )}
+                . The underlying card purchases are not in this workspace yet, so the bank-app
+                chart and this page still will not fully reconcile.
+              </div>
+            ) : null}
           </div>
           <div className="spending-hero-meta">
             <span className="spending-hero-pill">

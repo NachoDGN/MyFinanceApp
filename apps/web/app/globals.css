@@ -1788,6 +1788,17 @@ textarea {
   line-height: 1.6;
 }
 
+.spending-context-note {
+  max-width: 700px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 75, 43, 0.08);
+  border: 1px solid rgba(255, 75, 43, 0.12);
+  color: #8a3a26;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .spending-hero-meta {
   display: grid;
   justify-items: end;

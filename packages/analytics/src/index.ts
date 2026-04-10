@@ -131,16 +131,13 @@ function isExcludedIncome(transaction: Transaction) {
 }
 
 function isSpendingLike(transaction: Transaction) {
-  return (
-    [
-      "expense",
-      "fee",
-      "refund",
-      "loan_principal_payment",
-      "loan_interest_payment",
-    ].includes(transaction.transactionClass) ||
-    isUnmatchedCreditCardSettlement(transaction)
-  );
+  return [
+    "expense",
+    "fee",
+    "refund",
+    "loan_principal_payment",
+    "loan_interest_payment",
+  ].includes(transaction.transactionClass);
 }
 
 function incomeContributionEur(transaction: Transaction) {
@@ -1044,11 +1041,18 @@ export function buildSpendingReadModel(
   },
 ) {
   const summary = buildDashboardSummary(dataset, input);
+  const scopedPeriodTransactions = filterTransactionsByPeriod(
+    filterTransactionsByScope(dataset, input.scope),
+    summary.period,
+  );
+  const excludedCreditCardSettlementRows = sortTransactionsNewestFirst(
+    scopedPeriodTransactions.filter((transaction) =>
+      isTransactionResolvedForAnalytics(transaction) &&
+      isUnmatchedCreditCardSettlement(transaction),
+    ),
+  );
   const transactions = sortTransactionsNewestFirst(
-    filterTransactionsByPeriod(
-      filterTransactionsByScope(dataset, input.scope),
-      summary.period,
-    ).filter((transaction) => isSpendingLike(transaction)),
+    scopedPeriodTransactions.filter((transaction) => isSpendingLike(transaction)),
   );
   const resolvedTransactions = transactions.filter((transaction) =>
     isTransactionResolvedForAnalytics(transaction),
@@ -1078,6 +1082,15 @@ export function buildSpendingReadModel(
         .mul(100)
         .toFixed(2)
     : "100.00";
+  const excludedCreditCardSettlementAmountEur = excludedCreditCardSettlementRows
+    .reduce(
+      (sum, transaction) => sum.plus(amountMagnitudeEur(transaction)),
+      new Decimal(0),
+    )
+    .toFixed(2);
+  const hasCreditCardAccount = dataset.accounts.some(
+    (account) => account.accountType === "credit_card" && account.isActive,
+  );
 
   return {
     summary,
@@ -1091,6 +1104,9 @@ export function buildSpendingReadModel(
     ),
     coverage,
     uncategorizedSpendEur,
+    excludedCreditCardSettlementAmountEur,
+    excludedCreditCardSettlementCount: excludedCreditCardSettlementRows.length,
+    hasImportedCreditCardAccount: hasCreditCardAccount,
     topCategory: summary.spendingByCategory[0],
     merchantRows,
     topMerchant: merchantRows[0] ?? null,

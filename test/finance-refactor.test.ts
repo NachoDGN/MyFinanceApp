@@ -5802,7 +5802,7 @@ test("spending read model respects the selected period when building merchant to
   ]);
 });
 
-test("spending read model treats unmatched card settlements and loan payments as spend without double counting matched transfers", () => {
+test("spending read model excludes unmatched card settlements from period spend until the card ledger is imported", () => {
   const dataset = createDataset({
     transactions: [
       createTransaction({
@@ -5882,18 +5882,21 @@ test("spending read model treats unmatched card settlements and loan payments as
     referenceDate: "2026-04-03",
   });
 
-  assert.equal(model.spendMetric?.valueBaseEur, "245.00");
-  assert.equal(model.transactions.length, 3);
-  assert.equal(model.topCategory?.label, "Credit Card Payments");
-  assert.equal(model.topCategory?.amountEur, "120.00");
+  assert.equal(model.spendMetric?.valueBaseEur, "125.00");
+  assert.equal(model.transactions.length, 2);
+  assert.equal(model.topCategory?.label, "Loan Principal");
+  assert.equal(model.topCategory?.amountEur, "80.00");
   assert.deepEqual(model.merchantRows[0], {
-    label: "Credit Card Settlement",
-    amountEur: "120.00",
+    label: "Loan Servicer",
+    amountEur: "80.00",
   });
-  assert.equal(model.uncategorizedSpendEur, "200.00");
-  assert.equal(model.coverage, "18.37");
+  assert.equal(model.uncategorizedSpendEur, "80.00");
+  assert.equal(model.coverage, "36.00");
+  assert.equal(model.excludedCreditCardSettlementAmountEur, "120.00");
+  assert.equal(model.excludedCreditCardSettlementCount, 1);
+  assert.equal(model.hasImportedCreditCardAccount, false);
   assert.equal(model.trendSeries.length, 6);
-  assert.equal(model.trendSeries.at(-1)?.spendingEur, "245.00");
+  assert.equal(model.trendSeries.at(-1)?.spendingEur, "125.00");
 });
 
 test("template config builder converts typed inputs into stored JSON rules", () => {
