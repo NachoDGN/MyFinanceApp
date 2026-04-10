@@ -24,6 +24,7 @@ import {
   buildImportedTransactions,
   createTemplateConfig,
   getDatasetLatestDate,
+  getLatestAccountBalances,
   getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
   getScopeLatestDate,
@@ -3671,6 +3672,91 @@ test("investment rebuild derives signed sell quantity from stored NAV history fo
   }
 });
 
+test("investment rebuild clears stale pending enrichment markers once a trade is resolved", async () => {
+  const account = createAccount({
+    id: "brokerage-pending-enrichment",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "pending-enrichment-trade",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-03",
+        postedDate: "2026-03-03",
+        amountOriginal: "-149.26000000",
+        amountBaseEur: "-149.26000000",
+        descriptionRaw: "AMD @ 1",
+        descriptionClean: "AMD @ 1",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "llm",
+        classificationSource: "llm",
+        classificationConfidence: "0.98",
+        securityId: "security-amd-pending",
+        quantity: "1.00000000",
+        unitPriceOriginal: "149.26000000",
+        needsReview: false,
+        reviewReason: null,
+        llmPayload: {
+          analysisStatus: "pending",
+          queuedAt: "2026-03-03T10:00:00Z",
+        },
+      }),
+    ],
+    securities: [
+      {
+        id: "security-amd-pending",
+        providerName: "manual",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "EUR",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-03-01T00:00:00Z",
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-amd-pending",
+        priceDate: "2026-03-03",
+        quoteTimestamp: "2026-03-03T16:00:00Z",
+        price: "149.26000000",
+        currency: "EUR",
+        sourceName: "manual_nav_import",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-03-03T16:00:00Z",
+      },
+    ],
+  });
+
+  const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-03");
+  const patch = rebuilt.transactionPatches.find(
+    (candidate) => candidate.id === "pending-enrichment-trade",
+  );
+
+  assert.equal(
+    (patch?.llmPayload as { analysisStatus?: string } | null)?.analysisStatus,
+    "skipped",
+  );
+});
+
 test("investment rebuild still derives quantity from stored NAV history during scoped rebuilds", async () => {
   const previousApiKey = process.env.TWELVE_DATA_API_KEY;
   const previousFetch = globalThis.fetch;
@@ -6635,6 +6721,55 @@ test("cash metric includes computed brokerage cash when statement balances are a
 
   assert.equal(cashMetric.valueBaseEur, "1041.15");
   assert.equal(cashMetric.valueDisplay, "1041.15");
+});
+
+test("cash metric derives statement balances for cash accounts from imported rows when snapshots are absent", () => {
+  const cashAccount = createAccount({
+    id: "cash-account-imported-balance",
+    accountType: "checking",
+    assetDomain: "cash",
+    defaultCurrency: "EUR",
+    balanceMode: "statement",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount],
+    transactions: [
+      createTransaction({
+        id: "cash-account-imported-balance-row",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-04-09",
+        postedDate: "2026-04-09",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-100.00",
+        descriptionRaw: "Loan payment",
+        descriptionClean: "LOAN PAYMENT",
+        transactionClass: "loan_principal_payment",
+        categoryCode: "uncategorized_expense",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "6911.24",
+            balanceCurrency: "EUR",
+          },
+          SourceRow: 9,
+        },
+      }),
+    ],
+  });
+
+  const balances = getLatestAccountBalances(dataset, "2026-04-10");
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-10" },
+  );
+
+  assert.equal(balances[0]?.balanceBaseEur, "6911.24000000");
+  assert.equal(balances[0]?.sourceKind, "statement");
+  assert.equal(cashMetric.valueBaseEur, "6911.24");
 });
 
 test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {

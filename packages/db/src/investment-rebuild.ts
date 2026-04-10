@@ -2321,8 +2321,12 @@ export async function prepareInvestmentRebuild(
       historicalPrice,
       quantityDerivedFromHistoricalPrice,
     });
+    const existingLlmPayload = readOptionalRecord(transaction.llmPayload);
     const existingRebuildEvidence = readOptionalRecord(
-      readOptionalRecord(transaction.llmPayload)?.rebuildEvidence,
+      existingLlmPayload?.rebuildEvidence,
+    );
+    const existingAnalysisStatus = readOptionalString(
+      existingLlmPayload?.analysisStatus,
     );
     let changed = false;
 
@@ -2395,6 +2399,20 @@ export async function prepareInvestmentRebuild(
       }),
     );
     changed = reviewStateChanged || changed;
+
+    if (
+      existingAnalysisStatus === "pending" &&
+      transaction.needsReview === false
+    ) {
+      patch.llmPayload = {
+        analysisStatus: "skipped",
+        completedAt: new Date().toISOString(),
+        explanation:
+          readOptionalString(existingLlmPayload?.explanation) ??
+          "Investment rebuild resolved the transaction before queued enrichment completed.",
+      };
+      changed = true;
+    }
 
     if (changed) {
       upsertTransactionPatch(transactionPatches, patch);

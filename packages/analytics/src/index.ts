@@ -14,7 +14,7 @@ import {
   buildLiveHoldingRows,
   filterTransactionsByPeriod,
   filterTransactionsByScope,
-  getLatestBalanceSnapshots,
+  getLatestAccountBalances,
   getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
   resolveAccountStaleThresholdDays,
@@ -125,16 +125,14 @@ function currentCashTotal(
       (scope.kind !== "account" || account.id === scope.accountId)
     );
   };
-  const cashSnapshots = getLatestBalanceSnapshots(
-    dataset.accountBalanceSnapshots,
-    asOfDate,
-  ).filter((snapshot) => inScope(snapshot.accountId, "cash"));
-  const brokerageSnapshots = getLatestInvestmentCashBalances(
-    dataset,
-    asOfDate,
-  ).filter((snapshot) => inScope(snapshot.accountId, "investment"));
-
-  return [...cashSnapshots, ...brokerageSnapshots]
+  return getLatestAccountBalances(dataset, asOfDate)
+    .filter((snapshot) => {
+      const account = dataset.accounts.find((row) => row.id === snapshot.accountId);
+      if (!account) {
+        return false;
+      }
+      return inScope(snapshot.accountId, account.assetDomain);
+    })
     .reduce(
       (sum, snapshot) => sum.plus(snapshot.balanceBaseEur),
       new Decimal(0),

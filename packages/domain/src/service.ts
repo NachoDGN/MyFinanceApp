@@ -30,7 +30,7 @@ import {
   buildLiveHoldingRows,
   filterTransactionsByPeriod,
   filterTransactionsByScope,
-  getLatestBalanceSnapshots,
+  getLatestAccountBalances,
   getLatestInvestmentCashBalances,
   getDatasetLatestDate,
   isTransactionPendingEnrichment,
@@ -174,7 +174,7 @@ export class FinanceDomainService {
     return {
       schemaVersion: "v1",
       accounts: dataset.accounts,
-      balances: getLatestBalanceSnapshots(dataset.accountBalanceSnapshots),
+      balances: getLatestAccountBalances(dataset),
       generatedAt: new Date().toISOString(),
     };
   }

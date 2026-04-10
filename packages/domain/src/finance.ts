@@ -658,13 +658,12 @@ function readImportedSourceRow(transaction: Transaction) {
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
-function computeInvestmentBalanceFromOpening(
+function computeAccountBalanceFromOpening(
   dataset: DomainDataset,
   account: DomainDataset["accounts"][number],
   asOfDate: string,
 ): AccountBalanceSnapshot | null {
   if (
-    account.assetDomain !== "investment" ||
     !account.openingBalanceOriginal ||
     !account.openingBalanceDate ||
     account.openingBalanceDate > asOfDate
@@ -731,7 +730,45 @@ function computeInvestmentBalanceFromOpening(
   };
 }
 
-export function getLatestInvestmentCashBalances(
+function findLatestImportedBalanceTransaction(
+  dataset: DomainDataset,
+  account: DomainDataset["accounts"][number],
+  asOfDate: string,
+) {
+  return [...dataset.transactions]
+    .filter(
+      (transaction) =>
+        transaction.accountId === account.id &&
+        transaction.transactionDate <= asOfDate,
+    )
+    .sort((left, right) => {
+      const transactionDateOrder = right.transactionDate.localeCompare(
+        left.transactionDate,
+      );
+      if (transactionDateOrder !== 0) {
+        return transactionDateOrder;
+      }
+
+      const postedDateOrder = (right.postedDate ?? "").localeCompare(
+        left.postedDate ?? "",
+      );
+      if (postedDateOrder !== 0) {
+        return postedDateOrder;
+      }
+
+      const sourceRowOrder = readImportedSourceRow(right) - readImportedSourceRow(left);
+      if (sourceRowOrder !== 0) {
+        return sourceRowOrder;
+      }
+
+      return right.createdAt.localeCompare(left.createdAt);
+    })
+    .find((transaction) =>
+      parseImportedBalance(transaction, account.defaultCurrency),
+    );
+}
+
+export function getLatestAccountBalances(
   dataset: DomainDataset,
   asOfDate = todayIso(),
 ) {
@@ -744,45 +781,15 @@ export function getLatestInvestmentCashBalances(
   );
 
   for (const account of dataset.accounts) {
-    if (
-      account.assetDomain !== "investment" ||
-      snapshotsByAccount.has(account.id)
-    ) {
+    if (snapshotsByAccount.has(account.id)) {
       continue;
     }
 
-    const latestTransaction = [...dataset.transactions]
-      .filter(
-        (transaction) =>
-          transaction.accountId === account.id &&
-          transaction.transactionDate <= asOfDate,
-      )
-      .sort((left, right) => {
-        const transactionDateOrder = right.transactionDate.localeCompare(
-          left.transactionDate,
-        );
-        if (transactionDateOrder !== 0) {
-          return transactionDateOrder;
-        }
-
-        const postedDateOrder = (right.postedDate ?? "").localeCompare(
-          left.postedDate ?? "",
-        );
-        if (postedDateOrder !== 0) {
-          return postedDateOrder;
-        }
-
-        const sourceRowOrder =
-          readImportedSourceRow(right) - readImportedSourceRow(left);
-        if (sourceRowOrder !== 0) {
-          return sourceRowOrder;
-        }
-
-        return right.createdAt.localeCompare(left.createdAt);
-      })
-      .find((transaction) =>
-        parseImportedBalance(transaction, account.defaultCurrency),
-      );
+    const latestTransaction = findLatestImportedBalanceTransaction(
+      dataset,
+      account,
+      asOfDate,
+    );
 
     if (latestTransaction) {
       const parsedBalance = parseImportedBalance(
@@ -811,7 +818,7 @@ export function getLatestInvestmentCashBalances(
       continue;
     }
 
-    const computedBalance = computeInvestmentBalanceFromOpening(
+    const computedBalance = computeAccountBalanceFromOpening(
       dataset,
       account,
       asOfDate,
@@ -822,6 +829,18 @@ export function getLatestInvestmentCashBalances(
   }
 
   return [...snapshotsByAccount.values()];
+}
+
+export function getLatestInvestmentCashBalances(
+  dataset: DomainDataset,
+  asOfDate = todayIso(),
+) {
+  const accountsById = new Map(
+    dataset.accounts.map((account) => [account.id, account]),
+  );
+  return getLatestAccountBalances(dataset, asOfDate).filter(
+    (snapshot) => accountsById.get(snapshot.accountId)?.assetDomain === "investment",
+  );
 }
 
 function latestSecurityPrice(
