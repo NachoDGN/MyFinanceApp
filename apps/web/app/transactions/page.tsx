@@ -1,4 +1,5 @@
 import { AppShell } from "../../components/app-shell";
+import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { formatCurrency, getTransactionsModel } from "../../lib/queries";
@@ -10,6 +11,14 @@ export default async function TransactionsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const model = await getTransactionsModel(searchParams);
+  const creditCardTemplates = model.dataset.templates
+    .filter((template) => template.compatibleAccountType === "credit_card")
+    .map((template) => ({ id: template.id, name: template.name }));
+  const importBatchBySettlementId = new Map(
+    model.dataset.importBatches
+      .filter((batch) => batch.creditCardSettlementTransactionId)
+      .map((batch) => [batch.creditCardSettlementTransactionId!, batch]),
+  );
 
   return (
     <AppShell
@@ -60,7 +69,19 @@ export default async function TransactionsPage({
 
         <SimpleTable
           span="span-12"
-          headers={["Date", "Account", "Economic Entity", "Description", "Merchant", "Amount", "Class", "Category", "Review", "Confidence"]}
+          headers={[
+            "Date",
+            "Account",
+            "Economic Entity",
+            "Description",
+            "Merchant",
+            "Amount",
+            "Class",
+            "Category",
+            "Statement",
+            "Review",
+            "Confidence",
+          ]}
           rows={model.ledger.transactions.map((row) => [
             row.transactionDate,
             model.dataset.accounts.find((account) => account.id === row.accountId)?.displayName ?? row.accountId,
@@ -78,6 +99,19 @@ export default async function TransactionsPage({
             ),
             row.transactionClass,
             row.categoryCode ?? "—",
+            <CreditCardStatementUploadCell
+              settlementTransactionId={row.id}
+              statementStatus={row.creditCardStatementStatus}
+              linkedCreditCardAccountName={
+                model.dataset.accounts.find(
+                  (account) => account.id === row.linkedCreditCardAccountId,
+                )?.displayName ?? null
+              }
+              linkedImportFilename={
+                importBatchBySettlementId.get(row.id)?.originalFilename ?? null
+              }
+              templateOptions={creditCardTemplates}
+            />,
             <ReviewEditorCell
               transactionId={row.id}
               needsReview={row.needsReview}
@@ -87,6 +121,9 @@ export default async function TransactionsPage({
               classificationSource={row.classificationSource}
               quantity={row.quantity}
               llmPayload={row.llmPayload}
+              creditCardStatementStatus={row.creditCardStatementStatus}
+              descriptionRaw={row.descriptionRaw}
+              descriptionClean={row.descriptionClean}
             />,
             row.classificationConfidence,
           ])}

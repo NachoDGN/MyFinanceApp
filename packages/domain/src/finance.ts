@@ -42,6 +42,9 @@ export type TransactionReviewState =
   | "needs_review"
   | "resolved";
 
+const CREDIT_CARD_STATEMENT_REVIEW_REASON =
+  "Upload the matching credit-card statement to resolve category KPIs.";
+
 function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
   return (
     Boolean(value) &&
@@ -214,6 +217,13 @@ export function startOfTrailingMonthsIso(value: string, monthCount: number) {
 
 function isIsoDate(value: string | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+}
+
+function normalizeMatchingText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
 }
 
 function dayCountInclusive(start: string, end: string) {
@@ -483,7 +493,10 @@ export function filterTransactionsByScope(
 }
 
 export function isTransactionResolvedForAnalytics(
-  transaction: Pick<Transaction, "needsReview"> & {
+  transaction: Pick<
+    Transaction,
+    "needsReview" | "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+  > & {
     excludeFromAnalytics?: boolean;
     voidedAt?: string | null;
     llmPayload?: unknown;
@@ -524,17 +537,74 @@ export function isTransactionPendingEnrichment(
   return getTransactionAnalysisStatus(transaction) === "pending";
 }
 
-export function needsTransactionManualReview(
-  transaction: Pick<Transaction, "needsReview"> & { llmPayload?: unknown },
+export function isCreditCardSettlementTransaction(
+  transaction: Pick<
+    Transaction,
+    "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+  >,
+) {
+  if (
+    transaction.creditCardStatementStatus === "upload_required" ||
+    transaction.creditCardStatementStatus === "uploaded"
+  ) {
+    return true;
+  }
+
+  const normalizedText = normalizeMatchingText(
+    `${transaction.descriptionRaw} ${transaction.descriptionClean}`,
+  );
+  return (
+    normalizedText.includes("LIQUIDACION") &&
+    normalizedText.includes("TARJETAS DE CREDITO")
+  );
+}
+
+export function needsCreditCardStatementUpload(
+  transaction: Pick<
+    Transaction,
+    "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+  >,
 ) {
   return (
-    transaction.needsReview === true &&
-    !isTransactionPendingEnrichment(transaction)
+    transaction.creditCardStatementStatus === "upload_required" ||
+    (transaction.creditCardStatementStatus === "not_applicable" &&
+      isCreditCardSettlementTransaction(transaction))
+  );
+}
+
+export function getTransactionReviewReason(
+  transaction: Pick<
+    Transaction,
+    | "reviewReason"
+    | "creditCardStatementStatus"
+    | "descriptionRaw"
+    | "descriptionClean"
+  >,
+) {
+  if (needsCreditCardStatementUpload(transaction)) {
+    return CREDIT_CARD_STATEMENT_REVIEW_REASON;
+  }
+  return transaction.reviewReason ?? null;
+}
+
+export function needsTransactionManualReview(
+  transaction: Pick<
+    Transaction,
+    "needsReview" | "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+  > & { llmPayload?: unknown },
+) {
+  return (
+    !isTransactionPendingEnrichment(transaction) &&
+    (transaction.needsReview === true ||
+      needsCreditCardStatementUpload(transaction))
   );
 }
 
 export function getTransactionReviewState(
-  transaction: Pick<Transaction, "needsReview"> & { llmPayload?: unknown },
+  transaction: Pick<
+    Transaction,
+    "needsReview" | "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+  > & { llmPayload?: unknown },
 ): TransactionReviewState {
   if (isTransactionPendingEnrichment(transaction)) {
     return "pending_enrichment";

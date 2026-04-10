@@ -1,4 +1,5 @@
 import { AppShell } from "../../components/app-shell";
+import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
   formatCurrency,
@@ -137,6 +138,14 @@ export default async function SpendingPage({
     model.topMerchant && spendTotal > 0
       ? (Number(model.topMerchant.amountEur) / spendTotal) * 100
       : 0;
+  const creditCardTemplates = model.dataset.templates
+    .filter((template) => template.compatibleAccountType === "credit_card")
+    .map((template) => ({ id: template.id, name: template.name }));
+  const importBatchBySettlementId = new Map(
+    model.dataset.importBatches
+      .filter((batch) => batch.creditCardSettlementTransactionId)
+      .map((batch) => [batch.creditCardSettlementTransactionId!, batch]),
+  );
   const largestTransactions = [...model.transactions]
     .sort(
       (left, right) =>
@@ -161,18 +170,16 @@ export default async function SpendingPage({
               ledger is imported, because they represent prior-period purchases rather than fresh
               April spending.
             </p>
-            {model.excludedCreditCardSettlementCount > 0 &&
-            !model.hasImportedCreditCardAccount ? (
+            {model.excludedCreditCardSettlementCount > 0 ? (
               <div className="spending-context-note">
-                Excluded {model.excludedCreditCardSettlementCount} Santander card settlement
-                payment
+                Excluded {model.excludedCreditCardSettlementCount} credit-card settlement payment
                 {model.excludedCreditCardSettlementCount === 1 ? "" : "s"} totaling{" "}
                 {formatCurrency(
                   model.excludedCreditCardSettlementAmountEur,
                   model.currency,
                 )}
-                . The underlying card purchases are not in this workspace yet, so the bank-app
-                chart and this page still will not fully reconcile.
+                . Their underlying card purchases stay out of the KPI layer until the matching
+                statement is uploaded against the settlement row.
               </div>
             ) : null}
           </div>
@@ -187,6 +194,84 @@ export default async function SpendingPage({
             </span>
           </div>
         </section>
+
+        {model.creditCardSettlementRows.length > 0 ? (
+          <section className="spending-transactions-card">
+            <div className="spending-card-header">
+              <div>
+                <span className="spending-card-label">Statement resolution</span>
+                <h2 className="spending-card-title">Credit-card settlement rows awaiting statement upload</h2>
+              </div>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Account</th>
+                    <th>Description</th>
+                    <th>Payment</th>
+                    <th>Statement</th>
+                    <th>Review</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {model.creditCardSettlementRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{formatDate(row.transactionDate)}</td>
+                      <td>
+                        {model.dataset.accounts.find(
+                          (account) => account.id === row.accountId,
+                        )?.displayName ?? row.accountId}
+                      </td>
+                      <td>{row.descriptionRaw}</td>
+                      <td>
+                        {formatDisplayAmount(
+                          row.amountBaseEur,
+                          model.currency,
+                          row.transactionDate,
+                          model.dataset,
+                        )}
+                      </td>
+                      <td>
+                        <CreditCardStatementUploadCell
+                          settlementTransactionId={row.id}
+                          statementStatus={row.creditCardStatementStatus}
+                          linkedCreditCardAccountName={
+                            model.dataset.accounts.find(
+                              (account) =>
+                                account.id === row.linkedCreditCardAccountId,
+                            )?.displayName ?? null
+                          }
+                          linkedImportFilename={
+                            importBatchBySettlementId.get(row.id)?.originalFilename ??
+                            null
+                          }
+                          templateOptions={creditCardTemplates}
+                        />
+                      </td>
+                      <td>
+                        <ReviewEditorCell
+                          transactionId={row.id}
+                          needsReview={row.needsReview}
+                          reviewReason={row.reviewReason}
+                          manualNotes={row.manualNotes}
+                          transactionClass={row.transactionClass}
+                          classificationSource={row.classificationSource}
+                          quantity={row.quantity}
+                          llmPayload={row.llmPayload}
+                          creditCardStatementStatus={row.creditCardStatementStatus}
+                          descriptionRaw={row.descriptionRaw}
+                          descriptionClean={row.descriptionClean}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
 
         <div className="spending-layout">
           <aside className="spending-sidebar">
@@ -451,6 +536,9 @@ export default async function SpendingPage({
                         classificationSource={row.classificationSource}
                         quantity={row.quantity}
                         llmPayload={row.llmPayload}
+                        creditCardStatementStatus={row.creditCardStatementStatus}
+                        descriptionRaw={row.descriptionRaw}
+                        descriptionClean={row.descriptionClean}
                       />
                     </td>
                   </tr>

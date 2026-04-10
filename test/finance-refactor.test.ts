@@ -5894,6 +5894,8 @@ test("spending read model excludes unmatched card settlements from period spend 
   assert.equal(model.coverage, "36.00");
   assert.equal(model.excludedCreditCardSettlementAmountEur, "120.00");
   assert.equal(model.excludedCreditCardSettlementCount, 1);
+  assert.equal(model.creditCardSettlementRows.length, 1);
+  assert.equal(model.creditCardSettlementRows[0]?.id, "card-settlement");
   assert.equal(model.hasImportedCreditCardAccount, false);
   assert.equal(model.trendSeries.length, 6);
   assert.equal(model.trendSeries.at(-1)?.spendingEur, "125.00");
@@ -6866,6 +6868,53 @@ test("cash metric derives statement balances for cash accounts from imported row
 
   assert.equal(balances[0]?.balanceBaseEur, "6911.24000000");
   assert.equal(balances[0]?.sourceKind, "statement");
+  assert.equal(cashMetric.valueBaseEur, "6911.24");
+});
+
+test("cash metric excludes credit-card liabilities from the cash position KPI", () => {
+  const checkingAccount = createAccount({
+    id: "cash-account-for-credit-card-balance",
+    accountType: "checking",
+    assetDomain: "cash",
+  });
+  const creditCardAccount = createAccount({
+    id: "credit-card-liability-account",
+    accountType: "credit_card",
+    assetDomain: "cash",
+    displayName: "Santander Credit Card",
+  });
+  const dataset = createDataset({
+    accounts: [checkingAccount, creditCardAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: checkingAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "6911.24",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "6911.24",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+      {
+        accountId: creditCardAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "-432.65",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "-432.65",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+  });
+
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-10" },
+  );
+
   assert.equal(cashMetric.valueBaseEur, "6911.24");
 });
 

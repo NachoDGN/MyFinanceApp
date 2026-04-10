@@ -1,6 +1,9 @@
 "use client";
 
-import { getTransactionReviewState } from "@myfinance/domain/client";
+import {
+  getTransactionReviewReason,
+  getTransactionReviewState,
+} from "@myfinance/domain/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
@@ -19,6 +22,9 @@ type ReviewEditorCellProps = {
   securitySymbol?: string | null;
   quantity?: string | null;
   llmPayload?: unknown;
+  creditCardStatementStatus?: "not_applicable" | "upload_required" | "uploaded";
+  descriptionRaw?: string;
+  descriptionClean?: string;
 };
 
 type ReviewJobStatusPayload = {
@@ -58,6 +64,9 @@ export function ReviewEditorCell({
   securitySymbol,
   quantity,
   llmPayload,
+  creditCardStatementStatus = "not_applicable",
+  descriptionRaw = "",
+  descriptionClean = "",
 }: ReviewEditorCellProps) {
   const router = useRouter();
   const [draft, setDraft] = useState(manualNotes ?? "");
@@ -76,7 +85,19 @@ export function ReviewEditorCell({
   const [isRefreshing, startRefresh] = useTransition();
 
   const trimmedDraft = draft.trim();
-  const reviewState = getTransactionReviewState({ needsReview, llmPayload });
+  const reviewState = getTransactionReviewState({
+    needsReview,
+    llmPayload,
+    creditCardStatementStatus,
+    descriptionRaw,
+    descriptionClean,
+  });
+  const effectiveReviewReason = getTransactionReviewReason({
+    reviewReason,
+    creditCardStatementStatus,
+    descriptionRaw,
+    descriptionClean,
+  });
   const isResolvedReview = reviewState === "resolved";
   const isPendingEnrichment = reviewState === "pending_enrichment";
 
@@ -318,12 +339,15 @@ export function ReviewEditorCell({
     <div style={{ display: "grid", gap: 8, minWidth: 260 }}>
       <ReviewStateCell
         needsReview={needsReview}
-        reviewReason={reviewReason}
+        reviewReason={effectiveReviewReason}
         transactionClass={transactionClass}
         classificationSource={classificationSource}
         securitySymbol={securitySymbol}
         quantity={quantity}
         llmPayload={llmPayload}
+        creditCardStatementStatus={creditCardStatementStatus}
+        descriptionRaw={descriptionRaw}
+        descriptionClean={descriptionClean}
       />
       <textarea
         className="input-textarea"
@@ -335,8 +359,8 @@ export function ReviewEditorCell({
             ? "Add optional context while automatic transaction analysis is still queued."
             : isResolvedReview
             ? "Explain why this resolved transaction should be reanalyzed from scratch."
-            : reviewReason
-              ? `Explain the correction. Current review: ${reviewReason}`
+            : effectiveReviewReason
+              ? `Explain the correction. Current review: ${effectiveReviewReason}`
               : "Add context for the next LLM review."
         }
         style={{ minWidth: 260 }}

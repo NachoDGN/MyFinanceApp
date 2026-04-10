@@ -1,4 +1,7 @@
-import { getTransactionReviewState } from "@myfinance/domain/client";
+import {
+  getTransactionReviewReason,
+  getTransactionReviewState,
+} from "@myfinance/domain/client";
 import type { ReactNode } from "react";
 
 function formatCurrency(amount: string | null | undefined, currency: string) {
@@ -616,6 +619,9 @@ export function ReviewStateCell({
   securitySymbol,
   quantity,
   llmPayload,
+  creditCardStatementStatus = "not_applicable",
+  descriptionRaw = "",
+  descriptionClean = "",
 }: {
   needsReview: boolean;
   reviewReason?: unknown;
@@ -624,9 +630,25 @@ export function ReviewStateCell({
   securitySymbol?: string | null;
   quantity?: string | null;
   llmPayload?: unknown;
+  creditCardStatementStatus?: "not_applicable" | "upload_required" | "uploaded";
+  descriptionRaw?: string;
+  descriptionClean?: string;
 }) {
-  const reviewState = getTransactionReviewState({ needsReview, llmPayload });
-  const normalizedReviewReason = formatReviewReason(reviewReason);
+  const reviewState = getTransactionReviewState({
+    needsReview,
+    llmPayload,
+    creditCardStatementStatus,
+    descriptionRaw,
+    descriptionClean,
+  });
+  const normalizedReviewReason = formatReviewReason(
+    getTransactionReviewReason({
+      reviewReason: typeof reviewReason === "string" ? reviewReason : null,
+      creditCardStatementStatus,
+      descriptionRaw,
+      descriptionClean,
+    }) ?? reviewReason,
+  );
   const normalizedPendingReason = normalizedReviewReason?.replace(
     "Pending enrichment pipeline.",
     "Queued for automatic transaction analysis.",

@@ -58,6 +58,10 @@ export type ClassificationSource =
   | "alias_resolver"
   | "llm"
   | "system_fallback";
+export type CreditCardStatementStatus =
+  | "not_applicable"
+  | "upload_required"
+  | "uploaded";
 export type CategoryScopeKind =
   | "personal"
   | "company"
@@ -185,6 +189,8 @@ export interface ImportBatch {
   importedByActor: string;
   importedAt: string;
   classificationTriggeredAt?: string | null;
+  creditCardSettlementTransactionId?: string | null;
+  statementNetAmountBaseEur?: string | null;
   notes?: string | null;
   detectedDateRange?: { start: string; end: string } | null;
 }
@@ -231,6 +237,8 @@ export interface Transaction {
   securityId?: string | null;
   quantity?: string | null;
   unitPriceOriginal?: string | null;
+  creditCardStatementStatus: CreditCardStatementStatus;
+  linkedCreditCardAccountId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -654,6 +662,13 @@ export interface ImportExecutionInput {
   filePath?: string | null;
 }
 
+export interface CreditCardStatementImportInput {
+  settlementTransactionId: string;
+  templateId: string;
+  originalFilename?: string;
+  filePath?: string | null;
+}
+
 export interface CreateAccountInput {
   account: Omit<Account, "id" | "userId" | "lastImportedAt" | "createdAt">;
   actorName: string;
@@ -761,6 +776,14 @@ export interface ImportCommitResult extends ImportPreviewResult {
   rowCountInserted: number;
   transactionIds: string[];
   jobsQueued: JobType[];
+}
+
+export interface CreditCardStatementImportResult extends ImportCommitResult {
+  settlementTransactionId: string;
+  linkedCreditCardAccountId: string;
+  linkedCreditCardAccountName: string;
+  settlementMirrorTransactionId: string;
+  statementNetAmountBaseEur: string;
 }
 
 export interface JobRunResult {

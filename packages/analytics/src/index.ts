@@ -17,6 +17,7 @@ import {
   getLatestAccountBalances,
   getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
+  needsCreditCardStatementUpload,
   resolveAccountStaleThresholdDays,
   getScopeLatestDate,
   isTransactionPendingEnrichment,
@@ -311,6 +312,7 @@ function currentCashTotal(
     const account = dataset.accounts.find((row) => row.id === accountId);
     return (
       account?.assetDomain === expectedAssetDomain &&
+      !(expectedAssetDomain === "cash" && account.accountType === "credit_card") &&
       entityIds.has(account.entityId) &&
       (scope.kind !== "account" || account.id === scope.accountId)
     );
@@ -1047,8 +1049,7 @@ export function buildSpendingReadModel(
   );
   const excludedCreditCardSettlementRows = sortTransactionsNewestFirst(
     scopedPeriodTransactions.filter((transaction) =>
-      isTransactionResolvedForAnalytics(transaction) &&
-      isUnmatchedCreditCardSettlement(transaction),
+      needsCreditCardStatementUpload(transaction),
     ),
   );
   const transactions = sortTransactionsNewestFirst(
@@ -1106,6 +1107,7 @@ export function buildSpendingReadModel(
     uncategorizedSpendEur,
     excludedCreditCardSettlementAmountEur,
     excludedCreditCardSettlementCount: excludedCreditCardSettlementRows.length,
+    creditCardSettlementRows: excludedCreditCardSettlementRows,
     hasImportedCreditCardAccount: hasCreditCardAccount,
     topCategory: summary.spendingByCategory[0],
     merchantRows,
