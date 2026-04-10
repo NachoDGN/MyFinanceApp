@@ -13,6 +13,7 @@ import {
   normalizeInvestmentMatchingText,
   rankReviewPropagationTransactions,
   type TransactionEnrichmentDecision,
+  type TransactionEnrichmentOptions,
   type SimilarAccountTransactionPromptContext,
 } from "@myfinance/classification";
 import {
@@ -30,6 +31,7 @@ import {
   runDeterministicImport,
   sanitizeImportResult,
   type AddOpeningPositionInput,
+  type Account,
   type ApplyRuleDraftInput,
   type AuditEvent,
   type CreateEntityInput,
@@ -203,6 +205,7 @@ const TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS = 768;
 const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
 const RESOLVED_REVIEW_SIMILARITY_THRESHOLD = 0.8;
 const MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT = 5;
+const STALE_RUNNING_JOB_THRESHOLD_MS = 10 * 60_000;
 
 type TransactionEmbeddingSeedRow = {
   id: string;
@@ -731,17 +734,6 @@ function camelizeValue<T>(value: T, key?: string): T {
     return value.map((item) => camelizeValue(item, key)) as T;
   }
   if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (
-      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-      (trimmed.startsWith("[") && trimmed.endsWith("]"))
-    ) {
-      try {
-        return camelizeValue(JSON.parse(trimmed)) as T;
-      } catch {
-        return value;
-      }
-    }
     return value;
   }
   if (value instanceof Date) {
@@ -1661,9 +1653,62 @@ async function updateRunningJobPayload(
 ) {
   await sql`
     update public.jobs
-    set payload_json = ${serializeJson(sql, payloadJson)}::jsonb
+    set payload_json = ${serializeJson(sql, {
+      ...payloadJson,
+      heartbeatAt: new Date().toISOString(),
+    })}::jsonb
     where id = ${jobId}
       and status = 'running'
+  `;
+}
+
+function parseTimestampMs(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function recoverStaleRunningJobs(sql: SqlClient) {
+  const rows = await sql`
+    select *
+    from public.jobs
+    where status = 'running'
+  `;
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const cutoffMs = Date.now() - STALE_RUNNING_JOB_THRESHOLD_MS;
+  const staleJobIds = rows
+    .filter((row) => {
+      const payloadJson = parseJsonColumn<Record<string, unknown>>(
+        row.payload_json ?? {},
+      );
+      const heartbeatMs = parseTimestampMs(payloadJson.heartbeatAt);
+      const startedAtMs = parseTimestampMs(row.started_at);
+      const availableAtMs = parseTimestampMs(row.available_at);
+      const referenceMs = heartbeatMs ?? startedAtMs ?? availableAtMs;
+      return referenceMs !== null && referenceMs <= cutoffMs;
+    })
+    .map((row) => row.id as string);
+
+  if (staleJobIds.length === 0) {
+    return [];
+  }
+
+  return sql`
+    update public.jobs
+    set status = 'queued',
+        available_at = ${new Date().toISOString()},
+        started_at = null,
+        finished_at = null,
+        last_error = 'Recovered stale running job after worker interruption.',
+        locked_by = null
+    where id in ${sql(staleJobIds)}
+    returning *
   `;
 }
 
@@ -1792,34 +1837,27 @@ async function applyReviewPropagationToCandidate(
     };
   }
 
-  const decision = await enrichImportedTransaction(
-    input.dataset,
-    input.account,
-    input.currentCandidate,
-    {
-      trigger: "review_propagation",
-      promptOverrides: input.promptOverrides,
-      reviewContext: {
-        previousReviewReason: input.currentCandidate.reviewReason ?? null,
-        previousUserContext: input.currentCandidate.manualNotes ?? null,
-        previousLlmPayload:
-          input.currentCandidate.llmPayload &&
-          typeof input.currentCandidate.llmPayload === "object"
-            ? (input.currentCandidate.llmPayload as Record<string, unknown>)
-            : null,
-        propagatedContexts: input.nextPropagatedContexts,
-        resolvedSourcePrecedent: input.resolvedSourcePrecedent,
+  const { afterRow: after, afterTransaction } =
+    await executeTransactionEnrichmentPipeline(sql, input.userId, {
+      dataset: input.dataset,
+      account: input.account,
+      transaction: input.currentCandidate,
+      enrichmentOptions: {
+        trigger: "review_propagation",
+        promptOverrides: input.promptOverrides,
+        reviewContext: {
+          previousReviewReason: input.currentCandidate.reviewReason ?? null,
+          previousUserContext: input.currentCandidate.manualNotes ?? null,
+          previousLlmPayload:
+            input.currentCandidate.llmPayload &&
+            typeof input.currentCandidate.llmPayload === "object"
+              ? (input.currentCandidate.llmPayload as Record<string, unknown>)
+              : null,
+          propagatedContexts: input.nextPropagatedContexts,
+          resolvedSourcePrecedent: input.resolvedSourcePrecedent,
+        },
       },
-    },
-  );
-
-  const after = await updateTransactionFromEnrichmentDecision(
-    sql,
-    input.userId,
-    input.currentCandidate.id,
-    decision,
-  );
-  const afterTransaction = mapFromSql<Transaction>(after);
+    });
   const auditEvent = createAuditEvent(
     "worker",
     "job:review_propagation",
@@ -2313,6 +2351,40 @@ async function updateTransactionFromEnrichmentDecision(
     updatePayload,
     llmPayload: mergedDecision.llmPayload,
   });
+}
+
+async function executeTransactionEnrichmentPipeline(
+  sql: SqlClient,
+  userId: string,
+  input: {
+    dataset: DomainDataset;
+    account: Account;
+    transaction: Transaction;
+    enrichmentOptions?: TransactionEnrichmentOptions;
+    updateOptions?: {
+      manualNotes?: string | null;
+    };
+  },
+) {
+  const decision = await enrichImportedTransaction(
+    input.dataset,
+    input.account,
+    input.transaction,
+    input.enrichmentOptions,
+  );
+  const afterRow = await updateTransactionFromEnrichmentDecision(
+    sql,
+    userId,
+    input.transaction.id,
+    decision,
+    input.updateOptions,
+  );
+
+  return {
+    decision,
+    afterRow,
+    afterTransaction: mapFromSql<Transaction>(afterRow),
+  };
 }
 
 function isUniqueViolation(error: unknown): error is { code: string } {
@@ -2905,35 +2977,6 @@ export async function reanalyzeTransactionReview(
           ? "Running a clean transaction reanalysis with similar resolved history."
           : "Running transaction analyzer with your review context.",
     });
-    const decision = await enrichImportedTransaction(
-      dataset,
-      account,
-      analysisTransaction,
-      {
-        trigger: reviewMode,
-        reviewContext: {
-          userProvidedContext: normalizedReviewContext,
-          previousReviewReason:
-            reviewMode === "manual_resolved_review"
-              ? null
-              : (beforeTransaction.reviewReason ?? null),
-          previousUserContext:
-            reviewMode === "manual_resolved_review"
-              ? null
-              : (beforeTransaction.manualNotes ?? null),
-          previousLlmPayload:
-            reviewMode === "manual_resolved_review"
-              ? null
-              : beforeTransaction.llmPayload &&
-                  typeof beforeTransaction.llmPayload === "object"
-                ? (beforeTransaction.llmPayload as Record<string, unknown>)
-                : null,
-        },
-        promptOverrides,
-        similarAccountTransactions: similarResolvedTransactions,
-      },
-    );
-
     let afterTransaction: Transaction | null = null;
     let changedFields: string[] = [];
     let auditEvent: AuditEvent | null = null;
@@ -2943,15 +2986,38 @@ export async function reanalyzeTransactionReview(
         stage: "apply_transaction_update",
         message: "Applying analyzer results to the transaction.",
       });
-      const after = await updateTransactionFromEnrichmentDecision(
-        sql,
-        userId,
-        input.transactionId,
-        decision,
-        {
-          manualNotes: normalizedReviewContext,
-        },
-      );
+      const { decision, afterRow: after } =
+        await executeTransactionEnrichmentPipeline(sql, userId, {
+          dataset,
+          account,
+          transaction: analysisTransaction,
+          enrichmentOptions: {
+            trigger: reviewMode,
+            reviewContext: {
+              userProvidedContext: normalizedReviewContext,
+              previousReviewReason:
+                reviewMode === "manual_resolved_review"
+                  ? null
+                  : (beforeTransaction.reviewReason ?? null),
+              previousUserContext:
+                reviewMode === "manual_resolved_review"
+                  ? null
+                  : (beforeTransaction.manualNotes ?? null),
+              previousLlmPayload:
+                reviewMode === "manual_resolved_review"
+                  ? null
+                  : beforeTransaction.llmPayload &&
+                      typeof beforeTransaction.llmPayload === "object"
+                    ? (beforeTransaction.llmPayload as Record<string, unknown>)
+                    : null,
+            },
+            promptOverrides,
+            similarAccountTransactions: similarResolvedTransactions,
+          },
+          updateOptions: {
+            manualNotes: normalizedReviewContext,
+          },
+        });
 
       if (account.assetDomain === "investment") {
         await input.onProgress?.({
@@ -5101,6 +5167,10 @@ class SqlFinanceRepository implements FinanceRepository {
 
   async runPendingJobs(apply: boolean): Promise<JobRunResult> {
     const result = await withSeededUserSession(async (sql) => {
+      if (apply) {
+        await recoverStaleRunningJobs(sql);
+      }
+
       const queued = await sql`
         select * from public.jobs
         where status = 'queued'
@@ -5180,7 +5250,26 @@ class SqlFinanceRepository implements FinanceRepository {
               `;
 
               let failedTransactions = 0;
+              let processedTransactions = 0;
               const investmentAccountIds = new Set<string>();
+              let currentJobPayload = { ...payloadJson };
+              const reportClassificationProgress = async (
+                transactionId: string | null,
+              ) => {
+                currentJobPayload = {
+                  ...currentJobPayload,
+                  progress: {
+                    totalTransactions: rows.length,
+                    processedTransactions,
+                    failedTransactions,
+                    lastTransactionId: transactionId,
+                    updatedAt: new Date().toISOString(),
+                  },
+                };
+                await updateRunningJobPayload(sql, job.id, currentJobPayload);
+              };
+
+              await reportClassificationProgress(null);
               for (const row of rows) {
                 const transaction = mapFromSql<Transaction>(row);
                 const account = latestDataset.accounts.find(
@@ -5196,21 +5285,20 @@ class SqlFinanceRepository implements FinanceRepository {
                 }
 
                 try {
-                  const decision = await enrichImportedTransaction(
-                    latestDataset,
-                    account,
-                    transaction,
-                    { promptOverrides },
-                  );
-                  const after = await updateTransactionFromEnrichmentDecision(
-                    sql,
-                    this.userId,
-                    transaction.id,
-                    decision,
-                  );
+                  const { afterTransaction } =
+                    await executeTransactionEnrichmentPipeline(
+                      sql,
+                      this.userId,
+                      {
+                        dataset: latestDataset,
+                        account,
+                        transaction,
+                        enrichmentOptions: { promptOverrides },
+                      },
+                    );
                   latestDataset = replaceTransactionInDataset(
                     latestDataset,
-                    mapFromSql<Transaction>(after),
+                    afterTransaction,
                   );
                 } catch (transactionError) {
                   failedTransactions += 1;
@@ -5248,6 +5336,9 @@ class SqlFinanceRepository implements FinanceRepository {
                     mapFromSql<Transaction>(failedUpdate[0]),
                   );
                 }
+
+                processedTransactions += 1;
+                await reportClassificationProgress(transaction.id);
               }
 
               await sql`
@@ -5264,7 +5355,7 @@ class SqlFinanceRepository implements FinanceRepository {
                 });
               }
               await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
+                ...currentJobPayload,
                 processedTransactions: rows.length,
                 failedTransactions,
                 queuedFollowUpPositionRebuilds: investmentAccountIds.size,

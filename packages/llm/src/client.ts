@@ -167,9 +167,15 @@ function parseJsonWithSchema<T>(rawPayload: string, schema: z.ZodType<T>) {
 
   const parsed = schema.safeParse(parsedJson);
   if (!parsed.success) {
+    const issueSummary = parsed.error.issues
+      .map((issue) => {
+        const path = issue.path.join(".");
+        return path ? `${path}: ${issue.message}` : issue.message;
+      })
+      .join("; ");
     throw new JsonOutputError(
       "schema_validation",
-      parsed.error.message,
+      issueSummary || parsed.error.message,
       rawPayload,
     );
   }

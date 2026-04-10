@@ -8,6 +8,11 @@
       "import": "./dist/domain/src/index.js",
       "default": "./dist/domain/src/index.js"
     },
+    "./client": {
+      "types": "./dist/domain/src/client.d.ts",
+      "import": "./dist/domain/src/client.js",
+      "default": "./dist/domain/src/client.js"
+    },
     "./template-config": {
       "types": "./dist/domain/src/template-config.d.ts",
       "import": "./dist/domain/src/template-config.js",

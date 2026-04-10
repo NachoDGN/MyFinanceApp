@@ -31,6 +31,7 @@ export default async function InsightsPage({
 
         <SectionCard title="Quality Context" subtitle="Trust the numbers appropriately" span="span-4">
           <div className="legend-list">
+            <span className="pill">Queued enrichment: {model.summary.quality.pendingEnrichmentCount}</span>
             <span className="pill">Pending review: {model.summary.quality.pendingReviewCount}</span>
             <span className="pill">Unclassified amount: {model.summary.quality.unclassifiedAmountMtdEur} EUR</span>
             <span className="pill">Stale accounts: {model.summary.quality.staleAccountsCount}</span>

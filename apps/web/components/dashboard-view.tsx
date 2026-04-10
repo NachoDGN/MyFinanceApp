@@ -49,7 +49,15 @@ export function DashboardView({
 
   const qualityRows = [
     {
-      label: "Pending review",
+      label: "Auto analysis queue",
+      value: String(model.summary.quality.pendingEnrichmentCount),
+      meta:
+        model.summary.quality.pendingEnrichmentCount > 0
+          ? "Rows still moving through the automatic enrichment worker"
+          : "No rows waiting for automatic analysis",
+    },
+    {
+      label: "Manual review",
       value: String(model.summary.quality.pendingReviewCount),
       meta:
         model.summary.quality.pendingReviewCount > 0
@@ -185,7 +193,7 @@ export function DashboardView({
           <div className="dashboard-sidebar-stack">
             <div className="dashboard-side-card">
               <div className="kpi-header">
-                <span className="label-sm">Pending Review</span>
+                <span className="label-sm">Manual Review</span>
                 <span className="trend-indicator trend-up">
                   {model.summary.quality.pendingReviewCount > 0
                     ? "Needs work"
@@ -196,11 +204,7 @@ export function DashboardView({
                 {model.summary.quality.pendingReviewCount}
               </div>
               <div className="metric-nominal">
-                {formatCurrency(
-                  model.summary.quality.unclassifiedAmountMtdEur,
-                  model.currency,
-                )}{" "}
-                uncategorized
+                {model.summary.quality.pendingEnrichmentCount} rows still in the auto-analysis queue
               </div>
             </div>
 

@@ -12,6 +12,7 @@ import { createFinanceRepository, listPromptProfiles } from "@myfinance/db";
 import {
   FinanceDomainService,
   getScopeLatestDate,
+  needsTransactionManualReview,
   resolvePeriodSelection,
   type Scope,
   type Transaction,
@@ -396,7 +397,7 @@ export async function getPromptsModel(searchParams: RawSearchParams) {
 }
 
 export function transactionBadge(transaction: Transaction) {
-  if (transaction.needsReview) return "warning";
+  if (needsTransactionManualReview(transaction)) return "warning";
   if (
     transaction.transactionClass === "income" ||
     transaction.transactionClass === "dividend"

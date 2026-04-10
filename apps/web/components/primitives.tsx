@@ -1,3 +1,4 @@
+import { getTransactionReviewState } from "@myfinance/domain/client";
 import type { ReactNode } from "react";
 
 function formatCurrency(amount: string | null | undefined, currency: string) {
@@ -554,6 +555,59 @@ export function QualityBanner({
   );
 }
 
+function formatReviewReason(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        return formatReviewReason(JSON.parse(trimmed)) ?? trimmed;
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value)) {
+    const issueMessages = value
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+        const path = Array.isArray((entry as { path?: unknown }).path)
+          ? ((entry as { path: unknown[] }).path
+              .filter((segment) => typeof segment === "string")
+              .join(".") || null)
+          : null;
+        const message =
+          typeof (entry as { message?: unknown }).message === "string"
+            ? (entry as { message: string }).message
+            : null;
+        if (!path && !message) {
+          return null;
+        }
+        return path ? `${path}: ${message ?? "Invalid value"}` : message;
+      })
+      .filter((entry): entry is string => Boolean(entry));
+    if (issueMessages.length > 0) {
+      return `LLM output validation failed: ${issueMessages.join("; ")}`;
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
 export function ReviewStateCell({
   needsReview,
   reviewReason,
@@ -564,13 +618,19 @@ export function ReviewStateCell({
   llmPayload,
 }: {
   needsReview: boolean;
-  reviewReason?: string | null;
+  reviewReason?: unknown;
   transactionClass?: string | null;
   classificationSource?: string | null;
   securitySymbol?: string | null;
   quantity?: string | null;
   llmPayload?: unknown;
 }) {
+  const reviewState = getTransactionReviewState({ needsReview, llmPayload });
+  const normalizedReviewReason = formatReviewReason(reviewReason);
+  const normalizedPendingReason = normalizedReviewReason?.replace(
+    "Pending enrichment pipeline.",
+    "Queued for automatic transaction analysis.",
+  );
   const normalizedQuantity =
     quantity && Number(quantity) !== 0
       ? Number.isInteger(Number(quantity))
@@ -684,7 +744,7 @@ export function ReviewStateCell({
           .join(" · ")
       : null;
 
-  if (!needsReview) {
+  if (reviewState === "resolved") {
     return (
       <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
         <span className="pill">Resolved</span>
@@ -707,22 +767,47 @@ export function ReviewStateCell({
     );
   }
 
+  if (reviewState === "pending_enrichment") {
+    return (
+      <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
+        <span className="pill">Analyzing</span>
+        <span
+          className="muted"
+          style={{ fontSize: 12, lineHeight: 1.4 }}
+          title={
+            normalizedPendingReason ??
+            "Queued for automatic transaction analysis."
+          }
+        >
+          {normalizedPendingReason ?? "Queued for automatic transaction analysis."}
+        </span>
+        {llmLogSummary ? (
+          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+            {llmLogSummary}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
       <span className="pill warning">Needs review</span>
       <span
         className="muted"
         style={{ fontSize: 12, lineHeight: 1.4 }}
-        title={reviewReason ?? "Reason unavailable."}
+        title={normalizedReviewReason ?? "Reason unavailable."}
       >
-        {reviewReason ?? "Reason unavailable."}
+        {normalizedReviewReason ?? "Reason unavailable."}
       </span>
-      {explanation && explanation !== reviewReason ? (
+      {explanation && explanation !== normalizedReviewReason ? (
         <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
           {explanation}
         </span>
       ) : null}
-      {llmReason && llmReason !== reviewReason && llmReason !== explanation ? (
+      {llmReason &&
+      llmReason !== normalizedReviewReason &&
+      llmReason !== explanation ? (
         <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
           Latest analyzer: {llmReason}
         </span>
@@ -743,7 +828,7 @@ export function ReviewQueueList({
   rows: Array<{
     label: string;
     amountEur: string;
-    reviewReason?: string | null;
+    reviewReason?: unknown;
     securitySymbol?: string | null;
     transactionClass?: string | null;
   }>;
@@ -785,7 +870,7 @@ export function ReviewQueueList({
             </div>
           ) : null}
           <p className="review-queue-reason">
-            {row.reviewReason ?? "Reason unavailable."}
+            {formatReviewReason(row.reviewReason) ?? "Reason unavailable."}
           </p>
         </div>
       ))}

@@ -19,7 +19,9 @@ import {
   getPreviousComparablePeriod,
   resolveAccountStaleThresholdDays,
   getScopeLatestDate,
+  isTransactionPendingEnrichment,
   isTransactionResolvedForAnalytics,
+  needsTransactionManualReview,
   resolveFxRate,
   resolvePeriodSelection,
   resolveScopeEntityIds,
@@ -263,8 +265,12 @@ function qualitySummary(
     }));
 
   return {
-    pendingReviewCount: scopedTransactions.filter((row) => row.needsReview)
-      .length,
+    pendingEnrichmentCount: scopedTransactions.filter((row) =>
+      isTransactionPendingEnrichment(row),
+    ).length,
+    pendingReviewCount: scopedTransactions.filter((row) =>
+      needsTransactionManualReview(row),
+    ).length,
     unclassifiedAmountMtdEur: filterTransactionsByPeriod(
       scopedTransactions,
       period,
@@ -539,14 +545,19 @@ export function buildInsights(
       id: "data-quality",
       title: "Data quality status",
       severity:
-        quality.pendingReviewCount > 0 || quality.staleAccountsCount > 0
+        quality.pendingReviewCount > 0 ||
+        quality.pendingEnrichmentCount > 0 ||
+        quality.staleAccountsCount > 0
           ? "warning"
           : "positive",
       body:
-        quality.pendingReviewCount > 0 || quality.staleAccountsCount > 0
-          ? "Some rows or accounts still need attention before totals are fully trusted."
-          : "No outstanding review or freshness issues are currently flagged.",
+        quality.pendingReviewCount > 0 ||
+        quality.pendingEnrichmentCount > 0 ||
+        quality.staleAccountsCount > 0
+          ? "Some rows are still processing or still need attention before totals are fully trusted."
+          : "No outstanding review, enrichment, or freshness issues are currently flagged.",
       evidence: [
+        `Queued enrichment: ${quality.pendingEnrichmentCount}`,
         `Pending review: ${quality.pendingReviewCount}`,
         `Stale accounts: ${quality.staleAccountsCount}`,
         `Unclassified amount: ${quality.unclassifiedAmountMtdEur} EUR`,

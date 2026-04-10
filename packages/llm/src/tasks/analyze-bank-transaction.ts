@@ -4,29 +4,149 @@ import { resolveModelProvider } from "../config";
 import { renderTransactionAnalyzerPrompt } from "../prompts";
 import { LLMError, type LLMTaskClient } from "../types";
 
-export const transactionAnalysisResponseSchema = z.object({
+function normalizeOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeOptionalNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeTransactionAnalysisPayload(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const explanation =
+    normalizeOptionalString(record.explanation) ??
+    normalizeOptionalString(record.reason) ??
+    "Model explanation unavailable.";
+  const reason =
+    normalizeOptionalString(record.reason) ??
+    normalizeOptionalString(record.explanation) ??
+    "Model reason unavailable.";
+  const inferredConfidence = (() => {
+    const explicitConfidence = normalizeOptionalNumber(record.confidence);
+    if (explicitConfidence !== null) {
+      return explicitConfidence;
+    }
+
+    const hasClassification =
+      normalizeOptionalString(record.transaction_class) !== null ||
+      normalizeOptionalString(record.transactionClass) !== null;
+    const hasCategory =
+      normalizeOptionalString(record.category_code) !== null ||
+      normalizeOptionalString(record.categoryCode) !== null;
+
+    if (hasClassification && hasCategory) {
+      return 0.85;
+    }
+    if (hasClassification) {
+      return 0.75;
+    }
+    return 0.5;
+  })();
+
+  return {
+    transaction_class:
+      normalizeOptionalString(record.transaction_class) ??
+      normalizeOptionalString(record.transactionClass),
+    category_code:
+      normalizeOptionalString(record.category_code) ??
+      normalizeOptionalString(record.categoryCode),
+    merchant_normalized:
+      normalizeOptionalString(record.merchant_normalized) ??
+      normalizeOptionalString(record.merchantNormalized),
+    counterparty_name:
+      normalizeOptionalString(record.counterparty_name) ??
+      normalizeOptionalString(record.counterpartyName),
+    economic_entity_override:
+      normalizeOptionalString(record.economic_entity_override) ??
+      normalizeOptionalString(record.economicEntityOverride),
+    security_hint:
+      normalizeOptionalString(record.security_hint) ??
+      normalizeOptionalString(record.securityHint),
+    quantity: normalizeOptionalString(record.quantity),
+    unit_price_original:
+      normalizeOptionalString(record.unit_price_original) ??
+      normalizeOptionalString(record.unitPriceOriginal),
+    resolved_instrument_name:
+      normalizeOptionalString(record.resolved_instrument_name) ??
+      normalizeOptionalString(record.resolvedInstrumentName),
+    resolved_instrument_isin:
+      normalizeOptionalString(record.resolved_instrument_isin) ??
+      normalizeOptionalString(record.resolvedInstrumentIsin),
+    resolved_instrument_ticker:
+      normalizeOptionalString(record.resolved_instrument_ticker) ??
+      normalizeOptionalString(record.resolvedInstrumentTicker),
+    resolved_instrument_exchange:
+      normalizeOptionalString(record.resolved_instrument_exchange) ??
+      normalizeOptionalString(record.resolvedInstrumentExchange),
+    current_price:
+      normalizeOptionalNumber(record.current_price) ??
+      normalizeOptionalNumber(record.currentPrice),
+    current_price_currency:
+      normalizeOptionalString(record.current_price_currency) ??
+      normalizeOptionalString(record.currentPriceCurrency),
+    current_price_timestamp:
+      normalizeOptionalString(record.current_price_timestamp) ??
+      normalizeOptionalString(record.currentPriceTimestamp),
+    current_price_source:
+      normalizeOptionalString(record.current_price_source) ??
+      normalizeOptionalString(record.currentPriceSource),
+    current_price_type:
+      normalizeOptionalString(record.current_price_type) ??
+      normalizeOptionalString(record.currentPriceType),
+    resolution_process:
+      normalizeOptionalString(record.resolution_process) ??
+      normalizeOptionalString(record.resolutionProcess),
+    confidence: inferredConfidence,
+    explanation,
+    reason,
+  };
+}
+
+const transactionAnalysisResponseObjectSchema = z.object({
   transaction_class: z.string().min(1),
-  category_code: z.string().nullable(),
-  merchant_normalized: z.string().nullable(),
-  counterparty_name: z.string().nullable(),
-  economic_entity_override: z.string().nullable(),
-  security_hint: z.string().nullable(),
-  quantity: z.string().nullable().optional(),
-  unit_price_original: z.string().nullable().optional(),
-  resolved_instrument_name: z.string().nullable().optional(),
-  resolved_instrument_isin: z.string().nullable().optional(),
-  resolved_instrument_ticker: z.string().nullable().optional(),
-  resolved_instrument_exchange: z.string().nullable().optional(),
-  current_price: z.number().nullable().optional(),
-  current_price_currency: z.string().nullable().optional(),
-  current_price_timestamp: z.string().nullable().optional(),
-  current_price_source: z.string().nullable().optional(),
-  current_price_type: z.string().nullable().optional(),
-  resolution_process: z.string().nullable().optional(),
+  category_code: z.string().nullable().default(null),
+  merchant_normalized: z.string().nullable().default(null),
+  counterparty_name: z.string().nullable().default(null),
+  economic_entity_override: z.string().nullable().default(null),
+  security_hint: z.string().nullable().default(null),
+  quantity: z.string().nullable().default(null),
+  unit_price_original: z.string().nullable().default(null),
+  resolved_instrument_name: z.string().nullable().default(null),
+  resolved_instrument_isin: z.string().nullable().default(null),
+  resolved_instrument_ticker: z.string().nullable().default(null),
+  resolved_instrument_exchange: z.string().nullable().default(null),
+  current_price: z.number().nullable().default(null),
+  current_price_currency: z.string().nullable().default(null),
+  current_price_timestamp: z.string().nullable().default(null),
+  current_price_source: z.string().nullable().default(null),
+  current_price_type: z.string().nullable().default(null),
+  resolution_process: z.string().nullable().default(null),
   confidence: z.number().min(0).max(1),
   explanation: z.string().min(1).max(240),
   reason: z.string().min(1).max(320),
 });
+
+export type TransactionAnalysisOutput = z.infer<
+  typeof transactionAnalysisResponseObjectSchema
+>;
+
+export const transactionAnalysisResponseSchema: z.ZodType<TransactionAnalysisOutput> =
+  z.preprocess(
+  normalizeTransactionAnalysisPayload,
+  transactionAnalysisResponseObjectSchema,
+) as z.ZodType<TransactionAnalysisOutput>;
 
 const transactionAnalysisJsonSchema = {
   type: "object",
@@ -219,10 +339,6 @@ export interface AnalyzeBankTransactionInput {
   promptOverrides?: Record<string, unknown> | null;
 }
 
-export type TransactionAnalysisOutput = z.infer<
-  typeof transactionAnalysisResponseSchema
->;
-
 export interface AnalyzeBankTransactionResult {
   analysisStatus: "done" | "failed";
   model: string;
@@ -298,7 +414,7 @@ export async function analyzeBankTransaction(
       promptOverrides: input.promptOverrides ?? null,
     });
 
-    const output = await client.generateJson({
+    const output = await client.generateJson<TransactionAnalysisOutput>({
       systemPrompt: prompt.systemPrompt,
       userPrompt: prompt.userPrompt,
       modelName,
@@ -315,7 +431,7 @@ export async function analyzeBankTransaction(
       model: modelName,
       output,
       error: null,
-      rawOutput: output,
+      rawOutput: output as unknown as Record<string, unknown>,
     } satisfies AnalyzeBankTransactionResult;
   } catch (error) {
     return {

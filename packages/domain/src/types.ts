@@ -479,6 +479,7 @@ export interface MetricResult {
 }
 
 export interface QualitySummary {
+  pendingEnrichmentCount: number;
   pendingReviewCount: number;
   unclassifiedAmountMtdEur: string;
   staleAccountsCount: number;

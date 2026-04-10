@@ -30,6 +30,17 @@ const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
 >();
+const TRANSACTION_ANALYSIS_STATUSES = [
+  "pending",
+  "done",
+  "failed",
+  "skipped",
+] as const;
+
+export type TransactionReviewState =
+  | "pending_enrichment"
+  | "needs_review"
+  | "resolved";
 
 function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
   return (
@@ -472,13 +483,66 @@ export function filterTransactionsByScope(
 }
 
 export function isTransactionResolvedForAnalytics(
-  transaction: Pick<Transaction, "needsReview" | "excludeFromAnalytics" | "voidedAt">,
+  transaction: Pick<Transaction, "needsReview"> & {
+    excludeFromAnalytics?: boolean;
+    voidedAt?: string | null;
+    llmPayload?: unknown;
+  },
 ) {
   return (
-    transaction.needsReview !== true &&
+    !isTransactionPendingEnrichment(transaction) &&
+    !needsTransactionManualReview(transaction) &&
     transaction.excludeFromAnalytics !== true &&
     !transaction.voidedAt
   );
+}
+
+export function getTransactionAnalysisStatus(
+  transaction: { llmPayload?: unknown },
+): "pending" | "done" | "failed" | "skipped" | null {
+  if (
+    !transaction.llmPayload ||
+    typeof transaction.llmPayload !== "object" ||
+    Array.isArray(transaction.llmPayload)
+  ) {
+    return null;
+  }
+
+  const analysisStatus = (transaction.llmPayload as { analysisStatus?: unknown })
+    .analysisStatus;
+  return typeof analysisStatus === "string" &&
+    TRANSACTION_ANALYSIS_STATUSES.includes(
+      analysisStatus as (typeof TRANSACTION_ANALYSIS_STATUSES)[number],
+    )
+    ? (analysisStatus as "pending" | "done" | "failed" | "skipped")
+    : null;
+}
+
+export function isTransactionPendingEnrichment(
+  transaction: { llmPayload?: unknown },
+) {
+  return getTransactionAnalysisStatus(transaction) === "pending";
+}
+
+export function needsTransactionManualReview(
+  transaction: Pick<Transaction, "needsReview"> & { llmPayload?: unknown },
+) {
+  return (
+    transaction.needsReview === true &&
+    !isTransactionPendingEnrichment(transaction)
+  );
+}
+
+export function getTransactionReviewState(
+  transaction: Pick<Transaction, "needsReview"> & { llmPayload?: unknown },
+): TransactionReviewState {
+  if (isTransactionPendingEnrichment(transaction)) {
+    return "pending_enrichment";
+  }
+  if (needsTransactionManualReview(transaction)) {
+    return "needs_review";
+  }
+  return "resolved";
 }
 
 export function filterTransactionsByPeriod(

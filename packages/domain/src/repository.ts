@@ -750,7 +750,7 @@ export function buildImportedTransactions(
       }
     }
     const initialReviewReasons = [
-      "Pending enrichment pipeline.",
+      "Queued for automatic transaction analysis.",
       currencyOriginal !== "EUR" && !fxRateToEur
         ? "Missing FX rate for base-currency conversion."
         : null,

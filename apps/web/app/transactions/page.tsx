@@ -50,7 +50,8 @@ export default async function TransactionsPage({
             <div>
               <span className="label-sm">Current quality state</span>
               <div style={{ marginTop: 12 }} className="metric-nominal">
-                {model.ledger.quality.pendingReviewCount} rows need review and{" "}
+                {model.ledger.quality.pendingEnrichmentCount} rows await automatic analysis,{" "}
+                {model.ledger.quality.pendingReviewCount} rows need manual review, and{" "}
                 {model.ledger.quality.staleAccountsCount} accounts are stale.
               </div>
             </div>

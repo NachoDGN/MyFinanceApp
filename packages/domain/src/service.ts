@@ -33,6 +33,8 @@ import {
   getLatestBalanceSnapshots,
   getLatestInvestmentCashBalances,
   getDatasetLatestDate,
+  isTransactionPendingEnrichment,
+  needsTransactionManualReview,
   resolveAccountStaleThresholdDays,
   resolvePeriodSelection,
   resolveScopeEntityIds,
@@ -92,8 +94,12 @@ function buildQualitySummary(
     }));
 
   return {
-    pendingReviewCount: scopedTransactions.filter((row) => row.needsReview)
-      .length,
+    pendingEnrichmentCount: scopedTransactions.filter((row) =>
+      isTransactionPendingEnrichment(row),
+    ).length,
+    pendingReviewCount: scopedTransactions.filter((row) =>
+      needsTransactionManualReview(row),
+    ).length,
     unclassifiedAmountMtdEur: filterTransactionsByPeriod(
       scopedTransactions,
       period,

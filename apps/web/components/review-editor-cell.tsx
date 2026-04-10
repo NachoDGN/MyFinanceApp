@@ -1,5 +1,6 @@
 "use client";
 
+import { getTransactionReviewState } from "@myfinance/domain/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
@@ -75,7 +76,9 @@ export function ReviewEditorCell({
   const [isRefreshing, startRefresh] = useTransition();
 
   const trimmedDraft = draft.trim();
-  const isResolvedReview = !needsReview;
+  const reviewState = getTransactionReviewState({ needsReview, llmPayload });
+  const isResolvedReview = reviewState === "resolved";
+  const isPendingEnrichment = reviewState === "pending_enrichment";
 
   const formatChangedField = (field: string) =>
     ({
@@ -328,7 +331,9 @@ export function ReviewEditorCell({
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         placeholder={
-          isResolvedReview
+          isPendingEnrichment
+            ? "Add optional context while automatic transaction analysis is still queued."
+            : isResolvedReview
             ? "Explain why this resolved transaction should be reanalyzed from scratch."
             : reviewReason
               ? `Explain the correction. Current review: ${reviewReason}`
@@ -349,9 +354,11 @@ export function ReviewEditorCell({
             ? "Queueing…"
             : activeJobId
               ? "Updating…"
-              : isResolvedReview
-                ? "Reanalyze"
-                : "Update"}
+              : isPendingEnrichment
+                ? "Add context"
+                : isResolvedReview
+                  ? "Reanalyze"
+                  : "Update"}
         </button>
         {feedback ? (
           <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
