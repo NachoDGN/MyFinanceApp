@@ -12,6 +12,7 @@ import {
   createFinanceRepository,
   getDbRuntimeConfig,
   getPromptOverrides,
+  refreshOwnedStockPrices,
   updatePromptProfile,
 } from "@myfinance/db";
 import {
@@ -276,12 +277,15 @@ async function withUploadedImport<T>(
 
       const { seededUserId } = getDbRuntimeConfig();
       const promptOverrides = await getPromptOverrides();
-      const inferredTemplate = await inferImportTemplateDraft({
-        userId: seededUserId,
-        account,
-        filePath,
-        originalFilename: file.name,
-      }, { promptOverrides });
+      const inferredTemplate = await inferImportTemplateDraft(
+        {
+          userId: seededUserId,
+          account,
+          filePath,
+          originalFilename: file.name,
+        },
+        { promptOverrides },
+      );
       const createResult = await domain.createTemplate({
         template: inferredTemplate,
         actorName: "web-action",
@@ -511,9 +515,7 @@ export async function updateWorkspaceProfileAction(
   return result;
 }
 
-export async function createEntityAction(
-  input: z.input<typeof entitySchema>,
-) {
+export async function createEntityAction(input: z.input<typeof entitySchema>) {
   const entity = entitySchema.parse(input);
   const result = await domain.createEntity({
     entity: {
@@ -597,13 +599,22 @@ export async function resetWorkspaceAction() {
   return result;
 }
 
+export async function refreshOwnedStockPricesAction() {
+  const result = await refreshOwnedStockPrices();
+  revalidateWorkspacePaths();
+  return result;
+}
+
 export async function updatePromptProfileAction(formData: FormData) {
   const fields = promptProfileUpdateSchema.parse({
     promptId: formData.get("promptId"),
     sectionsJson: formData.get("sectionsJson"),
   });
 
-  const parsedSections = JSON.parse(fields.sectionsJson) as Record<string, unknown>;
+  const parsedSections = JSON.parse(fields.sectionsJson) as Record<
+    string,
+    unknown
+  >;
   const profile = await updatePromptProfile({
     promptId: fields.promptId,
     sections: parsedSections,

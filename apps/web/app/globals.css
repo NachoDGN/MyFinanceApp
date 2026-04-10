@@ -1182,6 +1182,18 @@ textarea {
   max-width: 720px;
 }
 
+.investment-price-refresh {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.investment-price-refresh .status-note {
+  margin-top: 0;
+  max-width: 360px;
+}
+
 .dashboard-metrics-grid {
   grid-column: span 12;
   display: grid;
@@ -1597,14 +1609,8 @@ textarea {
   font-size: 13px;
   line-height: 1.65;
   font-family:
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    "Liberation Mono",
-    "Courier New",
-    monospace;
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
 }
 
 .mapping-list {
@@ -1783,6 +1789,22 @@ textarea {
 @media (max-width: 768px) {
   body {
     padding: 20px;
+  }
+
+  .investments-page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: 0;
+  }
+
+  .investment-price-refresh {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .investment-price-refresh .status-note {
+    max-width: none;
+    width: 100%;
   }
 
   .summary-card {

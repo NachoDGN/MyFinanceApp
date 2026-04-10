@@ -22,6 +22,7 @@ import {
   getImportTemplateInferenceConfig,
   getRuleParserConfig,
   normalizeImportExecutionInput,
+  rebuildInvestmentState,
   runDeterministicImport,
   sanitizeImportResult,
   type AddOpeningPositionInput,
@@ -44,6 +45,8 @@ import {
   type QueueRuleDraftInput,
   type ResetWorkspaceInput,
   type ResetWorkspaceResult,
+  type Security,
+  type SecurityPrice,
   type Transaction,
   type UpdateEntityInput,
   type UpdateWorkspaceProfileInput,
@@ -346,6 +349,258 @@ export async function listPromptProfiles() {
   return withSeededUserContext(async (sql) => {
     const promptOverrides = await loadPromptOverrides(sql, userId);
     return buildPromptProfileModels(promptOverrides);
+  });
+}
+
+function readPayloadField<T>(
+  payload: Record<string, unknown>,
+  keys: string[],
+): T | null {
+  for (const key of keys) {
+    if (key in payload) {
+      return payload[key] as T;
+    }
+  }
+  return null;
+}
+
+function readPayloadString(payload: Record<string, unknown>, keys: string[]) {
+  const value = readPayloadField<unknown>(payload, keys);
+  if (typeof value === "string" && value.trim() !== "") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function readPayloadBoolean(payload: Record<string, unknown>, keys: string[]) {
+  const value = readPayloadField<unknown>(payload, keys);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return null;
+}
+
+function readPayloadTimestamp(
+  payload: Record<string, unknown>,
+  keys: string[],
+) {
+  const value = readPayloadField<unknown>(payload, keys);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return null;
+}
+
+function isWeekendIso(value: string) {
+  const date = new Date(`${value}T00:00:00Z`);
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function isRefreshableOwnedStockSecurity(security: Security) {
+  return (
+    security.providerName === "twelve_data" &&
+    (security.assetType === "stock" || security.assetType === "etf")
+  );
+}
+
+export function selectOwnedStockPriceRefreshSecurities(
+  dataset: DomainDataset,
+  referenceDate = getDatasetLatestDate(dataset),
+) {
+  const { positions } = rebuildInvestmentState(dataset, referenceDate);
+  const ownedSecurityIds = new Set(
+    positions.map((position) => position.securityId),
+  );
+
+  return dataset.securities.filter(
+    (security) =>
+      ownedSecurityIds.has(security.id) &&
+      isRefreshableOwnedStockSecurity(security),
+  );
+}
+
+async function fetchLatestOwnedStockPrice(
+  security: Security,
+  apiKey: string,
+  requestDate: string,
+): Promise<{ quote: SecurityPrice | null; reason: string | null }> {
+  const url = new URL("https://api.twelvedata.com/quote");
+  url.searchParams.set("symbol", security.providerSymbol);
+  url.searchParams.set("apikey", apiKey);
+  if (isWeekendIso(requestDate)) {
+    url.searchParams.set("eod", "true");
+  }
+
+  const response = await fetch(url);
+  const payload = (await response.json()) as Record<string, unknown> | string;
+  if (!response.ok || typeof payload === "string") {
+    return {
+      quote: null,
+      reason: `HTTP ${response.status} from Twelve Data.`,
+    };
+  }
+
+  if (payload.status === "error") {
+    const message = readPayloadString(payload, ["message"]);
+    return {
+      quote: null,
+      reason: message ?? "Twelve Data returned an error payload.",
+    };
+  }
+
+  const price = readPayloadString(payload, ["close", "price"]);
+  if (!price) {
+    return {
+      quote: null,
+      reason: "Twelve Data did not return a usable quote price.",
+    };
+  }
+
+  const priceDate =
+    readPayloadString(payload, ["datetime"])?.slice(0, 10) ?? requestDate;
+  const isMarketOpen =
+    readPayloadBoolean(payload, ["is_market_open", "isMarketOpen"]) ?? false;
+  const currency =
+    readPayloadString(payload, ["currency"]) ?? security.quoteCurrency;
+
+  return {
+    quote: {
+      securityId: security.id,
+      priceDate,
+      quoteTimestamp:
+        readPayloadTimestamp(payload, [
+          "last_quote_at",
+          "lastQuoteAt",
+          "timestamp",
+        ]) ?? `${priceDate}T16:00:00Z`,
+      price,
+      currency,
+      sourceName: "twelve_data",
+      isRealtime: isMarketOpen,
+      isDelayed: !isMarketOpen,
+      marketState: isMarketOpen ? "open" : "closed",
+      rawJson: payload,
+      createdAt: new Date().toISOString(),
+    },
+    reason: null,
+  };
+}
+
+async function upsertSecurityPriceRow(sql: SqlClient, price: SecurityPrice) {
+  await sql`
+    insert into public.security_prices ${sql({
+      security_id: price.securityId,
+      price_date: price.priceDate,
+      quote_timestamp: price.quoteTimestamp,
+      price: price.price,
+      currency: price.currency,
+      source_name: price.sourceName,
+      is_realtime: price.isRealtime,
+      is_delayed: price.isDelayed,
+      market_state: price.marketState,
+      raw_json: serializeJson(sql, price.rawJson),
+      created_at: price.createdAt,
+    } as Record<string, unknown>)}
+    on conflict (security_id, price_date, source_name)
+    do update set
+      quote_timestamp = excluded.quote_timestamp,
+      price = excluded.price,
+      currency = excluded.currency,
+      is_realtime = excluded.is_realtime,
+      is_delayed = excluded.is_delayed,
+      market_state = excluded.market_state,
+      raw_json = excluded.raw_json,
+      created_at = excluded.created_at
+  `;
+}
+
+async function updateSecurityPriceRefreshMetadata(
+  sql: SqlClient,
+  input: {
+    securityId: string;
+    quoteCurrency: string;
+    quoteTimestamp: string;
+  },
+) {
+  await sql`
+    update public.securities
+    set
+      quote_currency = ${input.quoteCurrency},
+      last_price_refresh_at = ${input.quoteTimestamp}
+    where id = ${input.securityId}
+  `;
+}
+
+export interface RefreshOwnedStockPricesResult {
+  totalTrackedStocks: number;
+  refreshedCount: number;
+  skippedCount: number;
+  refreshedSymbols: string[];
+  skippedSymbols: string[];
+  skippedDetails: Array<{ symbol: string; reason: string }>;
+  latestPriceDate: string | null;
+  generatedAt: string;
+}
+
+export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPricesResult> {
+  const runtime = getDbRuntimeConfig();
+  const apiKey = process.env.TWELVE_DATA_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "TWELVE_DATA_API_KEY is not configured. Add it to .env.local before refreshing prices.",
+    );
+  }
+
+  return withSeededUserContext(async (sql) => {
+    return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
+      const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
+      const securities = selectOwnedStockPriceRefreshSecurities(dataset);
+      const requestDate = new Date().toISOString().slice(0, 10);
+      const refreshedSymbols: string[] = [];
+      const skippedSymbols: string[] = [];
+      const skippedDetails: Array<{ symbol: string; reason: string }> = [];
+      let latestPriceDate: string | null = null;
+
+      for (const security of securities) {
+        const { quote, reason } = await fetchLatestOwnedStockPrice(
+          security,
+          apiKey,
+          requestDate,
+        );
+        if (!quote) {
+          skippedSymbols.push(security.displaySymbol);
+          skippedDetails.push({
+            symbol: security.displaySymbol,
+            reason: reason ?? "Quote refresh failed.",
+          });
+          continue;
+        }
+
+        await upsertSecurityPriceRow(sql, quote);
+        await updateSecurityPriceRefreshMetadata(sql, {
+          securityId: security.id,
+          quoteCurrency: quote.currency,
+          quoteTimestamp: quote.quoteTimestamp,
+        });
+        refreshedSymbols.push(security.displaySymbol);
+        if (!latestPriceDate || quote.priceDate > latestPriceDate) {
+          latestPriceDate = quote.priceDate;
+        }
+      }
+
+      return {
+        totalTrackedStocks: securities.length,
+        refreshedCount: refreshedSymbols.length,
+        skippedCount: skippedSymbols.length,
+        refreshedSymbols,
+        skippedSymbols,
+        skippedDetails,
+        latestPriceDate,
+        generatedAt: new Date().toISOString(),
+      };
+    });
   });
 }
 
@@ -1257,7 +1512,11 @@ export function mergeEnrichmentDecisionWithExistingTransaction(
     return decision;
   }
 
-  if (decision.quantity || decision.unitPriceOriginal || !decision.needsReview) {
+  if (
+    decision.quantity ||
+    decision.unitPriceOriginal ||
+    !decision.needsReview
+  ) {
     return decision;
   }
 
@@ -1265,7 +1524,9 @@ export function mergeEnrichmentDecisionWithExistingTransaction(
     ...decision,
     quantity: existingTransaction.quantity,
     unitPriceOriginal:
-      decision.unitPriceOriginal ?? existingTransaction.unitPriceOriginal ?? null,
+      decision.unitPriceOriginal ??
+      existingTransaction.unitPriceOriginal ??
+      null,
     needsReview: false,
     reviewReason: null,
   } satisfies TransactionEnrichmentDecision;
@@ -3181,7 +3442,9 @@ class SqlFinanceRepository implements FinanceRepository {
         limit 1
       `;
       if (existingSlugRows[0]) {
-        throw new Error(`Entity slug "${input.entity.slug}" is already in use.`);
+        throw new Error(
+          `Entity slug "${input.entity.slug}" is already in use.`,
+        );
       }
 
       if (input.entity.entityKind === "personal") {
@@ -3300,10 +3563,12 @@ class SqlFinanceRepository implements FinanceRepository {
         ...mapFromSql<DomainDataset["entities"][number]>(beforeRow),
         slug: nextSlug,
         displayName: input.patch.displayName ?? beforeRow.display_name,
-        legalName:
-          Object.prototype.hasOwnProperty.call(input.patch, "legalName")
-            ? input.patch.legalName ?? null
-            : beforeRow.legal_name,
+        legalName: Object.prototype.hasOwnProperty.call(
+          input.patch,
+          "legalName",
+        )
+          ? (input.patch.legalName ?? null)
+          : beforeRow.legal_name,
         baseCurrency: input.patch.baseCurrency ?? beforeRow.base_currency,
       };
 
@@ -3315,7 +3580,7 @@ class SqlFinanceRepository implements FinanceRepository {
             display_name = ${input.patch.displayName ?? beforeRow.display_name},
             legal_name = ${
               Object.prototype.hasOwnProperty.call(input.patch, "legalName")
-                ? input.patch.legalName ?? null
+                ? (input.patch.legalName ?? null)
                 : beforeRow.legal_name
             },
             base_currency = ${input.patch.baseCurrency ?? beforeRow.base_currency}
@@ -3329,10 +3594,9 @@ class SqlFinanceRepository implements FinanceRepository {
           "entities.update",
           "entity",
           input.entityId,
-          mapFromSql<DomainDataset["entities"][number]>(beforeRow) as unknown as Record<
-            string,
-            unknown
-          >,
+          mapFromSql<DomainDataset["entities"][number]>(
+            beforeRow,
+          ) as unknown as Record<string, unknown>,
           afterJson as unknown as Record<string, unknown>,
         );
         await sql`
@@ -3432,10 +3696,9 @@ class SqlFinanceRepository implements FinanceRepository {
           "entities.delete",
           "entity",
           input.entityId,
-          mapFromSql<DomainDataset["entities"][number]>(beforeRow) as unknown as Record<
-            string,
-            unknown
-          >,
+          mapFromSql<DomainDataset["entities"][number]>(
+            beforeRow,
+          ) as unknown as Record<string, unknown>,
           null,
         );
         await sql`
@@ -3827,8 +4090,7 @@ class SqlFinanceRepository implements FinanceRepository {
         updatePayload.exclude_from_analytics = patch.excludeFromAnalytics;
       if (patch.securityId !== undefined)
         updatePayload.security_id = patch.securityId;
-      if (patch.quantity !== undefined)
-        updatePayload.quantity = patch.quantity;
+      if (patch.quantity !== undefined) updatePayload.quantity = patch.quantity;
       if (patch.unitPriceOriginal !== undefined)
         updatePayload.unit_price_original = patch.unitPriceOriginal;
       if (patch.manualNotes !== undefined)

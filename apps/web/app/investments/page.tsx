@@ -3,6 +3,7 @@ import { Decimal } from "decimal.js";
 import { resolveFxRate } from "@myfinance/domain";
 
 import { AppShell } from "../../components/app-shell";
+import { InvestmentPriceRefreshButton } from "../../components/investment-price-refresh-button";
 import {
   DistributionList,
   InvestmentAllocationCard,
@@ -48,7 +49,9 @@ function readOptionalString(value: unknown) {
 
 function holdingLooksLikeFund(
   security:
-    | (Awaited<ReturnType<typeof getInvestmentsModel>>["dataset"]["securities"][number] & {
+    | (Awaited<
+        ReturnType<typeof getInvestmentsModel>
+      >["dataset"]["securities"][number] & {
         metadataJson?: unknown;
       })
     | null
@@ -64,7 +67,9 @@ function holdingLooksLikeFund(
     readOptionalString(metadata?.instrumentType),
   );
   const combined = normalizeInstrumentText(
-    [instrumentType, security.exchangeName, security.name].filter(Boolean).join(" "),
+    [instrumentType, security.exchangeName, security.name]
+      .filter(Boolean)
+      .join(" "),
   );
 
   return (
@@ -254,9 +259,7 @@ export default async function InvestmentsPage({
     model.currency,
     model.referenceDate,
   );
-  const getHoldingDisplayMetric = (
-    holding: (typeof sortedHoldings)[number],
-  ) =>
+  const getHoldingDisplayMetric = (holding: (typeof sortedHoldings)[number]) =>
     holdingDisplayMetrics.get(getHoldingDisplayMetricKey(holding)) ?? {
       avgCostDisplay: null,
       openCostBasisDisplay: null,
@@ -317,17 +320,23 @@ export default async function InvestmentsPage({
       count: rows.length,
       marketValueDisplay: marketValueDisplay.toFixed(2),
       unrealizedPnlDisplay: unrealizedPnlDisplay.toFixed(2),
-      unrealizedPnlPercent: safePercent(
-        unrealizedPnlDisplay,
-        costBasisDisplay,
+      unrealizedPnlPercent: safePercent(unrealizedPnlDisplay, costBasisDisplay),
+      allocationPercent: safePercent(
+        marketValueDisplay,
+        totalPortfolioValueDisplay,
       ),
-      allocationPercent: safePercent(marketValueDisplay, totalPortfolioValueDisplay),
       missingQuoteCount: rows.length - pricedRows.length,
     };
   };
   const fundsSummary = buildHoldingBucketSummary(fundHoldings, "Funds");
-  const stocksSummary = buildHoldingBucketSummary(stockHoldings, "Stocks & ETF");
-  const cashAllocationPercent = safePercent(cashValueEur, totalPortfolioValueEur);
+  const stocksSummary = buildHoldingBucketSummary(
+    stockHoldings,
+    "Stocks & ETF",
+  );
+  const cashAllocationPercent = safePercent(
+    cashValueEur,
+    totalPortfolioValueEur,
+  );
   const periodLabel =
     model.period.preset === "ytd"
       ? "YTD"
@@ -355,7 +364,7 @@ export default async function InvestmentsPage({
       state={model.navigationState}
     >
       <div className="dashboard-grid">
-        <div className="page-header">
+        <div className="page-header investments-page-header">
           <div>
             <h1 className="page-title">Investments</h1>
             <p className="page-subtitle">
@@ -364,6 +373,7 @@ export default async function InvestmentsPage({
               securities contribute to market value.
             </p>
           </div>
+          <InvestmentPriceRefreshButton />
         </div>
 
         <div className="investments-hero">
@@ -390,9 +400,7 @@ export default async function InvestmentsPage({
               value={formatCurrency(totalDisplayUnrealized, model.currency)}
               badge={`${model.metrics.unrealized.deltaPercent ?? "0.00"}%`}
               badgeTone={
-                Number(totalDisplayUnrealized) >= 0
-                  ? "accent"
-                  : "neutral"
+                Number(totalDisplayUnrealized) >= 0 ? "accent" : "neutral"
               }
               subtitle={`${formatCurrency(model.metrics.unrealized.deltaDisplay, model.currency)} vs ${comparisonLabel}`}
               chartValues={model.holdings.holdings.map((holding) =>
@@ -445,7 +453,9 @@ export default async function InvestmentsPage({
                   <h3 className="investment-summary-title">Brokerage Cash</h3>
                 </div>
                 <span className="pill">
-                  {cashAllocationPercent ? formatPercent(cashAllocationPercent) : "N/A"}
+                  {cashAllocationPercent
+                    ? formatPercent(cashAllocationPercent)
+                    : "N/A"}
                 </span>
               </div>
               <div className="investment-summary-value">
@@ -453,7 +463,9 @@ export default async function InvestmentsPage({
               </div>
               <div className="investment-summary-meta">
                 <span>Current broker cash balance</span>
-                <span className="muted">No unrealized P/L applies to cash.</span>
+                <span className="muted">
+                  No unrealized P/L applies to cash.
+                </span>
               </div>
             </article>
 
@@ -472,7 +484,9 @@ export default async function InvestmentsPage({
                   <div className="investment-summary-head">
                     <div>
                       <span className="label-sm">{bucket.label}</span>
-                      <h3 className="investment-summary-title">{bucketCountLabel}</h3>
+                      <h3 className="investment-summary-title">
+                        {bucketCountLabel}
+                      </h3>
                     </div>
                     <span className="pill">
                       {bucket.allocationPercent
@@ -489,14 +503,13 @@ export default async function InvestmentsPage({
                         bucket.unrealizedPnlDisplay,
                         model.currency,
                       )}{" "}
-                      /{" "}
-                      {formatPercent(bucket.unrealizedPnlPercent)}
+                      / {formatPercent(bucket.unrealizedPnlPercent)}
                     </span>
                     {bucket.missingQuoteCount > 0 ? (
                       <span className="muted">
                         {bucket.missingQuoteCount} position
-                        {bucket.missingQuoteCount === 1 ? "" : "s"} without a current
-                        quote
+                        {bucket.missingQuoteCount === 1 ? "" : "s"} without a
+                        current quote
                       </span>
                     ) : (
                       <span className="muted">
@@ -524,12 +537,18 @@ export default async function InvestmentsPage({
                   : "negative";
 
               return (
-                <article className="investment-position-card" key={holding.securityId}>
+                <article
+                  className="investment-position-card"
+                  key={holding.securityId}
+                >
                   <div className="investment-position-head">
                     <div className="investment-position-copy">
-                      <h3 className="investment-position-name">{holding.securityName}</h3>
+                      <h3 className="investment-position-name">
+                        {holding.securityName}
+                      </h3>
                       <p className="investment-position-symbol">
-                        {holding.symbol} · {formatQuantity(holding.quantity)} units
+                        {holding.symbol} · {formatQuantity(holding.quantity)}{" "}
+                        units
                       </p>
                     </div>
                     <div className="investment-position-values">
@@ -540,14 +559,15 @@ export default async function InvestmentsPage({
                         )}
                       </strong>
                       {displayMetric.currentValueDisplay ? (
-                        <span
-                          className={`investment-return ${positiveReturn}`}
-                        >
+                        <span className={`investment-return ${positiveReturn}`}>
                           {formatCurrency(
                             displayMetric.unrealizedDisplay,
                             model.currency,
                           )}{" "}
-                          / {formatPercent(displayMetric.unrealizedDisplayPercent)}
+                          /{" "}
+                          {formatPercent(
+                            displayMetric.unrealizedDisplayPercent,
+                          )}
                         </span>
                       ) : (
                         <span className="muted">Current quote unavailable</span>
@@ -573,13 +593,19 @@ export default async function InvestmentsPage({
                   ? "positive"
                   : "negative";
               const security = securityById.get(holding.securityId);
-              const exchangeLabel = security?.exchangeName ?? "Unknown exchange";
+              const exchangeLabel =
+                security?.exchangeName ?? "Unknown exchange";
 
               return (
-                <article className="investment-position-card" key={holding.securityId}>
+                <article
+                  className="investment-position-card"
+                  key={holding.securityId}
+                >
                   <div className="investment-position-head">
                     <div className="investment-position-copy">
-                      <h3 className="investment-position-name">{holding.securityName}</h3>
+                      <h3 className="investment-position-name">
+                        {holding.securityName}
+                      </h3>
                       <p className="investment-position-symbol">
                         {holding.symbol} · {exchangeLabel} ·{" "}
                         {formatQuantity(holding.quantity)} units
@@ -593,14 +619,15 @@ export default async function InvestmentsPage({
                         )}
                       </strong>
                       {displayMetric.currentValueDisplay ? (
-                        <span
-                          className={`investment-return ${positiveReturn}`}
-                        >
+                        <span className={`investment-return ${positiveReturn}`}>
                           {formatCurrency(
                             displayMetric.unrealizedDisplay,
                             model.currency,
                           )}{" "}
-                          / {formatPercent(displayMetric.unrealizedDisplayPercent)}
+                          /{" "}
+                          {formatPercent(
+                            displayMetric.unrealizedDisplayPercent,
+                          )}
                         </span>
                       ) : (
                         <span className="muted">Current quote unavailable</span>
@@ -708,13 +735,25 @@ export default async function InvestmentsPage({
               >
                 <input type="hidden" name="scope" value={model.scopeParam} />
                 <input type="hidden" name="currency" value={model.currency} />
-                <input type="hidden" name="period" value={model.period.preset} />
+                <input
+                  type="hidden"
+                  name="period"
+                  value={model.period.preset}
+                />
                 {model.referenceDate ? (
-                  <input type="hidden" name="asOf" value={model.referenceDate} />
+                  <input
+                    type="hidden"
+                    name="asOf"
+                    value={model.referenceDate}
+                  />
                 ) : null}
                 {model.period.preset === "custom" ? (
                   <>
-                    <input type="hidden" name="start" value={model.period.start} />
+                    <input
+                      type="hidden"
+                      name="start"
+                      value={model.period.start}
+                    />
                     <input type="hidden" name="end" value={model.period.end} />
                   </>
                 ) : null}
@@ -732,7 +771,10 @@ export default async function InvestmentsPage({
                   Filter
                 </button>
                 {securityFilter ? (
-                  <a className="btn-ghost" href={buildInvestmentsPageHref(1, "")}>
+                  <a
+                    className="btn-ghost"
+                    href={buildInvestmentsPageHref(1, "")}
+                  >
                     Clear
                   </a>
                 ) : null}
@@ -810,7 +852,9 @@ export default async function InvestmentsPage({
                     >
                       <div className="investment-review-date">
                         <span>{dateParts.top}</span>
-                        {dateParts.bottom ? <span>{dateParts.bottom}</span> : null}
+                        {dateParts.bottom ? (
+                          <span>{dateParts.bottom}</span>
+                        ) : null}
                       </div>
                       <div className="investment-review-description">
                         {row.descriptionRaw}
@@ -838,7 +882,9 @@ export default async function InvestmentsPage({
                           manualNotes={row.manualNotes}
                           transactionClass={row.transactionClass}
                           classificationSource={row.classificationSource}
-                          securitySymbol={securityLabel === "—" ? null : securityLabel}
+                          securitySymbol={
+                            securityLabel === "—" ? null : securityLabel
+                          }
                           quantity={row.quantity}
                           llmPayload={row.llmPayload}
                         />
@@ -871,22 +917,27 @@ export default async function InvestmentsPage({
                   className="investment-review-grid-head"
                   style={{ gridTemplateColumns: unresolvedLedgerColumns }}
                 >
-                  {["Date", "Description", "Qty", "Security", "Amount", "Review"].map(
-                    (header, index) => (
-                      <div
-                        className={
-                          index === 4
-                            ? "investment-review-head-cell amount"
-                            : index === 2
-                              ? "investment-review-head-cell centered"
+                  {[
+                    "Date",
+                    "Description",
+                    "Qty",
+                    "Security",
+                    "Amount",
+                    "Review",
+                  ].map((header, index) => (
+                    <div
+                      className={
+                        index === 4
+                          ? "investment-review-head-cell amount"
+                          : index === 2
+                            ? "investment-review-head-cell centered"
                             : "investment-review-head-cell"
-                        }
-                        key={header}
-                      >
-                        {header}
-                      </div>
-                    ),
-                  )}
+                      }
+                      key={header}
+                    >
+                      {header}
+                    </div>
+                  ))}
                 </div>
                 {model.unresolved.map((row) => {
                   const dateParts = splitIsoDate(row.transactionDate);
@@ -900,7 +951,9 @@ export default async function InvestmentsPage({
                     >
                       <div className="investment-review-date">
                         <span>{dateParts.top}</span>
-                        {dateParts.bottom ? <span>{dateParts.bottom}</span> : null}
+                        {dateParts.bottom ? (
+                          <span>{dateParts.bottom}</span>
+                        ) : null}
                       </div>
                       <div className="investment-review-description">
                         {row.descriptionRaw}
@@ -925,7 +978,9 @@ export default async function InvestmentsPage({
                           manualNotes={row.manualNotes}
                           transactionClass={row.transactionClass}
                           classificationSource={row.classificationSource}
-                          securitySymbol={securityLabel === "—" ? null : securityLabel}
+                          securitySymbol={
+                            securityLabel === "—" ? null : securityLabel
+                          }
                           quantity={row.quantity}
                           llmPayload={row.llmPayload}
                         />

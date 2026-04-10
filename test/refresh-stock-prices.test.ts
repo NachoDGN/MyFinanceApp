@@ -1,0 +1,166 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { selectOwnedStockPriceRefreshSecurities } from "../packages/db/src/index.ts";
+
+import {
+  createAccount,
+  createDataset,
+  createTransaction,
+} from "./support/create-dataset";
+
+test("owned stock price refresh selection includes only open stock and ETF positions", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-1",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    displayName: "Brokerage",
+  });
+
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-amd",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+      {
+        id: "security-googl",
+        providerName: "twelve_data",
+        providerSymbol: "GOOGL",
+        canonicalSymbol: "GOOGL",
+        displaySymbol: "GOOGL",
+        name: "Alphabet Inc Class A",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+      {
+        id: "security-vwce",
+        providerName: "twelve_data",
+        providerSymbol: "VWCE",
+        canonicalSymbol: "VWCE",
+        displaySymbol: "VWCE",
+        name: "Vanguard FTSE All-World UCITS ETF",
+        exchangeName: "XETRA",
+        micCode: "XETR",
+        assetType: "etf",
+        quoteCurrency: "EUR",
+        country: "DE",
+        isin: "IE00BK5BQT80",
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+      {
+        id: "security-fund",
+        providerName: "manual_fund_nav",
+        providerSymbol: "IE0032126645",
+        canonicalSymbol: "IE0032126645",
+        displaySymbol: "VUSAFUND",
+        name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+        exchangeName: "Manual NAV",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: "IE0032126645",
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "buy-amd",
+        accountId: investmentAccount.id,
+        transactionClass: "investment_trade_buy",
+        securityId: "security-amd",
+        quantity: "3",
+        amountOriginal: "-300.00",
+        amountBaseEur: "-300.00",
+      }),
+      createTransaction({
+        id: "buy-googl",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        transactionClass: "investment_trade_buy",
+        securityId: "security-googl",
+        quantity: "2",
+        amountOriginal: "-240.00",
+        amountBaseEur: "-240.00",
+      }),
+      createTransaction({
+        id: "sell-googl",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-03",
+        postedDate: "2026-04-03",
+        transactionClass: "investment_trade_sell",
+        securityId: "security-googl",
+        quantity: "2",
+        amountOriginal: "260.00",
+        amountBaseEur: "260.00",
+      }),
+      createTransaction({
+        id: "buy-vwce",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-04",
+        postedDate: "2026-04-04",
+        transactionClass: "investment_trade_buy",
+        securityId: "security-vwce",
+        quantity: "5",
+        amountOriginal: "-500.00",
+        amountBaseEur: "-500.00",
+      }),
+      createTransaction({
+        id: "buy-fund",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-05",
+        postedDate: "2026-04-05",
+        transactionClass: "investment_trade_buy",
+        securityId: "security-fund",
+        quantity: "4",
+        amountOriginal: "-400.00",
+        amountBaseEur: "-400.00",
+      }),
+    ],
+  });
+
+  const selected = selectOwnedStockPriceRefreshSecurities(
+    dataset,
+    "2026-04-10",
+  );
+
+  assert.deepEqual(selected.map((security) => security.displaySymbol).sort(), [
+    "AMD",
+    "VWCE",
+  ]);
+});
