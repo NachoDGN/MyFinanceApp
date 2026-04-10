@@ -2372,6 +2372,56 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.statement-inline-link {
+  width: fit-content;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.statement-inline-link:hover {
+  text-decoration: underline;
+}
+
+.statement-detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.statement-detail-metric {
+  display: grid;
+  gap: 8px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.statement-detail-metric strong {
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--color-text-main);
+}
+
+.statement-detail-note {
+  margin-top: 22px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text-muted);
+  max-width: 880px;
+}
+
+.statement-inspection-table-wrap {
+  overflow-x: auto;
+}
+
+.statement-table-empty {
+  padding: 24px 16px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
 .statement-review-textarea {
   width: 100%;
   min-height: 104px;
@@ -2435,6 +2485,10 @@ textarea {
   }
 
   .spending-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .statement-detail-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -2565,6 +2619,10 @@ textarea {
   }
 
   .spending-stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .statement-detail-metrics {
     grid-template-columns: 1fr;
   }
 

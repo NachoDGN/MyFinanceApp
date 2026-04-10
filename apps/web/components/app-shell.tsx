@@ -42,8 +42,15 @@ export function AppShell({
     (option) =>
       option.value === "consolidated" || !option.value.startsWith("account:"),
   );
+  const isStatementRoute = pathname.startsWith("/transactions/statements/");
   const isPrimaryNavActive = (href: string) =>
-    href === "/" ? pathname === "/" || pathname === "/dashboard" : pathname === href;
+    href === "/"
+      ? pathname === "/" || pathname === "/dashboard"
+      : pathname === href || pathname.startsWith(`${href}/`);
+  const isSecondaryNavActive = (href: string) =>
+    pathname === href ||
+    pathname.startsWith(`${href}/`) ||
+    (isStatementRoute && href === "/transactions");
 
   return (
     <div className="page-shell">
@@ -65,7 +72,7 @@ export function AppShell({
           <a
             key={item.href}
             href={buildHref(item.href, state, {})}
-            className={pathname === item.href ? "active" : ""}
+            className={isSecondaryNavActive(item.href) ? "active" : ""}
           >
             {item.label}
           </a>

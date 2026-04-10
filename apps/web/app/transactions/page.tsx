@@ -31,12 +31,17 @@ export default async function TransactionsPage({
           <div>
             <h1 className="page-title">Transactions</h1>
             <p className="page-subtitle">
-              Source-of-truth ledger with economic entity attribution, classification confidence, and review state.
+              Source-of-truth ledger with economic entity attribution,
+              classification confidence, and review state.
             </p>
           </div>
         </div>
 
-        <SectionCard title="Ledger Actions" subtitle="Manual operations" span="span-12">
+        <SectionCard
+          title="Ledger Actions"
+          subtitle="Manual operations"
+          span="span-12"
+        >
           <div className="split-grid">
             <div>
               <span className="label-sm">Supported edits</span>
@@ -59,8 +64,9 @@ export default async function TransactionsPage({
             <div>
               <span className="label-sm">Current quality state</span>
               <div style={{ marginTop: 12 }} className="metric-nominal">
-                {model.ledger.quality.pendingEnrichmentCount} rows await automatic analysis,{" "}
-                {model.ledger.quality.pendingReviewCount} rows need manual review, and{" "}
+                {model.ledger.quality.pendingEnrichmentCount} rows await
+                automatic analysis, {model.ledger.quality.pendingReviewCount}{" "}
+                rows need manual review, and{" "}
                 {model.ledger.quality.staleAccountsCount} accounts are stale.
               </div>
             </div>
@@ -84,8 +90,12 @@ export default async function TransactionsPage({
           ]}
           rows={model.ledger.transactions.map((row) => [
             row.transactionDate,
-            model.dataset.accounts.find((account) => account.id === row.accountId)?.displayName ?? row.accountId,
-            model.dataset.entities.find((entity) => entity.id === row.economicEntityId)?.displayName ?? row.economicEntityId,
+            model.dataset.accounts.find(
+              (account) => account.id === row.accountId,
+            )?.displayName ?? row.accountId,
+            model.dataset.entities.find(
+              (entity) => entity.id === row.economicEntityId,
+            )?.displayName ?? row.economicEntityId,
             row.descriptionRaw,
             row.merchantNormalized ?? "—",
             formatCurrency(
@@ -109,6 +119,9 @@ export default async function TransactionsPage({
               }
               linkedImportFilename={
                 importBatchBySettlementId.get(row.id)?.originalFilename ?? null
+              }
+              linkedImportBatchId={
+                importBatchBySettlementId.get(row.id)?.id ?? null
               }
               templateOptions={creditCardTemplates}
             />,

@@ -16,6 +16,7 @@ type CreditCardStatementUploadCellProps = {
   statementStatus: "not_applicable" | "upload_required" | "uploaded";
   linkedCreditCardAccountName?: string | null;
   linkedImportFilename?: string | null;
+  linkedImportBatchId?: string | null;
   templateOptions: TemplateOption[];
   variant?: "default" | "statement";
 };
@@ -25,6 +26,7 @@ export function CreditCardStatementUploadCell({
   statementStatus,
   linkedCreditCardAccountName,
   linkedImportFilename,
+  linkedImportBatchId,
   templateOptions,
   variant = "default",
 }: CreditCardStatementUploadCellProps) {
@@ -62,6 +64,14 @@ export function CreditCardStatementUploadCell({
             Imported from {linkedImportFilename}
           </p>
         ) : null}
+        {linkedImportBatchId ? (
+          <a
+            className="statement-inline-link"
+            href={`/transactions/statements/${linkedImportBatchId}`}
+          >
+            View statement transactions
+          </a>
+        ) : null}
       </div>
     );
   }
@@ -83,6 +93,8 @@ export function CreditCardStatementUploadCell({
       rowCountInserted?: number;
       statementNetAmountBaseEur?: string;
       resolvedTemplateName?: string;
+      importBatchId?: string;
+      fileKind?: string;
     };
 
     const details = [
@@ -107,6 +119,14 @@ export function CreditCardStatementUploadCell({
       fileInputRef.current.value = "";
     }
     setMessage(details || "Statement imported.");
+    if (
+      result.importBatchId &&
+      (result.fileKind === "pdf" ||
+        selectedFile.name.toLowerCase().endsWith(".pdf"))
+    ) {
+      router.push(`/transactions/statements/${result.importBatchId}`);
+      return;
+    }
     router.refresh();
   }
 

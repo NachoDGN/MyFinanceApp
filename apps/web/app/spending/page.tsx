@@ -307,6 +307,9 @@ export default async function SpendingPage({
                           importBatchBySettlementId.get(row.id)
                             ?.originalFilename ?? null
                         }
+                        linkedImportBatchId={
+                          importBatchBySettlementId.get(row.id)?.id ?? null
+                        }
                         templateOptions={creditCardTemplates}
                         variant="statement"
                       />
