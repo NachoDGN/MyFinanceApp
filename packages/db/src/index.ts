@@ -52,6 +52,7 @@ import {
   type Security,
   type SecurityPrice,
   type Transaction,
+  type UpdateAccountInput,
   type UpdateEntityInput,
   type UpdateWorkspaceProfileInput,
   type UpdateTransactionInput,
@@ -3845,6 +3846,174 @@ class SqlFinanceRepository implements FinanceRepository {
       }
 
       return { applied: input.apply, accountId };
+    });
+
+    return result;
+  }
+
+  async updateAccount(input: UpdateAccountInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const beforeRows = await sql`
+        select *
+        from public.accounts
+        where id = ${input.accountId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = beforeRows[0];
+      if (!beforeRow) {
+        throw new Error(`Account ${input.accountId} not found.`);
+      }
+
+      const hasTemplatePatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "importTemplateDefaultId",
+      );
+      const nextImportTemplateDefaultId = hasTemplatePatch
+        ? (input.patch.importTemplateDefaultId ?? null)
+        : beforeRow.import_template_default_id;
+
+      if (nextImportTemplateDefaultId) {
+        const templateRows = await sql`
+          select compatible_account_type
+          from public.import_templates
+          where id = ${nextImportTemplateDefaultId}
+            and user_id = ${this.userId}
+          limit 1
+        `;
+        const template = templateRows[0];
+        if (!template) {
+          throw new Error(`Template ${nextImportTemplateDefaultId} not found.`);
+        }
+        if (template.compatible_account_type !== beforeRow.account_type) {
+          throw new Error(
+            `Template ${nextImportTemplateDefaultId} is not compatible with ${beforeRow.account_type}.`,
+          );
+        }
+      }
+
+      const hasOpeningBalanceOriginalPatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "openingBalanceOriginal",
+      );
+      const hasOpeningBalanceDatePatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "openingBalanceDate",
+      );
+      const hasAliasesPatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "matchingAliases",
+      );
+      const hasIncludeInConsolidationPatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "includeInConsolidation",
+      );
+      const hasAccountSuffixPatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "accountSuffix",
+      );
+      const hasStaleAfterDaysPatch = Object.prototype.hasOwnProperty.call(
+        input.patch,
+        "staleAfterDays",
+      );
+
+      const nextInstitutionName =
+        input.patch.institutionName ?? beforeRow.institution_name;
+      const nextDisplayName = input.patch.displayName ?? beforeRow.display_name;
+      const nextDefaultCurrency =
+        input.patch.defaultCurrency ?? beforeRow.default_currency;
+      const nextOpeningBalanceOriginal = hasOpeningBalanceOriginalPatch
+        ? (input.patch.openingBalanceOriginal ?? null)
+        : beforeRow.opening_balance_original;
+      const nextOpeningBalanceDate = nextOpeningBalanceOriginal
+        ? hasOpeningBalanceDatePatch
+          ? (input.patch.openingBalanceDate ?? null)
+          : beforeRow.opening_balance_date
+        : null;
+      const nextIncludeInConsolidation = hasIncludeInConsolidationPatch
+        ? input.patch.includeInConsolidation
+        : beforeRow.include_in_consolidation;
+      const nextMatchingAliases = hasAliasesPatch
+        ? (input.patch.matchingAliases ?? [])
+        : beforeRow.matching_aliases;
+      const nextAccountSuffix = hasAccountSuffixPatch
+        ? (input.patch.accountSuffix ?? null)
+        : beforeRow.account_suffix;
+      const nextBalanceMode = input.patch.balanceMode ?? beforeRow.balance_mode;
+      const nextStaleAfterDays = hasStaleAfterDaysPatch
+        ? (input.patch.staleAfterDays ?? null)
+        : beforeRow.stale_after_days;
+
+      const beforeAccount = mapFromSql<DomainDataset["accounts"][number]>(
+        beforeRow,
+      );
+      const afterJson = {
+        ...beforeAccount,
+        institutionName: nextInstitutionName,
+        displayName: nextDisplayName,
+        defaultCurrency: nextDefaultCurrency,
+        openingBalanceOriginal: nextOpeningBalanceOriginal,
+        openingBalanceCurrency: nextOpeningBalanceOriginal
+          ? nextDefaultCurrency
+          : null,
+        openingBalanceDate: nextOpeningBalanceDate,
+        includeInConsolidation: nextIncludeInConsolidation,
+        importTemplateDefaultId: nextImportTemplateDefaultId,
+        matchingAliases: nextMatchingAliases,
+        accountSuffix: nextAccountSuffix,
+        balanceMode: nextBalanceMode,
+        staleAfterDays: nextStaleAfterDays,
+      };
+
+      if (input.apply) {
+        await sql`
+          update public.accounts
+          set
+            institution_name = ${nextInstitutionName},
+            display_name = ${nextDisplayName},
+            default_currency = ${nextDefaultCurrency},
+            opening_balance_original = ${nextOpeningBalanceOriginal},
+            opening_balance_currency = ${
+              nextOpeningBalanceOriginal ? nextDefaultCurrency : null
+            },
+            opening_balance_date = ${nextOpeningBalanceDate},
+            include_in_consolidation = ${nextIncludeInConsolidation},
+            import_template_default_id = ${nextImportTemplateDefaultId},
+            matching_aliases = ${nextMatchingAliases},
+            account_suffix = ${nextAccountSuffix},
+            balance_mode = ${nextBalanceMode},
+            stale_after_days = ${nextStaleAfterDays}
+          where id = ${input.accountId}
+            and user_id = ${this.userId}
+        `;
+
+        const auditEvent = createAuditEvent(
+          input.sourceChannel,
+          input.actorName,
+          "accounts.update",
+          "account",
+          input.accountId,
+          beforeAccount as unknown as Record<string, unknown>,
+          afterJson as unknown as Record<string, unknown>,
+        );
+        await sql`
+          insert into public.audit_events ${sql({
+            actor_type: auditEvent.actorType,
+            actor_id: auditEvent.actorId,
+            actor_name: auditEvent.actorName,
+            source_channel: auditEvent.sourceChannel,
+            command_name: auditEvent.commandName,
+            object_type: auditEvent.objectType,
+            object_id: auditEvent.objectId,
+            before_json: auditEvent.beforeJson,
+            after_json: auditEvent.afterJson,
+            created_at: auditEvent.createdAt,
+            notes: `Updated account ${afterJson.displayName}.`,
+          } as Record<string, unknown>)}
+        `;
+      }
+
+      return { applied: input.apply, accountId: input.accountId };
     });
 
     return result;

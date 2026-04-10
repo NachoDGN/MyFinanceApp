@@ -5,7 +5,11 @@ import { useRouter } from "next/navigation";
 
 import type { AccountType, Entity, ImportTemplate } from "@myfinance/domain";
 import { accountTypeOptions } from "@myfinance/domain/template-config";
-import { createAccountAction, deleteAccountAction } from "../app/actions";
+import {
+  createAccountAction,
+  deleteAccountAction,
+  updateAccountAction,
+} from "../app/actions";
 import { SectionCard, SimpleTable } from "./primitives";
 
 type ManagedAccount = {
@@ -13,14 +17,23 @@ type ManagedAccount = {
   displayName: string;
   institutionName: string;
   entityName: string;
-  accountType: string;
+  accountType: AccountType;
   currentBalance: string;
   currentBalanceCurrency: string;
   lastImport: string;
   staleThreshold: string;
   setupStatus: string;
-  balanceMode: string;
+  balanceMode: "statement" | "computed";
   aliases: string;
+  defaultCurrency: string;
+  openingBalanceOriginal: string | null;
+  openingBalanceDate: string | null;
+  includeInConsolidation: boolean;
+  importTemplateDefaultId: string | null;
+  matchingAliasesText: string;
+  accountSuffix: string | null;
+  staleAfterDays: number | null;
+  workspaceDefaultStaleAfterDays: number;
   canDelete: boolean;
   deleteBlockedReason: string | null;
 };
@@ -48,6 +61,7 @@ export function AccountsWorkbench({
   const [staleAfterDays, setStaleAfterDays] = useState(
     String(defaultCashStaleAfterDays),
   );
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
 
   const compatibleTemplates = useMemo(
     () =>
@@ -56,6 +70,12 @@ export function AccountsWorkbench({
       ),
     [accountType, templates],
   );
+
+  function getDefaultStaleThreshold(nextAccountType: AccountType) {
+    return nextAccountType === "brokerage_account"
+      ? String(defaultInvestmentStaleAfterDays)
+      : String(defaultCashStaleAfterDays);
+  }
 
   function handleCreate(formData: FormData, form: HTMLFormElement) {
     startTransition(async () => {
@@ -82,9 +102,7 @@ export function AccountsWorkbench({
             String(formData.get("balanceMode") ?? "statement") === "computed"
               ? "computed"
               : "statement",
-          staleAfterDays: String(formData.get("staleAfterDays") ?? "").trim()
-            ? Number(formData.get("staleAfterDays"))
-            : null,
+          staleAfterDays: String(formData.get("staleAfterDays") ?? "").trim(),
         });
         form.reset();
         setAccountType("checking");
@@ -95,6 +113,53 @@ export function AccountsWorkbench({
       } catch (error) {
         setFeedback(
           error instanceof Error ? error.message : "Account creation failed.",
+        );
+      }
+    });
+  }
+
+  function handleUpdate(formData: FormData, account: ManagedAccount) {
+    startTransition(async () => {
+      setFeedback(null);
+      try {
+        const nextDisplayName = String(
+          formData.get("displayName") ?? account.displayName,
+        );
+        await updateAccountAction({
+          accountId: account.id,
+          institutionName: String(
+            formData.get("institutionName") ?? account.institutionName,
+          ),
+          displayName: nextDisplayName,
+          defaultCurrency: String(
+            formData.get("defaultCurrency") ?? account.defaultCurrency,
+          ),
+          openingBalanceOriginal: String(
+            formData.get("openingBalanceOriginal") ?? "",
+          ),
+          openingBalanceDate: String(formData.get("openingBalanceDate") ?? ""),
+          includeInConsolidation:
+            formData.get("includeInConsolidation") === "on",
+          importTemplateDefaultId: String(
+            formData.get("importTemplateDefaultId") ?? "",
+          ),
+          matchingAliasesText: String(
+            formData.get("matchingAliasesText") ?? "",
+          ),
+          accountSuffix: String(formData.get("accountSuffix") ?? ""),
+          balanceMode:
+            String(formData.get("balanceMode") ?? account.balanceMode) ===
+            "computed"
+              ? "computed"
+              : "statement",
+          staleAfterDays: String(formData.get("staleAfterDays") ?? "").trim(),
+        });
+        setEditingAccountId(null);
+        setFeedback(`Updated ${nextDisplayName}.`);
+        router.refresh();
+      } catch (error) {
+        setFeedback(
+          error instanceof Error ? error.message : "Account update failed.",
         );
       }
     });
@@ -117,6 +182,9 @@ export function AccountsWorkbench({
       setFeedback(null);
       try {
         await deleteAccountAction(account.id);
+        if (editingAccountId === account.id) {
+          setEditingAccountId(null);
+        }
         setFeedback(`Removed ${account.displayName}.`);
         router.refresh();
       } catch (error) {
@@ -175,11 +243,7 @@ export function AccountsWorkbench({
                     ? currentValue
                     : "",
                 );
-                setStaleAfterDays(
-                  nextAccountType === "brokerage_account"
-                    ? String(defaultInvestmentStaleAfterDays)
-                    : String(defaultCashStaleAfterDays),
-                );
+                setStaleAfterDays(getDefaultStaleThreshold(nextAccountType));
               }}
             >
               {accountTypeOptions.map((option) => (
@@ -220,6 +284,7 @@ export function AccountsWorkbench({
             Default Import Template
             <select
               className="input-select"
+              name="importTemplateDefaultId"
               value={selectedTemplateId}
               onChange={(event) => setSelectedTemplateId(event.target.value)}
             >
@@ -316,64 +381,240 @@ export function AccountsWorkbench({
 
       <SectionCard
         title="Account Registry"
-        subtitle="Removal is guarded when history already exists"
+        subtitle="Edit opening balances and operational settings without changing ownership or type"
         span="span-8"
       >
+        {feedback ? (
+          <div className="status-note" style={{ marginBottom: 16 }}>
+            {feedback}
+          </div>
+        ) : null}
         <div className="legend-list">
-          {accounts.map((account) => (
-            <div key={account.id} className="draft-card">
-              <div className="draft-meta">
-                <div>
-                  <span className="timeline-label">{account.displayName}</span>
-                  <div className="metric-nominal">
-                    {account.institutionName} · {account.entityName} ·{" "}
-                    {account.accountType}
+          {accounts.map((account) => {
+            const isEditing = editingAccountId === account.id;
+            const compatibleAccountTemplates = templates.filter(
+              (template) =>
+                template.compatibleAccountType === account.accountType,
+            );
+
+            return (
+              <div key={account.id} className="draft-card">
+                <div className="draft-meta">
+                  <div>
+                    <span className="timeline-label">{account.displayName}</span>
+                    <div className="metric-nominal">
+                      {account.institutionName} · {account.entityName} ·{" "}
+                      {account.accountType}
+                    </div>
+                  </div>
+                  <div className="inline-actions">
+                    <button
+                      className="btn-ghost"
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => {
+                        setFeedback(null);
+                        setEditingAccountId((currentAccountId) =>
+                          currentAccountId === account.id ? null : account.id,
+                        );
+                      }}
+                    >
+                      {isEditing ? "Close" : "Edit"}
+                    </button>
+                    <button
+                      className="btn-ghost"
+                      type="button"
+                      disabled={isPending || !account.canDelete}
+                      onClick={() => handleDelete(account)}
+                      title={account.deleteBlockedReason ?? "Remove account"}
+                    >
+                      Remove
+                    </button>
                   </div>
                 </div>
-                <button
-                  className="btn-ghost"
-                  type="button"
-                  disabled={isPending || !account.canDelete}
-                  onClick={() => handleDelete(account)}
-                  title={account.deleteBlockedReason ?? "Remove account"}
-                >
-                  Remove
-                </button>
-              </div>
-              <div className="split-grid" style={{ marginTop: 16 }}>
-                <div>
-                  <span className="label-sm">Current Balance</span>
-                  <div className="timeline-label">{account.currentBalance}</div>
-                  <div className="metric-nominal">
-                    {account.currentBalanceCurrency}
+                <div className="split-grid" style={{ marginTop: 16 }}>
+                  <div>
+                    <span className="label-sm">Current Balance</span>
+                    <div className="timeline-label">
+                      {account.currentBalance}
+                    </div>
+                    <div className="metric-nominal">
+                      {account.currentBalanceCurrency}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="label-sm">Setup</span>
+                    <div className="timeline-label">{account.setupStatus}</div>
+                  </div>
+                  <div>
+                    <span className="label-sm">Last Import</span>
+                    <div className="metric-nominal">{account.lastImport}</div>
+                  </div>
+                  <div>
+                    <span className="label-sm">Stale Threshold</span>
+                    <div className="metric-nominal">{account.staleThreshold}</div>
+                  </div>
+                  <div>
+                    <span className="label-sm">Balance Mode</span>
+                    <div className="metric-nominal">{account.balanceMode}</div>
+                  </div>
+                  <div>
+                    <span className="label-sm">Aliases</span>
+                    <div className="metric-nominal">{account.aliases}</div>
                   </div>
                 </div>
-                <div>
-                  <span className="label-sm">Setup</span>
-                  <div className="timeline-label">{account.setupStatus}</div>
-                </div>
-                <div>
-                  <span className="label-sm">Last Import</span>
-                  <div className="metric-nominal">{account.lastImport}</div>
-                </div>
-                <div>
-                  <span className="label-sm">Stale Threshold</span>
-                  <div className="metric-nominal">{account.staleThreshold}</div>
-                </div>
-                <div>
-                  <span className="label-sm">Balance Mode</span>
-                  <div className="metric-nominal">{account.balanceMode}</div>
-                </div>
-                <div>
-                  <span className="label-sm">Aliases</span>
-                  <div className="metric-nominal">{account.aliases}</div>
-                </div>
+                {isEditing ? (
+                  <form
+                    className="form-grid"
+                    style={{ marginTop: 16 }}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleUpdate(new FormData(event.currentTarget), account);
+                    }}
+                  >
+                    <label className="input-label">
+                      Display Name
+                      <input
+                        className="input-field"
+                        name="displayName"
+                        defaultValue={account.displayName}
+                        required
+                      />
+                    </label>
+                    <label className="input-label">
+                      Institution
+                      <input
+                        className="input-field"
+                        name="institutionName"
+                        defaultValue={account.institutionName}
+                        required
+                      />
+                    </label>
+                    <label className="input-label">
+                      Default Currency
+                      <input
+                        className="input-field"
+                        name="defaultCurrency"
+                        defaultValue={account.defaultCurrency}
+                        required
+                      />
+                    </label>
+                    <label className="input-label">
+                      Default Import Template
+                      <select
+                        className="input-select"
+                        name="importTemplateDefaultId"
+                        defaultValue={account.importTemplateDefaultId ?? ""}
+                      >
+                        <option value="">No default template</option>
+                        {compatibleAccountTemplates.map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="input-label">
+                      Opening Balance
+                      <input
+                        className="input-field"
+                        name="openingBalanceOriginal"
+                        defaultValue={account.openingBalanceOriginal ?? ""}
+                        placeholder="Optional"
+                      />
+                    </label>
+                    <label className="input-label">
+                      Opening Balance Date
+                      <input
+                        className="input-field"
+                        name="openingBalanceDate"
+                        type="date"
+                        defaultValue={account.openingBalanceDate ?? ""}
+                      />
+                    </label>
+                    <label className="input-label">
+                      Account Suffix
+                      <input
+                        className="input-field"
+                        name="accountSuffix"
+                        defaultValue={account.accountSuffix ?? ""}
+                        placeholder="Last 4 digits"
+                      />
+                    </label>
+                    <label className="input-label">
+                      Stale Threshold (days)
+                      <input
+                        className="input-field"
+                        name="staleAfterDays"
+                        type="number"
+                        min="1"
+                        max="365"
+                        defaultValue={account.staleAfterDays ?? ""}
+                        placeholder={`${account.workspaceDefaultStaleAfterDays}`}
+                      />
+                    </label>
+                    <label className="input-label">
+                      Balance Mode
+                      <select
+                        className="input-select"
+                        name="balanceMode"
+                        defaultValue={account.balanceMode}
+                      >
+                        <option value="statement">statement</option>
+                        <option value="computed">computed</option>
+                      </select>
+                    </label>
+                    <label className="input-label" style={{ gridColumn: "1 / -1" }}>
+                      Matching Aliases
+                      <input
+                        className="input-field"
+                        name="matchingAliasesText"
+                        defaultValue={account.matchingAliasesText}
+                        placeholder="Comma-separated text seen in statements"
+                      />
+                    </label>
+                    <label className="checkbox-row" style={{ gridColumn: "1 / -1" }}>
+                      <input
+                        name="includeInConsolidation"
+                        type="checkbox"
+                        defaultChecked={account.includeInConsolidation}
+                      />
+                      Include in consolidated totals
+                    </label>
+                    <div className="status-note" style={{ gridColumn: "1 / -1" }}>
+                      Entity ownership and account type stay fixed after
+                      creation so historical attribution and template
+                      compatibility do not drift.
+                    </div>
+                    <div className="inline-actions" style={{ gridColumn: "1 / -1" }}>
+                      <button
+                        className="btn-pill"
+                        type="submit"
+                        disabled={isPending}
+                      >
+                        {isPending ? "Saving..." : "Save Changes"}
+                      </button>
+                      <button
+                        className="btn-ghost"
+                        type="button"
+                        disabled={isPending}
+                        onClick={() => setEditingAccountId(null)}
+                      >
+                        Cancel
+                      </button>
+                      <span className="muted">
+                        Leave stale threshold blank to fall back to the workspace
+                        default of {account.workspaceDefaultStaleAfterDays} days.
+                      </span>
+                    </div>
+                  </form>
+                ) : null}
+                {!account.canDelete && account.deleteBlockedReason ? (
+                  <div className="status-note">{account.deleteBlockedReason}</div>
+                ) : null}
               </div>
-              {!account.canDelete && account.deleteBlockedReason ? (
-                <div className="status-note">{account.deleteBlockedReason}</div>
-              ) : null}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </SectionCard>
 

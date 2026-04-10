@@ -76,12 +76,20 @@ const templateSchema = z.object({
   active: z.boolean().default(true),
 });
 
-const accountSchema = z.object({
-  entityId: z.string().uuid(),
-  institutionName: z.string().min(1),
-  displayName: z.string().min(1),
-  accountType: z.enum(accountTypeOptions),
-  defaultCurrency: z.string().min(1).default("EUR"),
+const nullableDayCountSchema = z.preprocess(
+  (value) => {
+    if (value === "" || value === null || value === undefined) {
+      return null;
+    }
+    return value;
+  },
+  z.coerce.number().int().min(1).max(365).nullable(),
+);
+
+const accountFieldsSchema = z.object({
+  institutionName: z.string().trim().min(1),
+  displayName: z.string().trim().min(1),
+  defaultCurrency: z.string().trim().min(1).default("EUR"),
   openingBalanceOriginal: z
     .string()
     .trim()
@@ -105,7 +113,16 @@ const accountSchema = z.object({
     .optional()
     .transform((value) => value || null),
   balanceMode: z.enum(["statement", "computed"]).default("statement"),
-  staleAfterDays: z.coerce.number().int().min(1).max(365).nullable().optional(),
+  staleAfterDays: nullableDayCountSchema,
+});
+
+const accountSchema = accountFieldsSchema.extend({
+  entityId: z.string().uuid(),
+  accountType: z.enum(accountTypeOptions),
+});
+
+const accountUpdateSchema = accountFieldsSchema.extend({
+  accountId: z.string().uuid(),
 });
 
 const promptProfileUpdateSchema = z.object({
@@ -193,6 +210,24 @@ function parseAliases(value: string) {
         .filter(Boolean),
     ),
   ];
+}
+
+function toAccountPatch(fields: z.infer<typeof accountFieldsSchema>) {
+  return {
+    institutionName: fields.institutionName,
+    displayName: fields.displayName,
+    defaultCurrency: fields.defaultCurrency,
+    openingBalanceOriginal: fields.openingBalanceOriginal,
+    openingBalanceDate: fields.openingBalanceOriginal
+      ? fields.openingBalanceDate
+      : null,
+    includeInConsolidation: fields.includeInConsolidation,
+    importTemplateDefaultId: fields.importTemplateDefaultId,
+    matchingAliases: parseAliases(fields.matchingAliasesText),
+    accountSuffix: fields.accountSuffix,
+    balanceMode: fields.balanceMode,
+    staleAfterDays: fields.staleAfterDays ?? null,
+  };
 }
 
 function revalidateWorkspacePaths() {
@@ -456,36 +491,48 @@ export async function createAccountAction(
   input: z.input<typeof accountSchema>,
 ) {
   const account = accountSchema.parse(input);
+  const patch = toAccountPatch(account);
   const result = await domain.createAccount({
     account: {
       entityId: account.entityId,
-      institutionName: account.institutionName,
-      displayName: account.displayName,
+      institutionName: patch.institutionName,
+      displayName: patch.displayName,
       accountType: account.accountType,
       assetDomain: toAssetDomain(account.accountType),
-      defaultCurrency: account.defaultCurrency,
-      openingBalanceOriginal: account.openingBalanceOriginal,
-      openingBalanceCurrency: account.openingBalanceOriginal
-        ? account.defaultCurrency
+      defaultCurrency: patch.defaultCurrency,
+      openingBalanceOriginal: patch.openingBalanceOriginal,
+      openingBalanceCurrency: patch.openingBalanceOriginal
+        ? patch.defaultCurrency
         : null,
-      openingBalanceDate: account.openingBalanceOriginal
-        ? account.openingBalanceDate
-        : null,
-      includeInConsolidation: account.includeInConsolidation,
+      openingBalanceDate: patch.openingBalanceDate,
+      includeInConsolidation: patch.includeInConsolidation,
       isActive: true,
-      importTemplateDefaultId: account.importTemplateDefaultId,
-      matchingAliases: parseAliases(account.matchingAliasesText),
-      accountSuffix: account.accountSuffix,
-      balanceMode: account.balanceMode,
-      staleAfterDays: account.staleAfterDays ?? null,
+      importTemplateDefaultId: patch.importTemplateDefaultId,
+      matchingAliases: patch.matchingAliases,
+      accountSuffix: patch.accountSuffix,
+      balanceMode: patch.balanceMode,
+      staleAfterDays: patch.staleAfterDays,
     },
     actorName: "web-action",
     sourceChannel: "web",
     apply: true,
   });
-  revalidatePath("/accounts");
-  revalidatePath("/imports");
-  revalidatePath("/");
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function updateAccountAction(
+  input: z.input<typeof accountUpdateSchema>,
+) {
+  const account = accountUpdateSchema.parse(input);
+  const result = await domain.updateAccount({
+    accountId: account.accountId,
+    patch: toAccountPatch(account),
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
   return result;
 }
 

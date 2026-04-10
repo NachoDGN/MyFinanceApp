@@ -19,6 +19,7 @@ import type {
   Scope,
   TemplateListResponse,
   TransactionListResponse,
+  UpdateAccountInput,
   UpdateEntityInput,
   UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
@@ -266,6 +267,10 @@ export class FinanceDomainService {
 
   createAccount(input: CreateAccountInput) {
     return this.repository.createAccount(input);
+  }
+
+  updateAccount(input: UpdateAccountInput) {
+    return this.repository.updateAccount(input);
   }
 
   deleteAccount(input: DeleteAccountInput) {

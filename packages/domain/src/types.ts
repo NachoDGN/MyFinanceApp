@@ -660,6 +660,29 @@ export interface CreateAccountInput {
   apply: boolean;
 }
 
+export interface UpdateAccountInput {
+  accountId: string;
+  patch: Partial<
+    Pick<
+      Account,
+      | "institutionName"
+      | "displayName"
+      | "defaultCurrency"
+      | "openingBalanceOriginal"
+      | "openingBalanceDate"
+      | "includeInConsolidation"
+      | "importTemplateDefaultId"
+      | "matchingAliases"
+      | "accountSuffix"
+      | "balanceMode"
+      | "staleAfterDays"
+    >
+  >;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
 export interface UpdateWorkspaceProfileInput {
   profile: Pick<Profile, "displayName" | "defaultBaseCurrency" | "timezone"> & {
     workspaceSettingsJson: Record<string, unknown>;

@@ -99,6 +99,15 @@ export default async function AccountsPage({
                 : "Setup incomplete",
               balanceMode: account.balanceMode,
               aliases: account.matchingAliases.join(", ") || "—",
+              defaultCurrency: account.defaultCurrency,
+              openingBalanceOriginal: account.openingBalanceOriginal ?? null,
+              openingBalanceDate: account.openingBalanceDate ?? null,
+              includeInConsolidation: account.includeInConsolidation,
+              importTemplateDefaultId: account.importTemplateDefaultId ?? null,
+              matchingAliasesText: account.matchingAliases.join(", "),
+              accountSuffix: account.accountSuffix ?? null,
+              staleAfterDays: account.staleAfterDays ?? null,
+              workspaceDefaultStaleAfterDays: workspaceDefaultThreshold,
               canDelete: usageCount === 0,
               deleteBlockedReason:
                 usageCount === 0

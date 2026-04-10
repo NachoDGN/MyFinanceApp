@@ -28,6 +28,7 @@ import type {
   ResetWorkspaceInput,
   ResetWorkspaceResult,
   Transaction,
+  UpdateAccountInput,
   UpdateEntityInput,
   UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
@@ -127,6 +128,9 @@ export interface FinanceRepository {
   ): Promise<{ applied: boolean; entityId: string }>;
   createAccount(
     input: CreateAccountInput,
+  ): Promise<{ applied: boolean; accountId: string }>;
+  updateAccount(
+    input: UpdateAccountInput,
   ): Promise<{ applied: boolean; accountId: string }>;
   deleteAccount(
     input: DeleteAccountInput,
