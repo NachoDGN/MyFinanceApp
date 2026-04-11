@@ -52,6 +52,11 @@ import {
   createRule,
   createTransaction,
 } from "./support/create-dataset";
+import {
+  jsonResponse,
+  readRequestUrl,
+  withRuntimeOverrides,
+} from "./support/runtime-overrides";
 
 function parseVectorLiteral(value: string) {
   return JSON.parse(value) as number[];
@@ -514,10 +519,7 @@ test("scope latest date prefers newer market and FX data over the latest transac
 });
 
 test("saved classification rules win before fallback logic or LLM classification", async () => {
-  const previousKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "";
-
-  try {
+  await withRuntimeOverrides({ env: { OPENAI_API_KEY: "" } }, async () => {
     const account = createAccount();
     const transaction = createTransaction({
       id: "notion-row",
@@ -547,20 +549,11 @@ test("saved classification rules win before fallback logic or LLM classification
     assert.equal(decision.categoryCode, "software");
     assert.equal(decision.merchantNormalized, "NOTION");
     assert.equal(decision.needsReview, false);
-  } finally {
-    if (previousKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousKey;
-    }
-  }
+  });
 });
 
 test("revolut exchange rows deterministically resolve to fx conversions before LLM fallback", async () => {
-  const previousKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "";
-
-  try {
+  await withRuntimeOverrides({ env: { OPENAI_API_KEY: "" } }, async () => {
     const account = createAccount({
       institutionName: "Revolut Business",
       accountType: "company_bank",
@@ -619,13 +612,7 @@ test("revolut exchange rows deterministically resolve to fx conversions before L
         ?.provider,
       "revolut_business",
     );
-  } finally {
-    if (previousKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousKey;
-    }
-  }
+  });
 });
 
 test("latest date helpers cap future imports at the provided fallback date", () => {
@@ -695,13 +682,14 @@ test("latest date helpers cap future imports at the provided fallback date", () 
 });
 
 test("investment review routes import and follow-up models separately", () => {
-  const previousImport = process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
-  const previousFollowup =
-    process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
-  process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = "gpt-5.4-mini";
-  process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = "gpt-5.4";
-
-  try {
+  return withRuntimeOverrides(
+    {
+      env: {
+        INVESTMENT_TRANSACTION_REVIEW_LLM: "gpt-5.4-mini",
+        INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM: "gpt-5.4",
+      },
+    },
+    () => {
     assert.equal(
       getInvestmentTransactionClassifierConfig().model,
       "gpt-5.4-mini",
@@ -722,18 +710,8 @@ test("investment review routes import and follow-up models separately", () => {
       getInvestmentTransactionClassifierConfig("review_propagation").model,
       "gpt-5.4",
     );
-  } finally {
-    if (previousImport === undefined) {
-      delete process.env.INVESTMENT_TRANSACTION_REVIEW_LLM;
-    } else {
-      process.env.INVESTMENT_TRANSACTION_REVIEW_LLM = previousImport;
-    }
-    if (previousFollowup === undefined) {
-      delete process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM;
-    } else {
-      process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM = previousFollowup;
-    }
-  }
+    },
+  );
 });
 
 test("manual re-review of a previously unresolved investment transaction always queues propagation", () => {
@@ -977,10 +955,9 @@ test("resolved review similarity lookup returns same-account resolved transactio
 });
 
 test("default review propagation threshold is never stricter than 0.9", async () => {
-  const previousThreshold = process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD;
-  process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD = "0.95";
-
-  try {
+  await withRuntimeOverrides(
+    { env: { REVIEW_PROPAGATION_SIMILARITY_THRESHOLD: "0.95" } },
+    async () => {
     const matches =
       await findSimilarUnresolvedTransactionsByDescriptionEmbedding(
         createSimilaritySql([
@@ -1013,13 +990,8 @@ test("default review propagation threshold is never stricter than 0.9", async ()
       matches.map((match) => match.transactionId),
       ["candidate-above-point-nine"],
     );
-  } finally {
-    if (previousThreshold === undefined) {
-      delete process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD;
-    } else {
-      process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD = previousThreshold;
-    }
-  }
+    },
+  );
 });
 
 test("default review propagation lookup does not cap unresolved matches at 25", async () => {
@@ -1878,10 +1850,9 @@ test("rule matching respects account scope", () => {
 });
 
 test("investment rebuild upgrades stale unknown investment rows into parsed trade buys", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  process.env.TWELVE_DATA_API_KEY = "";
-
-  try {
+  await withRuntimeOverrides(
+    { env: { TWELVE_DATA_API_KEY: "" } },
+    async () => {
     const account = createAccount({
       id: "broker-1",
       assetDomain: "investment",
@@ -1920,20 +1891,14 @@ test("investment rebuild upgrades stale unknown investment rows into parsed trad
     assert.equal(patch?.transactionClass, "investment_trade_buy");
     assert.equal(patch?.categoryCode, "stock_buy");
     assert.match(patch?.reviewReason ?? "", /Security mapping unresolved/i);
-  } finally {
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild explains when a mapped trade still lacks quantity", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  process.env.TWELVE_DATA_API_KEY = "";
-
-  try {
+  await withRuntimeOverrides(
+    { env: { TWELVE_DATA_API_KEY: "" } },
+    async () => {
     const account = createAccount({
       id: "broker-2",
       assetDomain: "investment",
@@ -1996,52 +1961,38 @@ test("investment rebuild explains when a mapped trade still lacks quantity", asy
       patch?.reviewReason ?? "",
       /Mapped to VUSA, but market-data enrichment is unavailable/i,
     );
-  } finally {
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild flags trades whose implied unit price is implausible", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousFetch = globalThis.fetch;
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
+  await withRuntimeOverrides(
+    {
+      env: { TWELVE_DATA_API_KEY: "test-key" },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
 
-    if (url.pathname.endsWith("/time_series")) {
-      return new Response(
-        JSON.stringify({
-          values: [
-            {
-              datetime: "2026-03-16",
-              close: "294.45",
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
+        if (url.pathname.endsWith("/time_series")) {
+          return jsonResponse({
+            values: [
+              {
+                datetime: "2026-03-16",
+                close: "294.45",
+              },
+            ],
+          });
+        }
 
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const account = createAccount({
       id: "broker-4",
       assetDomain: "investment",
@@ -2106,54 +2057,38 @@ test("investment rebuild flags trades whose implied unit price is implausible", 
       patch?.reviewReason ?? "",
       /diverges from available market data/i,
     );
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild rejects historical quotes that are far older than the requested trade date", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousFetch = globalThis.fetch;
-  process.env.TWELVE_DATA_API_KEY = "test-key";
+  await withRuntimeOverrides(
+    {
+      env: { TWELVE_DATA_API_KEY: "test-key" },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
 
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
+        if (url.pathname.endsWith("/time_series")) {
+          return jsonResponse({
+            values: [
+              {
+                datetime: "2025-09-17",
+                close: "24.90",
+              },
+            ],
+          });
+        }
 
-    if (url.pathname.endsWith("/time_series")) {
-      return new Response(
-        JSON.stringify({
-          values: [
-            {
-              datetime: "2025-09-17",
-              close: "24.90",
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const account = createAccount({
       id: "broker-historical-drift",
       assetDomain: "investment",
@@ -2231,72 +2166,50 @@ test("investment rebuild rejects historical quotes that are far older than the r
       patch?.reviewReason ?? "",
       /did not return a usable historical price/i,
     );
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild requests end-of-day quotes on weekends", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousFetch = globalThis.fetch;
   const requestedUrls: string[] = [];
+  await withRuntimeOverrides(
+    {
+      env: { TWELVE_DATA_API_KEY: "test-key" },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
+        requestedUrls.push(url.toString());
 
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    requestedUrls.push(requestUrl);
-    const url = new URL(requestUrl);
+        if (url.pathname.endsWith("/time_series")) {
+          return jsonResponse({
+            values: [
+              {
+                datetime: "2026-04-01",
+                close: "100.00",
+              },
+            ],
+          });
+        }
 
-    if (url.pathname.endsWith("/time_series")) {
-      return new Response(
-        JSON.stringify({
-          values: [
-            {
-              datetime: "2026-04-01",
-              close: "100.00",
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
+        if (url.pathname.endsWith("/quote")) {
+          return jsonResponse({
+            close: "110.00",
+            currency: "USD",
+            datetime: "2026-04-03",
+            is_market_open: "false",
+            last_quote_at: 1775232000,
+          });
+        }
 
-    if (url.pathname.endsWith("/quote")) {
-      return new Response(
-        JSON.stringify({
-          close: "110.00",
-          currency: "USD",
-          datetime: "2026-04-03",
-          is_market_open: "false",
-          last_quote_at: 1775232000,
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const investmentAccount = createAccount({
       id: "brokerage-weekend",
       accountType: "brokerage_account",
@@ -2391,21 +2304,14 @@ test("investment rebuild requests end-of-day quotes on weekends", async () => {
     assert.equal(latestPrice?.isDelayed, true);
     assert.equal(latestPrice?.isRealtime, false);
     assert.notDeepEqual(latestPrice?.rawJson, {});
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild uses stored historical prices for price sanity checks", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  delete process.env.TWELVE_DATA_API_KEY;
-
-  try {
+  await withRuntimeOverrides(
+    { env: { TWELVE_DATA_API_KEY: undefined } },
+    async () => {
     const account = createAccount({
       id: "broker-4b",
       assetDomain: "investment",
@@ -2485,13 +2391,8 @@ test("investment rebuild uses stored historical prices for price sanity checks",
       patch?.reviewReason ?? "",
       /diverges from available market data/i,
     );
-  } finally {
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild clears quantity and unit price for non-trade rows", async () => {
@@ -2779,73 +2680,58 @@ test("investment rebuild remaps stale EU fund aliases away from USD OTC securiti
 });
 
 test("investment rebuild prefers Samsung's London DR over preferred German listings when the hint does not mention preferred", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousFetch = globalThis.fetch;
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
+  await withRuntimeOverrides(
+    {
+      env: { TWELVE_DATA_API_KEY: "test-key" },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
 
-    if (url.pathname.endsWith("/symbol_search")) {
-      return new Response(
-        JSON.stringify({
-          data: [
-            {
-              symbol: "SSUN",
-              instrument_name:
-                "Samsung Electronics Co., Ltd. GDR (Preferred Stock)",
-              exchange: "XBER",
-              mic_code: "XBER",
-              instrument_type: "Depositary Receipt",
-              country: "Germany",
-              currency: "EUR",
-            },
-            {
-              symbol: "SMSN",
-              instrument_name: "Samsung Electronics Co., Ltd.",
-              exchange: "LSE",
-              mic_code: "XLON",
-              instrument_type: "Depositary Receipt",
-              country: "United Kingdom",
-              currency: "USD",
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
+        if (url.pathname.endsWith("/symbol_search")) {
+          return jsonResponse({
+            data: [
+              {
+                symbol: "SSUN",
+                instrument_name:
+                  "Samsung Electronics Co., Ltd. GDR (Preferred Stock)",
+                exchange: "XBER",
+                mic_code: "XBER",
+                instrument_type: "Depositary Receipt",
+                country: "Germany",
+                currency: "EUR",
+              },
+              {
+                symbol: "SMSN",
+                instrument_name: "Samsung Electronics Co., Ltd.",
+                exchange: "LSE",
+                mic_code: "XLON",
+                instrument_type: "Depositary Receipt",
+                country: "United Kingdom",
+                currency: "USD",
+              },
+            ],
+          });
+        }
 
-    if (url.pathname.endsWith("/quote")) {
-      return new Response(
-        JSON.stringify({
-          close: "3022.00",
-          currency: "USD",
-          datetime: "2026-04-02",
-          is_market_open: "false",
-          last_quote_at: 1775140800,
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
+        if (url.pathname.endsWith("/quote")) {
+          return jsonResponse({
+            close: "3022.00",
+            currency: "USD",
+            datetime: "2026-04-02",
+            is_market_open: "false",
+            last_quote_at: 1775140800,
+          });
+        }
 
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const account = createAccount({
       id: "broker-samsung-dr",
       assetDomain: "investment",
@@ -2890,41 +2776,33 @@ test("investment rebuild prefers Samsung's London DR over preferred German listi
     assert.equal(insertedSecurity?.assetType, "stock");
     assert.equal(insertedSecurity?.quoteCurrency, "USD");
     assert.equal(patch?.securityId, insertedSecurity?.id);
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+    },
+  );
 });
 
 test("manual review notes can remap an ETF security to a mutual fund candidate", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousOpenAiKey = process.env.OPENAI_API_KEY;
-  const previousFetch = globalThis.fetch;
   const searchQueries: string[] = [];
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  delete process.env.OPENAI_API_KEY;
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
-    if (url.pathname.endsWith("/symbol_search")) {
-      searchQueries.push(url.searchParams.get("symbol") ?? "");
-    }
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+  await withRuntimeOverrides(
+    {
+      env: {
+        TWELVE_DATA_API_KEY: "test-key",
+        OPENAI_API_KEY: undefined,
+      },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
+        if (url.pathname.endsWith("/symbol_search")) {
+          searchQueries.push(url.searchParams.get("symbol") ?? "");
+        }
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const account = createAccount({
       id: "broker-review-remap",
       assetDomain: "investment",
@@ -3024,77 +2902,58 @@ test("manual review notes can remap an ETF security to a mutual fund candidate",
       rebuilt.insertedSecurities[0]?.id,
     );
     assert.equal(searchQueries.length, 0);
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-    if (previousOpenAiKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousOpenAiKey;
-    }
-  }
+    },
+  );
 });
 
 test("exact ISIN from a manual re-review can remap a mismatched ETF security", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousOpenAiKey = process.env.OPENAI_API_KEY;
-  const previousFetch = globalThis.fetch;
   const searchQueries: string[] = [];
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  delete process.env.OPENAI_API_KEY;
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
+  await withRuntimeOverrides(
+    {
+      env: {
+        TWELVE_DATA_API_KEY: "test-key",
+        OPENAI_API_KEY: undefined,
+      },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
 
-    if (url.pathname.endsWith("/symbol_search")) {
-      searchQueries.push(url.searchParams.get("symbol") ?? "");
-      return new Response(
-        JSON.stringify({
-          data: [
-            {
-              symbol: "VUSA",
-              instrument_name: "Vanguard S&P 500 UCITS ETF EUR",
-              exchange: "XETR",
-              mic_code: "XETR",
-              instrument_type: "ETF",
-              country: "Germany",
-              currency: "EUR",
-            },
-            {
-              symbol: "0P00000G12",
-              instrument_name:
-                "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
-              exchange: "XHAM",
-              mic_code: "XHAM",
-              instrument_type: "Mutual Fund",
-              country: "Germany",
-              currency: "EUR",
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
+        if (url.pathname.endsWith("/symbol_search")) {
+          searchQueries.push(url.searchParams.get("symbol") ?? "");
+          return jsonResponse({
+            data: [
+              {
+                symbol: "VUSA",
+                instrument_name: "Vanguard S&P 500 UCITS ETF EUR",
+                exchange: "XETR",
+                mic_code: "XETR",
+                instrument_type: "ETF",
+                country: "Germany",
+                currency: "EUR",
+              },
+              {
+                symbol: "0P00000G12",
+                instrument_name:
+                  "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+                exchange: "XHAM",
+                mic_code: "XHAM",
+                instrument_type: "Mutual Fund",
+                country: "Germany",
+                currency: "EUR",
+              },
+            ],
+          });
+        }
 
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const account = createAccount({
       id: "broker-review-isin-remap",
       assetDomain: "investment",
@@ -3196,46 +3055,33 @@ test("exact ISIN from a manual re-review can remap a mismatched ETF security", a
       rebuilt.insertedSecurities[0]?.id,
     );
     assert.equal(searchQueries.length, 0);
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-    if (previousOpenAiKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousOpenAiKey;
-    }
-  }
+    },
+  );
 });
 
 test("manual review ISIN fallback resolves web-mapped fund security even when structured instrument fields are sparse", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousOpenAiKey = process.env.OPENAI_API_KEY;
-  const previousFetch = globalThis.fetch;
   const searchQueries: string[] = [];
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  delete process.env.OPENAI_API_KEY;
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
-    if (url.pathname.endsWith("/symbol_search")) {
-      searchQueries.push(url.searchParams.get("symbol") ?? "");
-    }
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
+  await withRuntimeOverrides(
+    {
+      env: {
+        TWELVE_DATA_API_KEY: "test-key",
+        OPENAI_API_KEY: undefined,
+      },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
+        if (url.pathname.endsWith("/symbol_search")) {
+          searchQueries.push(url.searchParams.get("symbol") ?? "");
+        }
+        return jsonResponse(
+          { status: "error" },
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    },
+    async () => {
     const account = createAccount({
       id: "broker-review-isin-fallback",
       assetDomain: "investment",
@@ -3316,19 +3162,8 @@ test("manual review ISIN fallback resolves web-mapped fund security even when st
       /stored nav/i,
     );
     assert.equal(searchQueries.length, 0);
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-    if (previousOpenAiKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousOpenAiKey;
-    }
-  }
+    },
+  );
 });
 
 test("investment rebuild prefers an exact stored alias over a stale carried security mapping", async () => {
