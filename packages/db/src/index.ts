@@ -84,6 +84,8 @@ import {
   prepareInvestmentRebuild,
   type InvestmentRebuildProgress,
 } from "./investment-rebuild";
+import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
+import { loadDatasetForUser } from "./dataset-loader";
 import {
   claimNextQueuedJob,
   completeJob,
@@ -133,59 +135,12 @@ import {
   type RevolutExpense,
   type RevolutTransaction,
 } from "./revolut";
-
-export const TRANSACTION_SELECT_COLUMN_NAMES = [
-  "id",
-  "user_id",
-  "account_id",
-  "account_entity_id",
-  "economic_entity_id",
-  "import_batch_id",
-  "provider_name",
-  "provider_record_id",
-  "source_fingerprint",
-  "duplicate_key",
-  "transaction_date",
-  "posted_date",
-  "amount_original",
-  "currency_original",
-  "amount_base_eur",
-  "fx_rate_to_eur",
-  "description_raw",
-  "description_clean",
-  "merchant_normalized",
-  "counterparty_name",
-  "transaction_class",
-  "category_code",
-  "subcategory_code",
-  "transfer_group_id",
-  "related_account_id",
-  "related_transaction_id",
-  "transfer_match_status",
-  "cross_entity_flag",
-  "reimbursement_status",
-  "classification_status",
-  "classification_source",
-  "classification_confidence",
-  "needs_review",
-  "review_reason",
-  "exclude_from_analytics",
-  "correction_of_transaction_id",
-  "voided_at",
-  "manual_notes",
-  "llm_payload",
-  "raw_payload",
-  "security_id",
-  "quantity",
-  "unit_price_original",
-  "credit_card_statement_status",
-  "linked_credit_card_account_id",
-  "created_at",
-  "updated_at",
-] as const;
-
-export const TRANSACTION_SELECT_COLUMNS =
-  TRANSACTION_SELECT_COLUMN_NAMES.join(", ");
+import { updateTransactionRecord } from "./transaction-record";
+export {
+  TRANSACTION_SELECT_COLUMN_NAMES,
+  TRANSACTION_SELECT_COLUMNS,
+} from "./transaction-columns";
+import { transactionColumnsSql } from "./transaction-columns";
 
 const TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS = 768;
 const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
@@ -277,15 +232,6 @@ export type PropagatedContextEntry = {
   summaryText: string;
   resolvedPrecedent: Record<string, unknown> | null;
 };
-
-function transactionColumnsSql(sql: SqlClient, alias?: string) {
-  const prefix = alias ? `${alias}.` : "";
-  return sql.unsafe(
-    TRANSACTION_SELECT_COLUMN_NAMES.map((column) => `${prefix}${column}`).join(
-      ", ",
-    ),
-  );
-}
 
 function normalizeCreditCardSettlementText(value: string) {
   return value
@@ -2065,116 +2011,6 @@ async function processReviewPropagationJob(
   });
 }
 
-function createAuditEvent(
-  sourceChannel: AuditEvent["sourceChannel"],
-  actorName: string,
-  commandName: string,
-  objectType: string,
-  objectId: string,
-  beforeJson: Record<string, unknown> | null,
-  afterJson: Record<string, unknown> | null,
-): AuditEvent {
-  return {
-    id: randomUUID(),
-    actorType: "agent",
-    actorId: getDbRuntimeConfig().seededUserId,
-    actorName,
-    sourceChannel,
-    commandName,
-    objectType,
-    objectId,
-    beforeJson,
-    afterJson,
-    createdAt: new Date().toISOString(),
-    notes: null,
-  };
-}
-
-async function insertAuditEventRecord(
-  sql: SqlClient,
-  auditEvent: AuditEvent,
-  notes: string | null = auditEvent.notes ?? null,
-) {
-  await sql`
-    insert into public.audit_events ${sql({
-      actor_type: auditEvent.actorType,
-      actor_id: auditEvent.actorId,
-      actor_name: auditEvent.actorName,
-      source_channel: auditEvent.sourceChannel,
-      command_name: auditEvent.commandName,
-      object_type: auditEvent.objectType,
-      object_id: auditEvent.objectId,
-      before_json: auditEvent.beforeJson,
-      after_json: auditEvent.afterJson,
-      created_at: auditEvent.createdAt,
-      notes,
-    } as Record<string, unknown>)}
-  `;
-}
-
-async function updateTransactionRecord(
-  sql: SqlClient,
-  input: {
-    userId: string;
-    transactionId: string;
-    updatePayload: Record<string, unknown>;
-    llmPayload?: Record<string, unknown>;
-    returning?: boolean;
-  },
-): Promise<Record<string, unknown> | null> {
-  if (input.returning === false) {
-    if (input.llmPayload !== undefined) {
-      await sql`
-        update public.transactions
-        set ${sql(input.updatePayload)},
-            llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb
-        where id = ${input.transactionId}
-          and user_id = ${input.userId}
-      `;
-      return null;
-    }
-
-    await sql`
-      update public.transactions
-      set ${sql(input.updatePayload)}
-      where id = ${input.transactionId}
-        and user_id = ${input.userId}
-    `;
-    return null;
-  }
-
-  if (input.llmPayload !== undefined) {
-    const rows = await sql`
-      update public.transactions
-      set ${sql(input.updatePayload)},
-          llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb
-      where id = ${input.transactionId}
-        and user_id = ${input.userId}
-      returning ${transactionColumnsSql(sql)}
-    `;
-    if (!rows[0]) {
-      throw new Error(
-        `Transaction ${input.transactionId} was not found for update.`,
-      );
-    }
-    return rows[0];
-  }
-
-  const rows = await sql`
-    update public.transactions
-    set ${sql(input.updatePayload)}
-    where id = ${input.transactionId}
-      and user_id = ${input.userId}
-    returning ${transactionColumnsSql(sql)}
-  `;
-  if (!rows[0]) {
-    throw new Error(
-      `Transaction ${input.transactionId} was not found for update.`,
-    );
-  }
-  return rows[0];
-}
-
 async function updateTransactionFromEnrichmentDecision(
   sql: SqlClient,
   userId: string,
@@ -3712,167 +3548,6 @@ async function processRevolutSyncJob(
       throw error;
     }
   });
-}
-
-async function loadDatasetForUser(
-  sql: SqlClient,
-  userId: string,
-): Promise<DomainDataset> {
-  const [
-    profiles,
-    entities,
-    accounts,
-    bankConnections,
-    bankAccountLinks,
-    templates,
-    importBatches,
-    transactions,
-    categories,
-    rules,
-    auditEvents,
-    jobs,
-    accountBalanceSnapshots,
-    securities,
-    securityAliases,
-    securityPrices,
-    fxRates,
-    holdingAdjustments,
-    manualInvestments,
-    manualInvestmentValuations,
-    investmentPositions,
-    dailyPortfolioSnapshots,
-    monthlyCashFlowRollups,
-  ] = await Promise.all([
-    sql`select * from public.profiles where id = ${userId} limit 1`,
-    sql`select * from public.entities where user_id = ${userId} order by created_at`,
-    sql`select * from public.accounts where user_id = ${userId} order by created_at`,
-    sql`
-      select
-        id,
-        user_id,
-        entity_id,
-        provider,
-        connection_label,
-        status,
-        external_business_id,
-        last_cursor_created_at,
-        last_successful_sync_at,
-        last_sync_queued_at,
-        last_webhook_at,
-        auth_expires_at,
-        last_error,
-        metadata_json,
-        created_at,
-        updated_at
-      from public.bank_connections
-      where user_id = ${userId}
-      order by created_at
-    `,
-    sql`
-      select *
-      from public.bank_account_links
-      where user_id = ${userId}
-      order by created_at
-    `,
-    sql`select * from public.import_templates where user_id = ${userId} order by created_at`,
-    sql`select * from public.import_batches where user_id = ${userId} order by imported_at desc`,
-    sql`
-      select ${transactionColumnsSql(sql)}
-      from public.transactions
-      where user_id = ${userId}
-      order by transaction_date desc, created_at desc
-    `,
-    sql`select * from public.categories order by sort_order, code`,
-    sql`select * from public.classification_rules where user_id = ${userId} order by priority`,
-    sql`select * from public.audit_events order by created_at desc limit 200`,
-    sql`select * from public.jobs order by created_at desc`,
-    sql`select * from public.account_balance_snapshots where account_id in (select id from public.accounts where user_id = ${userId}) order by as_of_date desc`,
-    sql`select * from public.securities order by display_symbol`,
-    sql`select * from public.security_aliases order by created_at desc`,
-    sql`select * from public.security_prices order by price_date desc, quote_timestamp desc`,
-    sql`select * from public.fx_rates order by as_of_date desc`,
-    sql`select * from public.holding_adjustments where user_id = ${userId} order by effective_date desc`,
-    sql`select * from public.manual_investments where user_id = ${userId} order by created_at desc`,
-    sql`
-      select *
-      from public.manual_investment_valuations
-      where user_id = ${userId}
-      order by snapshot_date desc, updated_at desc
-    `,
-    sql`select * from public.investment_positions where user_id = ${userId}`,
-    sql`select * from public.daily_portfolio_snapshots where user_id = ${userId} order by snapshot_date desc`,
-    sql`
-      with income as (
-        select entity_id, month, income_total_eur
-        from public.mv_monthly_income_totals
-        where user_id = ${userId}
-      ),
-      spending as (
-        select entity_id, month, sum(spending_total_eur) as spending_total_eur
-        from public.mv_monthly_spending_totals
-        where user_id = ${userId}
-        group by entity_id, month
-      )
-      select
-        coalesce(income.entity_id, spending.entity_id) as entity_id,
-        coalesce(income.month, spending.month) as month,
-        coalesce(income.income_total_eur, 0) as income_eur,
-        coalesce(spending.spending_total_eur, 0) as spending_eur,
-        coalesce(income.income_total_eur, 0) - coalesce(spending.spending_total_eur, 0) as operating_net_eur
-      from income
-      full outer join spending
-        on spending.entity_id = income.entity_id
-       and spending.month = income.month
-      order by month asc
-    `,
-  ]);
-
-  if (!profiles[0]) {
-    throw new Error(
-      `Seeded user ${userId} was not found in the database. Run the seed or set APP_SEEDED_USER_ID correctly.`,
-    );
-  }
-
-  return {
-    schemaVersion: "v1" as const,
-    profile: mapFromSql<DomainDataset["profile"]>(profiles[0]),
-    entities: mapFromSql<DomainDataset["entities"]>(entities),
-    accounts: mapFromSql<DomainDataset["accounts"]>(accounts),
-    bankConnections:
-      mapFromSql<DomainDataset["bankConnections"]>(bankConnections),
-    bankAccountLinks:
-      mapFromSql<DomainDataset["bankAccountLinks"]>(bankAccountLinks),
-    templates: mapFromSql<DomainDataset["templates"]>(templates),
-    importBatches: mapFromSql<DomainDataset["importBatches"]>(importBatches),
-    transactions: mapFromSql<DomainDataset["transactions"]>(transactions),
-    categories: mapFromSql<DomainDataset["categories"]>(categories),
-    rules: mapFromSql<DomainDataset["rules"]>(rules),
-    auditEvents: mapFromSql<DomainDataset["auditEvents"]>(auditEvents),
-    jobs: mapFromSql<DomainDataset["jobs"]>(jobs),
-    accountBalanceSnapshots: mapFromSql<
-      DomainDataset["accountBalanceSnapshots"]
-    >(accountBalanceSnapshots),
-    securities: mapFromSql<DomainDataset["securities"]>(securities),
-    securityAliases:
-      mapFromSql<DomainDataset["securityAliases"]>(securityAliases),
-    securityPrices: mapFromSql<DomainDataset["securityPrices"]>(securityPrices),
-    fxRates: mapFromSql<DomainDataset["fxRates"]>(fxRates),
-    holdingAdjustments:
-      mapFromSql<DomainDataset["holdingAdjustments"]>(holdingAdjustments),
-    manualInvestments:
-      mapFromSql<DomainDataset["manualInvestments"]>(manualInvestments),
-    manualInvestmentValuations: mapFromSql<
-      DomainDataset["manualInvestmentValuations"]
-    >(manualInvestmentValuations),
-    investmentPositions:
-      mapFromSql<DomainDataset["investmentPositions"]>(investmentPositions),
-    dailyPortfolioSnapshots: mapFromSql<
-      DomainDataset["dailyPortfolioSnapshots"]
-    >(dailyPortfolioSnapshots),
-    monthlyCashFlowRollups: mapFromSql<DomainDataset["monthlyCashFlowRollups"]>(
-      monthlyCashFlowRollups,
-    ),
-  };
 }
 
 export async function beginRevolutAuthorization(input: { entityId: string }) {
