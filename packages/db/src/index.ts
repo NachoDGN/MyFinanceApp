@@ -80,7 +80,6 @@ import {
   supportsJobType,
   updateRunningJobPayload,
 } from "./job-state";
-import { logReviewReanalysisProgress } from "./logging";
 import { loadPromptOverrides } from "./prompt-profiles";
 import { processRevolutSyncJob } from "./revolut-sync-job";
 export {
@@ -118,9 +117,7 @@ import {
   parseJsonColumn,
   serializeJson,
 } from "./sql-json";
-import {
-  getRevolutRuntimeStatus,
-} from "./revolut";
+import { getRevolutRuntimeStatus } from "./revolut";
 export {
   beginRevolutAuthorization,
   completeRevolutAuthorization,
@@ -3027,7 +3024,9 @@ class SqlFinanceRepository implements FinanceRepository {
                     updatedAt: new Date().toISOString(),
                   },
                 };
-                logReviewReanalysisProgress(job.id, progress);
+                console.log(
+                  `[review_reanalyze] ${job.id} ${progress.stage}: ${progress.message}`,
+                );
                 await updateRunningJobPayload(sql, job.id, nextPayloadJson);
               };
               await reportProgress({

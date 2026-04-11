@@ -1,14 +1,10 @@
 import { Decimal } from "decimal.js";
 
-import {
-  resolveFxRate,
-  type Transaction,
-} from "@myfinance/domain";
+import { resolveFxRate, type Transaction } from "@myfinance/domain";
 
 import { loadDatasetForUser } from "./dataset-loader";
 import { commitSyntheticImportBatch } from "./import-batches";
 import { queueJob } from "./job-state";
-import { warnRevolutSyncExpensesSkipped } from "./logging";
 import {
   decryptBankSecret,
   encryptBankSecret,
@@ -33,6 +29,16 @@ import { mapFromSql } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 import { transactionColumnsSql } from "./transaction-columns";
 import { updateTransactionRecord } from "./transaction-record";
+
+function formatUnknownError(error: unknown) {
+  return error instanceof Error ? error.message : "unknown error";
+}
+
+function warnRevolutSyncExpensesSkipped(connectionId: string, error: unknown) {
+  console.warn(
+    `[revolut-sync] Expenses enrichment skipped for connection ${connectionId}: ${formatUnknownError(error)}`,
+  );
+}
 
 export async function processRevolutSyncJob(
   sql: SqlClient,
