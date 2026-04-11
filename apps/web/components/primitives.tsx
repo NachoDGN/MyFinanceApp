@@ -1,4 +1,7 @@
-import { getTransactionReviewState } from "@myfinance/domain/client";
+import {
+  getTransactionReviewReason,
+  getTransactionReviewState,
+} from "@myfinance/domain/client";
 import type { ReactNode } from "react";
 
 function formatCurrency(amount: string | null | undefined, currency: string) {
@@ -583,9 +586,9 @@ function formatReviewReason(value: unknown): string | null {
           return null;
         }
         const path = Array.isArray((entry as { path?: unknown }).path)
-          ? ((entry as { path: unknown[] }).path
+          ? (entry as { path: unknown[] }).path
               .filter((segment) => typeof segment === "string")
-              .join(".") || null)
+              .join(".") || null
           : null;
         const message =
           typeof (entry as { message?: unknown }).message === "string"
@@ -616,6 +619,10 @@ export function ReviewStateCell({
   securitySymbol,
   quantity,
   llmPayload,
+  creditCardStatementStatus = "not_applicable",
+  descriptionRaw = "",
+  descriptionClean = "",
+  variant = "default",
 }: {
   needsReview: boolean;
   reviewReason?: unknown;
@@ -624,9 +631,26 @@ export function ReviewStateCell({
   securitySymbol?: string | null;
   quantity?: string | null;
   llmPayload?: unknown;
+  creditCardStatementStatus?: "not_applicable" | "upload_required" | "uploaded";
+  descriptionRaw?: string;
+  descriptionClean?: string;
+  variant?: "default" | "statement";
 }) {
-  const reviewState = getTransactionReviewState({ needsReview, llmPayload });
-  const normalizedReviewReason = formatReviewReason(reviewReason);
+  const reviewState = getTransactionReviewState({
+    needsReview,
+    llmPayload,
+    creditCardStatementStatus,
+    descriptionRaw,
+    descriptionClean,
+  });
+  const normalizedReviewReason = formatReviewReason(
+    getTransactionReviewReason({
+      reviewReason: typeof reviewReason === "string" ? reviewReason : null,
+      creditCardStatementStatus,
+      descriptionRaw,
+      descriptionClean,
+    }) ?? reviewReason,
+  );
   const normalizedPendingReason = normalizedReviewReason?.replace(
     "Pending enrichment pipeline.",
     "Queued for automatic transaction analysis.",
@@ -743,23 +767,46 @@ export function ReviewStateCell({
           .filter(Boolean)
           .join(" · ")
       : null;
+  const defaultContainerStyle =
+    variant === "statement"
+      ? undefined
+      : ({ display: "grid", gap: 6, minWidth: 220 } as const);
+  const helperClassName =
+    variant === "statement" ? "statement-helper-text" : "muted";
+  const helperStyle =
+    variant === "statement"
+      ? undefined
+      : ({ fontSize: 12, lineHeight: 1.4 } as const);
 
   if (reviewState === "resolved") {
     return (
-      <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
-        <span className="pill">Resolved</span>
+      <div
+        className={
+          variant === "statement" ? "statement-review-state" : undefined
+        }
+        style={defaultContainerStyle}
+      >
+        <span
+          className={
+            variant === "statement"
+              ? "statement-alert statement-alert-success"
+              : "pill"
+          }
+        >
+          Resolved
+        </span>
         {resolvedSummary ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <span className={helperClassName} style={helperStyle}>
             {resolvedSummary}
           </span>
         ) : null}
         {explanation && explanation !== resolvedSummary ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <span className={helperClassName} style={helperStyle}>
             {explanation}
           </span>
         ) : null}
         {llmLogSummary ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <span className={helperClassName} style={helperStyle}>
             {llmLogSummary}
           </span>
         ) : null}
@@ -769,20 +816,34 @@ export function ReviewStateCell({
 
   if (reviewState === "pending_enrichment") {
     return (
-      <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
-        <span className="pill">Analyzing</span>
+      <div
+        className={
+          variant === "statement" ? "statement-review-state" : undefined
+        }
+        style={defaultContainerStyle}
+      >
         <span
-          className="muted"
-          style={{ fontSize: 12, lineHeight: 1.4 }}
+          className={
+            variant === "statement"
+              ? "statement-alert statement-alert-neutral"
+              : "pill"
+          }
+        >
+          Analyzing
+        </span>
+        <span
+          className={helperClassName}
+          style={helperStyle}
           title={
             normalizedPendingReason ??
             "Queued for automatic transaction analysis."
           }
         >
-          {normalizedPendingReason ?? "Queued for automatic transaction analysis."}
+          {normalizedPendingReason ??
+            "Queued for automatic transaction analysis."}
         </span>
         {llmLogSummary ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <span className={helperClassName} style={helperStyle}>
             {llmLogSummary}
           </span>
         ) : null}
@@ -791,29 +852,40 @@ export function ReviewStateCell({
   }
 
   return (
-    <div style={{ display: "grid", gap: 6, minWidth: 220 }}>
-      <span className="pill warning">Needs review</span>
+    <div
+      className={variant === "statement" ? "statement-review-state" : undefined}
+      style={defaultContainerStyle}
+    >
       <span
-        className="muted"
-        style={{ fontSize: 12, lineHeight: 1.4 }}
+        className={
+          variant === "statement"
+            ? "statement-alert statement-alert-warning"
+            : "pill warning"
+        }
+      >
+        Needs review
+      </span>
+      <span
+        className={helperClassName}
+        style={helperStyle}
         title={normalizedReviewReason ?? "Reason unavailable."}
       >
         {normalizedReviewReason ?? "Reason unavailable."}
       </span>
       {explanation && explanation !== normalizedReviewReason ? (
-        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+        <span className={helperClassName} style={helperStyle}>
           {explanation}
         </span>
       ) : null}
       {llmReason &&
       llmReason !== normalizedReviewReason &&
       llmReason !== explanation ? (
-        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+        <span className={helperClassName} style={helperStyle}>
           Latest analyzer: {llmReason}
         </span>
       ) : null}
       {llmLogSummary ? (
-        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+        <span className={helperClassName} style={helperStyle}>
           {llmLogSummary}
         </span>
       ) : null}

@@ -255,6 +255,12 @@ export class FinanceDomainService {
     return this.repository.commitImport(input);
   }
 
+  commitCreditCardStatementImport(
+    input: Parameters<FinanceRepository["commitCreditCardStatementImport"]>[0],
+  ) {
+    return this.repository.commitCreditCardStatementImport(input);
+  }
+
   updateWorkspaceProfile(input: UpdateWorkspaceProfileInput) {
     return this.repository.updateWorkspaceProfile(input);
   }

@@ -1,6 +1,9 @@
 "use client";
 
-import { getTransactionReviewState } from "@myfinance/domain/client";
+import {
+  getTransactionReviewReason,
+  getTransactionReviewState,
+} from "@myfinance/domain/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
@@ -19,6 +22,10 @@ type ReviewEditorCellProps = {
   securitySymbol?: string | null;
   quantity?: string | null;
   llmPayload?: unknown;
+  creditCardStatementStatus?: "not_applicable" | "upload_required" | "uploaded";
+  descriptionRaw?: string;
+  descriptionClean?: string;
+  variant?: "default" | "statement";
 };
 
 type ReviewJobStatusPayload = {
@@ -58,6 +65,10 @@ export function ReviewEditorCell({
   securitySymbol,
   quantity,
   llmPayload,
+  creditCardStatementStatus = "not_applicable",
+  descriptionRaw = "",
+  descriptionClean = "",
+  variant = "default",
 }: ReviewEditorCellProps) {
   const router = useRouter();
   const [draft, setDraft] = useState(manualNotes ?? "");
@@ -76,7 +87,19 @@ export function ReviewEditorCell({
   const [isRefreshing, startRefresh] = useTransition();
 
   const trimmedDraft = draft.trim();
-  const reviewState = getTransactionReviewState({ needsReview, llmPayload });
+  const reviewState = getTransactionReviewState({
+    needsReview,
+    llmPayload,
+    creditCardStatementStatus,
+    descriptionRaw,
+    descriptionClean,
+  });
+  const effectiveReviewReason = getTransactionReviewReason({
+    reviewReason,
+    creditCardStatementStatus,
+    descriptionRaw,
+    descriptionClean,
+  });
   const isResolvedReview = reviewState === "resolved";
   const isPendingEnrichment = reviewState === "pending_enrichment";
 
@@ -313,20 +336,37 @@ export function ReviewEditorCell({
       : activeJobStatus === "running"
         ? (activeJobProgressMessage ?? "Running analyzer and rebuild steps.")
         : null;
+  const defaultContainerStyle =
+    variant === "statement"
+      ? undefined
+      : ({ display: "grid", gap: 8, minWidth: 260 } as const);
+  const defaultTextareaStyle =
+    variant === "statement" ? undefined : ({ minWidth: 260 } as const);
 
   return (
-    <div style={{ display: "grid", gap: 8, minWidth: 260 }}>
+    <div
+      className={variant === "statement" ? "statement-review-panel" : undefined}
+      style={defaultContainerStyle}
+    >
       <ReviewStateCell
         needsReview={needsReview}
-        reviewReason={reviewReason}
+        reviewReason={effectiveReviewReason}
         transactionClass={transactionClass}
         classificationSource={classificationSource}
         securitySymbol={securitySymbol}
         quantity={quantity}
         llmPayload={llmPayload}
+        creditCardStatementStatus={creditCardStatementStatus}
+        descriptionRaw={descriptionRaw}
+        descriptionClean={descriptionClean}
+        variant={variant}
       />
       <textarea
-        className="input-textarea"
+        className={
+          variant === "statement"
+            ? "statement-review-textarea"
+            : "input-textarea"
+        }
         rows={3}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
@@ -334,16 +374,29 @@ export function ReviewEditorCell({
           isPendingEnrichment
             ? "Add optional context while automatic transaction analysis is still queued."
             : isResolvedReview
-            ? "Explain why this resolved transaction should be reanalyzed from scratch."
-            : reviewReason
-              ? `Explain the correction. Current review: ${reviewReason}`
-              : "Add context for the next LLM review."
+              ? "Explain why this resolved transaction should be reanalyzed from scratch."
+              : effectiveReviewReason
+                ? `Explain the correction. Current review: ${effectiveReviewReason}`
+                : "Add context for the next LLM review."
         }
-        style={{ minWidth: 260 }}
+        style={defaultTextareaStyle}
       />
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div
+        className={
+          variant === "statement" ? "statement-review-actions" : undefined
+        }
+        style={
+          variant === "statement"
+            ? undefined
+            : ({ display: "flex", alignItems: "center", gap: 8 } as const)
+        }
+      >
         <button
-          className="btn-pill"
+          className={
+            variant === "statement"
+              ? "statement-primary-button statement-primary-button-inline"
+              : "btn-pill"
+          }
           type="button"
           onClick={() => {
             void handleUpdate();
@@ -361,13 +414,31 @@ export function ReviewEditorCell({
                   : "Update"}
         </button>
         {feedback ? (
-          <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+          <span
+            className={
+              variant === "statement" ? "statement-helper-text" : "muted"
+            }
+            style={
+              variant === "statement"
+                ? undefined
+                : { fontSize: 12, lineHeight: 1.4 }
+            }
+          >
             {feedback}
           </span>
         ) : null}
       </div>
       {progressMessage ? (
-        <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+        <span
+          className={
+            variant === "statement" ? "statement-helper-text" : "muted"
+          }
+          style={
+            variant === "statement"
+              ? undefined
+              : { fontSize: 12, lineHeight: 1.4 }
+          }
+        >
           {progressMessage}
         </span>
       ) : null}

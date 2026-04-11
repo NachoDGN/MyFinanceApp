@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { Decimal } from "decimal.js";
 import postgres from "postgres";
 
 import {
@@ -26,6 +27,7 @@ import {
   getDatasetLatestDate,
   getImportTemplateInferenceConfig,
   getRuleParserConfig,
+  isCreditCardSettlementTransaction,
   normalizeImportExecutionInput,
   rebuildInvestmentState,
   runDeterministicImport,
@@ -34,6 +36,8 @@ import {
   type Account,
   type ApplyRuleDraftInput,
   type AuditEvent,
+  type CreditCardStatementImportInput,
+  type CreditCardStatementImportResult,
   type CreateEntityInput,
   type CreateAccountInput,
   type CreateRuleInput,
@@ -194,6 +198,8 @@ export const TRANSACTION_SELECT_COLUMN_NAMES = [
   "security_id",
   "quantity",
   "unit_price_original",
+  "credit_card_statement_status",
+  "linked_credit_card_account_id",
   "created_at",
   "updated_at",
 ] as const;
@@ -206,6 +212,12 @@ const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
 const RESOLVED_REVIEW_SIMILARITY_THRESHOLD = 0.8;
 const MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT = 5;
 const STALE_RUNNING_JOB_THRESHOLD_MS = 10 * 60_000;
+const DEFAULT_IMPORT_JOBS_QUEUED = [
+  "classification",
+  "transfer_rematch",
+  "position_rebuild",
+  "metric_refresh",
+] as const satisfies ImportCommitResult["jobsQueued"];
 
 type TransactionEmbeddingSeedRow = {
   id: string;
@@ -221,6 +233,20 @@ type SimilarUnresolvedTransactionMatch = {
 type SimilarResolvedTransactionMatch = SimilarUnresolvedTransactionMatch;
 
 type ReviewReanalysisMode = "manual_review_update" | "manual_resolved_review";
+
+type CommitPreparedImportBatchOptions = {
+  importBatchId?: string;
+  importedByActor?: string;
+  jobsQueued?: ImportCommitResult["jobsQueued"];
+  importBatchExtraValues?: Record<string, unknown>;
+};
+
+type CommitPreparedImportBatchResult = {
+  preview: ImportCommitResult;
+  importBatchId: string;
+  jobsQueued: ImportCommitResult["jobsQueued"];
+  insertedTransactions: Transaction[];
+};
 
 export type ResolvedSourcePrecedent = {
   sourceTransactionId: string;
@@ -267,6 +293,33 @@ function transactionColumnsSql(sql: SqlClient, alias?: string) {
       ", ",
     ),
   );
+}
+
+function normalizeCreditCardSettlementText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+}
+
+function extractCreditCardContractSuffix(value: string) {
+  const normalized = normalizeCreditCardSettlementText(value);
+  const contractMatch = normalized.match(/CONTRATO\s+(\d{3,})/);
+  if (contractMatch?.[1]) {
+    return contractMatch[1];
+  }
+
+  const cardMatch = normalized.match(/TARJETAS?\s+DE\s+CREDITO.*?(\d{3,})/);
+  return cardMatch?.[1] ?? null;
+}
+
+function buildLinkedCreditCardAccountDisplayName(
+  account: Pick<Account, "institutionName">,
+  contractSuffix: string | null,
+) {
+  return contractSuffix
+    ? `${account.institutionName} Credit Card ${contractSuffix}`
+    : `${account.institutionName} Credit Card`;
 }
 
 function getReviewPropagationSimilarityThreshold() {
@@ -2426,6 +2479,383 @@ async function selectHoldingAdjustmentRowById(
   `;
 
   return rows[0] ?? null;
+}
+
+async function resolveOrCreateLinkedCreditCardAccount(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    dataset: DomainDataset;
+    settlementTransaction: Transaction;
+    settlementAccount: Account;
+    templateId: string;
+    actorName: string;
+    sourceChannel: AuditEvent["sourceChannel"];
+  },
+) {
+  const template = input.dataset.templates.find(
+    (candidate) => candidate.id === input.templateId,
+  );
+  if (!template) {
+    throw new Error(`Template ${input.templateId} was not found.`);
+  }
+  if (template.compatibleAccountType !== "credit_card") {
+    throw new Error(
+      `Template ${input.templateId} is not compatible with credit-card statements.`,
+    );
+  }
+
+  if (input.settlementTransaction.linkedCreditCardAccountId) {
+    const linkedAccount = input.dataset.accounts.find(
+      (candidate) =>
+        candidate.id === input.settlementTransaction.linkedCreditCardAccountId,
+    );
+    if (linkedAccount) {
+      return linkedAccount;
+    }
+  }
+
+  const contractSuffix = extractCreditCardContractSuffix(
+    input.settlementTransaction.descriptionRaw,
+  );
+  const candidateAccounts = input.dataset.accounts.filter(
+    (candidate) =>
+      candidate.accountType === "credit_card" &&
+      candidate.isActive &&
+      candidate.entityId === input.settlementAccount.entityId &&
+      candidate.institutionName === input.settlementAccount.institutionName,
+  );
+  const linkedAccount =
+    (contractSuffix
+      ? candidateAccounts.find(
+          (candidate) =>
+            candidate.accountSuffix === contractSuffix ||
+            candidate.matchingAliases.includes(contractSuffix),
+        )
+      : null) ??
+    (candidateAccounts.length === 1 ? candidateAccounts[0] : null);
+
+  if (linkedAccount) {
+    return linkedAccount;
+  }
+
+  const accountId = randomUUID();
+  const afterJson = {
+    id: accountId,
+    userId: input.userId,
+    entityId: input.settlementAccount.entityId,
+    institutionName: input.settlementAccount.institutionName,
+    displayName: buildLinkedCreditCardAccountDisplayName(
+      input.settlementAccount,
+      contractSuffix,
+    ),
+    accountType: "credit_card",
+    assetDomain: "cash",
+    defaultCurrency: input.settlementAccount.defaultCurrency,
+    openingBalanceOriginal: null,
+    openingBalanceCurrency: null,
+    openingBalanceDate: null,
+    includeInConsolidation: true,
+    isActive: true,
+    importTemplateDefaultId: input.templateId,
+    matchingAliases: contractSuffix ? [contractSuffix] : [],
+    accountSuffix: contractSuffix,
+    balanceMode: "computed",
+    staleAfterDays: input.settlementAccount.staleAfterDays ?? null,
+    lastImportedAt: null,
+    createdAt: new Date().toISOString(),
+  } satisfies Account;
+
+  await sql`
+    insert into public.accounts ${sql({
+      id: accountId,
+      user_id: input.userId,
+      entity_id: input.settlementAccount.entityId,
+      institution_name: input.settlementAccount.institutionName,
+      display_name: afterJson.displayName,
+      account_type: "credit_card",
+      asset_domain: "cash",
+      default_currency: input.settlementAccount.defaultCurrency,
+      opening_balance_original: null,
+      opening_balance_currency: null,
+      opening_balance_date: null,
+      include_in_consolidation: true,
+      is_active: true,
+      import_template_default_id: input.templateId,
+      matching_aliases: contractSuffix ? [contractSuffix] : [],
+      account_suffix: contractSuffix,
+      balance_mode: "computed",
+      stale_after_days: input.settlementAccount.staleAfterDays ?? null,
+    } as Record<string, unknown>)}
+  `;
+
+  await insertAuditEventRecord(
+    sql,
+    createAuditEvent(
+      input.sourceChannel,
+      input.actorName,
+      "accounts.create",
+      "account",
+      accountId,
+      null,
+      afterJson as unknown as Record<string, unknown>,
+    ),
+    "Auto-created linked credit-card account from a settlement-row statement upload.",
+  );
+
+  return afterJson;
+}
+
+function sumPreparedTransactionAmountBaseEur(transactions: Transaction[]) {
+  return transactions
+    .reduce(
+      (sum, transaction) => sum.plus(transaction.amountBaseEur),
+      new Decimal(0),
+    )
+    .toFixed(2);
+}
+
+async function commitPreparedImportBatch(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    dataset: DomainDataset;
+    normalizedInput: ReturnType<typeof normalizeImportExecutionInput>;
+    previewFallback?: () => Promise<ImportPreviewResult>;
+    options?: CommitPreparedImportBatchOptions;
+  },
+): Promise<CommitPreparedImportBatchResult> {
+  const normalizedInput = input.normalizedInput;
+  const commitResult = normalizedInput.filePath
+    ? await runDeterministicImport("commit", normalizedInput, input.dataset)
+    : null;
+  const importBatchId = input.options?.importBatchId ?? randomUUID();
+  const preparedTransactions =
+    commitResult && normalizedInput.filePath
+      ? buildImportedTransactions(
+          input.dataset,
+          normalizedInput,
+          importBatchId,
+          commitResult.normalizedRows ?? [],
+        )
+      : null;
+  const preview =
+    commitResult && normalizedInput.filePath
+      ? ({
+          ...(sanitizeImportResult(commitResult) as ImportCommitResult),
+          rowCountDuplicates: preparedTransactions?.duplicateCount ?? 0,
+        } satisfies ImportCommitResult)
+      : ({
+          ...((input.previewFallback
+            ? await input.previewFallback()
+            : await (async () => {
+                throw new Error(
+                  "A file path is required to commit this import flow.",
+                );
+              })()) as ImportCommitResult),
+          importBatchId,
+          rowCountInserted: 0,
+          transactionIds: [],
+          jobsQueued: [...DEFAULT_IMPORT_JOBS_QUEUED],
+        } satisfies ImportCommitResult);
+  const jobsQueued =
+    input.options?.jobsQueued ??
+    ((commitResult as ImportCommitResult | null)?.jobsQueued as
+      | ImportCommitResult["jobsQueued"]
+      | undefined) ??
+    [...DEFAULT_IMPORT_JOBS_QUEUED];
+
+  await sql`
+    insert into public.import_batches ${sql({
+      id: importBatchId,
+      user_id: input.userId,
+      account_id: normalizedInput.accountId,
+      template_id: normalizedInput.templateId,
+      storage_path: normalizedInput.filePath
+        ? `private-imports/local/${normalizedInput.originalFilename}`
+        : `private-imports/manual/${normalizedInput.originalFilename}`,
+      original_filename: normalizedInput.originalFilename,
+      file_sha256: randomUUID().replace(/-/g, ""),
+      status: "committed",
+      row_count_detected: preview.rowCountDetected,
+      row_count_parsed: preview.rowCountParsed,
+      row_count_inserted:
+        preparedTransactions?.inserted.length ?? preview.rowCountParsed,
+      row_count_duplicates:
+        preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates,
+      row_count_failed: preview.rowCountFailed,
+      preview_summary_json: serializeJson(sql, {
+        sampleRows: preview.sampleRows,
+        parseErrors: preview.parseErrors,
+        dateRange: preview.dateRange,
+      }),
+      commit_summary_json: serializeJson(sql, { jobsQueued }),
+      imported_by_actor: input.options?.importedByActor ?? "web-cli",
+      imported_at: new Date().toISOString(),
+      ...(input.options?.importBatchExtraValues ?? {}),
+    } as Record<string, unknown>)}
+  `;
+
+  for (const jobType of jobsQueued) {
+    await sql`
+      insert into public.jobs (
+        id,
+        job_type,
+        payload_json,
+        status,
+        attempts,
+        available_at
+      ) values (
+        ${randomUUID()},
+        ${jobType},
+        ${serializeJson(sql, {
+          importBatchId,
+          accountId: normalizedInput.accountId,
+        })}::jsonb,
+        ${"queued"},
+        0,
+        ${new Date().toISOString()}
+      )
+    `;
+  }
+
+  const insertedTransactions: Transaction[] = [];
+  if (preparedTransactions) {
+    for (const transaction of preparedTransactions.inserted) {
+      try {
+        const inserted = await sql`
+          insert into public.transactions (
+            id,
+            user_id,
+            account_id,
+            account_entity_id,
+            economic_entity_id,
+            import_batch_id,
+            source_fingerprint,
+            duplicate_key,
+            transaction_date,
+            posted_date,
+            amount_original,
+            currency_original,
+            amount_base_eur,
+            fx_rate_to_eur,
+            description_raw,
+            description_clean,
+            merchant_normalized,
+            counterparty_name,
+            transaction_class,
+            category_code,
+            transfer_match_status,
+            cross_entity_flag,
+            reimbursement_status,
+            classification_status,
+            classification_source,
+            classification_confidence,
+            needs_review,
+            review_reason,
+            exclude_from_analytics,
+            llm_payload,
+            raw_payload,
+            security_id,
+            quantity,
+            unit_price_original,
+            credit_card_statement_status,
+            linked_credit_card_account_id,
+            created_at,
+            updated_at
+          ) values (
+            ${transaction.id},
+            ${transaction.userId},
+            ${transaction.accountId},
+            ${transaction.accountEntityId},
+            ${transaction.economicEntityId},
+            ${transaction.importBatchId ?? null},
+            ${transaction.sourceFingerprint},
+            ${transaction.duplicateKey ?? null},
+            ${transaction.transactionDate},
+            ${transaction.postedDate ?? null},
+            ${transaction.amountOriginal},
+            ${transaction.currencyOriginal},
+            ${transaction.amountBaseEur},
+            ${transaction.fxRateToEur ?? null},
+            ${transaction.descriptionRaw},
+            ${transaction.descriptionClean},
+            ${transaction.merchantNormalized ?? null},
+            ${transaction.counterpartyName ?? null},
+            ${transaction.transactionClass},
+            ${transaction.categoryCode ?? null},
+            ${transaction.transferMatchStatus},
+            ${transaction.crossEntityFlag},
+            ${transaction.reimbursementStatus},
+            ${transaction.classificationStatus},
+            ${transaction.classificationSource},
+            ${transaction.classificationConfidence},
+            ${transaction.needsReview},
+            ${transaction.reviewReason ?? null},
+            ${transaction.excludeFromAnalytics},
+            ${serializeJson(sql, transaction.llmPayload)}::jsonb,
+            ${serializeJson(sql, transaction.rawPayload)}::jsonb,
+            ${transaction.securityId ?? null},
+            ${transaction.quantity ?? null},
+            ${transaction.unitPriceOriginal ?? null},
+            ${transaction.creditCardStatementStatus},
+            ${transaction.linkedCreditCardAccountId ?? null},
+            ${transaction.createdAt},
+            ${transaction.updatedAt}
+          )
+          returning id
+        `;
+        if (inserted.length > 0) {
+          insertedTransactions.push(transaction);
+        }
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  await sql`
+    update public.accounts
+    set last_imported_at = ${new Date().toISOString()}
+    where id = ${normalizedInput.accountId}
+      and user_id = ${input.userId}
+  `;
+
+  const commitDuplicates =
+    (preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates) +
+    ((preparedTransactions?.inserted.length ?? 0) - insertedTransactions.length);
+  await sql`
+    update public.import_batches
+    set row_count_inserted = ${insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed)},
+        row_count_duplicates = ${preparedTransactions ? commitDuplicates : preview.rowCountDuplicates},
+        commit_summary_json = ${serializeJson(sql, {
+          jobsQueued,
+          transactionIds: insertedTransactions.map((transaction) => transaction.id),
+        })}::jsonb
+    where id = ${importBatchId}
+      and user_id = ${input.userId}
+  `;
+
+  return {
+    preview: {
+      ...preview,
+      importBatchId,
+      rowCountInserted:
+        insertedTransactions.length ||
+        (preparedTransactions ? 0 : preview.rowCountParsed),
+      rowCountDuplicates: preparedTransactions
+        ? commitDuplicates
+        : preview.rowCountDuplicates,
+      transactionIds: insertedTransactions.map((transaction) => transaction.id),
+      jobsQueued: [...jobsQueued],
+    },
+    importBatchId,
+    jobsQueued: [...jobsQueued],
+    insertedTransactions,
+  };
 }
 
 async function loadDatasetForUser(
@@ -4934,234 +5364,332 @@ class SqlFinanceRepository implements FinanceRepository {
   async commitImport(input: ImportExecutionInput): Promise<ImportCommitResult> {
     const normalizedInput = normalizeImportExecutionInput(input);
     const result = await withSeededUserContext(async (sql) => {
-      const dataset = await this.getDataset();
-      const commitResult = normalizedInput.filePath
-        ? await runDeterministicImport("commit", normalizedInput, dataset)
-        : null;
-      const importBatchId =
-        (commitResult as ImportCommitResult | null)?.importBatchId ??
-        randomUUID();
-      const preparedTransactions =
-        commitResult && normalizedInput.filePath
-          ? buildImportedTransactions(
-              dataset,
-              normalizedInput,
-              importBatchId,
-              commitResult.normalizedRows ?? [],
-            )
-          : null;
-      const preview =
-        commitResult && normalizedInput.filePath
-          ? ({
-              ...(sanitizeImportResult(commitResult) as ImportCommitResult),
-              rowCountDuplicates: preparedTransactions?.duplicateCount ?? 0,
-            } satisfies ImportCommitResult)
-          : await this.previewImport(normalizedInput);
-      const jobsQueued =
-        (commitResult as ImportCommitResult | null)?.jobsQueued ??
-        ([
-          "classification",
-          "transfer_rematch",
-          "position_rebuild",
-          "metric_refresh",
-        ] as const);
-      await sql`
-        insert into public.import_batches (
-          id,
-          user_id,
-          account_id,
-          template_id,
-          storage_path,
-          original_filename,
-          file_sha256,
-          status,
-          row_count_detected,
-          row_count_parsed,
-          row_count_inserted,
-          row_count_duplicates,
-          row_count_failed,
-          preview_summary_json,
-          commit_summary_json,
-          imported_by_actor,
-          imported_at
-        ) values (
-          ${importBatchId},
-          ${this.userId},
-          ${normalizedInput.accountId},
-          ${normalizedInput.templateId},
-          ${
-            normalizedInput.filePath
-              ? `private-imports/local/${normalizedInput.originalFilename}`
-              : `private-imports/manual/${normalizedInput.originalFilename}`
-          },
-          ${normalizedInput.originalFilename},
-          ${randomUUID().replace(/-/g, "")},
-          ${"committed"},
-          ${preview.rowCountDetected},
-          ${preview.rowCountParsed},
-          ${preparedTransactions?.inserted.length ?? preview.rowCountParsed},
-          ${preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates},
-          ${preview.rowCountFailed},
-          ${serializeJson(sql, {
-            sampleRows: preview.sampleRows,
-            parseErrors: preview.parseErrors,
-            dateRange: preview.dateRange,
-          })}::jsonb,
-          ${serializeJson(sql, { jobsQueued })}::jsonb,
-          ${"web-cli"},
-          ${new Date().toISOString()}
+      const dataset = await loadDatasetForUser(sql, this.userId);
+      const committed = await commitPreparedImportBatch(sql, {
+        userId: this.userId,
+        dataset,
+        normalizedInput,
+        previewFallback: () => this.previewImport(normalizedInput),
+      });
+      return committed.preview;
+    });
+    return result;
+  }
+
+  async commitCreditCardStatementImport(
+    input: CreditCardStatementImportInput,
+  ): Promise<CreditCardStatementImportResult> {
+    if (!input.filePath) {
+      throw new Error("A file path is required to upload a credit-card statement.");
+    }
+
+    const result = await withSeededUserContext(async (sql) => {
+      const dataset = await loadDatasetForUser(sql, this.userId);
+      const settlementTransaction = dataset.transactions.find(
+        (candidate) => candidate.id === input.settlementTransactionId,
+      );
+      if (!settlementTransaction) {
+        throw new Error(
+          `Settlement transaction ${input.settlementTransactionId} was not found.`,
+        );
+      }
+      if (!isCreditCardSettlementTransaction(settlementTransaction)) {
+        throw new Error(
+          "This row is not recognized as a credit-card settlement payment.",
+        );
+      }
+      if (settlementTransaction.creditCardStatementStatus === "uploaded") {
+        throw new Error(
+          "This settlement row is already linked to a credit-card statement import.",
+        );
+      }
+
+      const settlementAccount = dataset.accounts.find(
+        (candidate) => candidate.id === settlementTransaction.accountId,
+      );
+      if (!settlementAccount) {
+        throw new Error(
+          `Settlement account ${settlementTransaction.accountId} was not found.`,
+        );
+      }
+
+      const linkedCreditCardAccount = await resolveOrCreateLinkedCreditCardAccount(
+        sql,
+        {
+          userId: this.userId,
+          dataset,
+          settlementTransaction,
+          settlementAccount,
+          templateId: input.templateId,
+          actorName: "web-credit-card-statement",
+          sourceChannel: "web",
+        },
+      );
+      const datasetWithLinkedAccount = dataset.accounts.some(
+        (candidate) => candidate.id === linkedCreditCardAccount.id,
+      )
+        ? dataset
+        : {
+            ...dataset,
+            accounts: [...dataset.accounts, linkedCreditCardAccount],
+          };
+
+      const normalizedInput = normalizeImportExecutionInput({
+        accountId: linkedCreditCardAccount.id,
+        templateId: input.templateId,
+        originalFilename: input.originalFilename,
+        filePath: input.filePath,
+      });
+      const previewResult = await runDeterministicImport(
+        "preview",
+        normalizedInput,
+        datasetWithLinkedAccount,
+      );
+      const validationDataset = {
+        ...datasetWithLinkedAccount,
+        transactions: [],
+      } satisfies DomainDataset;
+      const validationPrepared = buildImportedTransactions(
+        validationDataset,
+        normalizedInput,
+        "credit-card-statement-validation",
+        previewResult.normalizedRows ?? [],
+      );
+      if (validationPrepared.inserted.length === 0) {
+        throw new Error(
+          "The uploaded credit-card statement did not produce any transaction rows.",
+        );
+      }
+
+      const statementNetAmountBaseEur = sumPreparedTransactionAmountBaseEur(
+        validationPrepared.inserted,
+      );
+      if (
+        !new Decimal(statementNetAmountBaseEur).eq(
+          new Decimal(settlementTransaction.amountBaseEur),
         )
-      `;
-      for (const jobType of jobsQueued) {
-        await sql`
-          insert into public.jobs (
-            id,
-            job_type,
-            payload_json,
-            status,
-            attempts,
-            available_at
-          ) values (
-            ${randomUUID()},
-            ${jobType},
-            ${serializeJson(sql, { importBatchId, accountId: normalizedInput.accountId })}::jsonb,
-            ${"queued"},
-            0,
-            ${new Date().toISOString()}
-          )
-        `;
+      ) {
+        throw new Error(
+          `The statement total (${new Decimal(statementNetAmountBaseEur).toFixed(2)} EUR) must exactly match the settlement row (${new Decimal(settlementTransaction.amountBaseEur).toFixed(2)} EUR).`,
+        );
       }
-      const insertedTransactions: Transaction[] = [];
-      if (preparedTransactions) {
-        for (const transaction of preparedTransactions.inserted) {
-          try {
-            const inserted = await sql`
-              insert into public.transactions (
-                id,
-                user_id,
-                account_id,
-                account_entity_id,
-                economic_entity_id,
-                import_batch_id,
-                source_fingerprint,
-                duplicate_key,
-                transaction_date,
-                posted_date,
-                amount_original,
-                currency_original,
-                amount_base_eur,
-                fx_rate_to_eur,
-                description_raw,
-                description_clean,
-                merchant_normalized,
-                counterparty_name,
-                transaction_class,
-                category_code,
-                transfer_match_status,
-                cross_entity_flag,
-                reimbursement_status,
-                classification_status,
-                classification_source,
-                classification_confidence,
-                needs_review,
-                review_reason,
-                exclude_from_analytics,
-                llm_payload,
-                raw_payload,
-                security_id,
-                quantity,
-                unit_price_original,
-                created_at,
-                updated_at
-              ) values (
-                ${transaction.id},
-                ${transaction.userId},
-                ${transaction.accountId},
-                ${transaction.accountEntityId},
-                ${transaction.economicEntityId},
-                ${transaction.importBatchId ?? null},
-                ${transaction.sourceFingerprint},
-                ${transaction.duplicateKey ?? null},
-                ${transaction.transactionDate},
-                ${transaction.postedDate ?? null},
-                ${transaction.amountOriginal},
-                ${transaction.currencyOriginal},
-                ${transaction.amountBaseEur},
-                ${transaction.fxRateToEur ?? null},
-                ${transaction.descriptionRaw},
-                ${transaction.descriptionClean},
-                ${transaction.merchantNormalized ?? null},
-                ${transaction.counterpartyName ?? null},
-                ${transaction.transactionClass},
-                ${transaction.categoryCode ?? null},
-                ${transaction.transferMatchStatus},
-                ${transaction.crossEntityFlag},
-                ${transaction.reimbursementStatus},
-                ${transaction.classificationStatus},
-                ${transaction.classificationSource},
-                ${transaction.classificationConfidence},
-                ${transaction.needsReview},
-                ${transaction.reviewReason ?? null},
-                ${transaction.excludeFromAnalytics},
-                ${serializeJson(sql, transaction.llmPayload)}::jsonb,
-                ${serializeJson(sql, transaction.rawPayload)}::jsonb,
-                ${transaction.securityId ?? null},
-                ${transaction.quantity ?? null},
-                ${transaction.unitPriceOriginal ?? null},
-                ${transaction.createdAt},
-                ${transaction.updatedAt}
-              )
-              returning id
-            `;
-            if (inserted.length > 0) {
-              insertedTransactions.push(transaction);
-            }
-          } catch (error) {
-            if (isUniqueViolation(error)) {
-              continue;
-            }
-            throw error;
-          }
-        }
+
+      const duplicatePrepared = buildImportedTransactions(
+        datasetWithLinkedAccount,
+        normalizedInput,
+        "credit-card-statement-duplicate-check",
+        previewResult.normalizedRows ?? [],
+      );
+      if (duplicatePrepared.duplicateCount > 0) {
+        throw new Error(
+          "This statement contains transactions that are already present in the linked credit-card ledger.",
+        );
       }
+
+      const committed = await commitPreparedImportBatch(sql, {
+        userId: this.userId,
+        dataset: datasetWithLinkedAccount,
+        normalizedInput,
+        options: {
+          importedByActor: "web-credit-card-statement",
+          importBatchExtraValues: {
+            credit_card_settlement_transaction_id: settlementTransaction.id,
+            statement_net_amount_base_eur: statementNetAmountBaseEur,
+          },
+        },
+      });
+
+      const settlementMirrorTransactionId = randomUUID();
+      const mirrorCreatedAt = new Date().toISOString();
+      const mirrorTransaction = {
+        id: settlementMirrorTransactionId,
+        userId: this.userId,
+        accountId: linkedCreditCardAccount.id,
+        accountEntityId: linkedCreditCardAccount.entityId,
+        economicEntityId: linkedCreditCardAccount.entityId,
+        importBatchId: null,
+        sourceFingerprint: `credit-card-settlement-mirror:${settlementTransaction.id}`,
+        duplicateKey: `credit-card-settlement-mirror:${settlementTransaction.id}`,
+        transactionDate: settlementTransaction.transactionDate,
+        postedDate:
+          settlementTransaction.postedDate ?? settlementTransaction.transactionDate,
+        amountOriginal: new Decimal(settlementTransaction.amountOriginal)
+          .abs()
+          .toFixed(8),
+        currencyOriginal: settlementTransaction.currencyOriginal,
+        amountBaseEur: new Decimal(settlementTransaction.amountBaseEur)
+          .abs()
+          .toFixed(8),
+        fxRateToEur: settlementTransaction.fxRateToEur ?? null,
+        descriptionRaw: `Credit card statement payment from ${settlementAccount.displayName}`,
+        descriptionClean: normalizeCreditCardSettlementText(
+          `Credit card statement payment from ${settlementAccount.displayName}`,
+        ),
+        merchantNormalized: null,
+        counterpartyName: settlementAccount.displayName,
+        transactionClass: "transfer_internal",
+        categoryCode: null,
+        subcategoryCode: null,
+        transferGroupId: null,
+        relatedAccountId: settlementAccount.id,
+        relatedTransactionId: settlementTransaction.id,
+        transferMatchStatus: "matched",
+        crossEntityFlag: false,
+        reimbursementStatus: "none",
+        classificationStatus: "transfer_match",
+        classificationSource: "transfer_matcher",
+        classificationConfidence: "1.00",
+        needsReview: false,
+        reviewReason: null,
+        excludeFromAnalytics: false,
+        correctionOfTransactionId: null,
+        voidedAt: null,
+        manualNotes: null,
+        llmPayload: {
+          analysisStatus: "skipped",
+          explanation: "Synthetic settlement mirror for a linked credit-card statement import.",
+          model: null,
+          error: null,
+        },
+        rawPayload: {
+          creditCardStatementSettlementMirror: true,
+          settlementTransactionId: settlementTransaction.id,
+          linkedImportBatchId: committed.importBatchId,
+        },
+        securityId: null,
+        quantity: null,
+        unitPriceOriginal: null,
+        creditCardStatementStatus: "not_applicable",
+        linkedCreditCardAccountId: null,
+        createdAt: mirrorCreatedAt,
+        updatedAt: mirrorCreatedAt,
+      } satisfies Transaction;
+
       await sql`
-        update public.accounts
-        set last_imported_at = ${new Date().toISOString()}
-        where id = ${normalizedInput.accountId}
-          and user_id = ${this.userId}
+        insert into public.transactions ${sql({
+          id: mirrorTransaction.id,
+          user_id: mirrorTransaction.userId,
+          account_id: mirrorTransaction.accountId,
+          account_entity_id: mirrorTransaction.accountEntityId,
+          economic_entity_id: mirrorTransaction.economicEntityId,
+          import_batch_id: mirrorTransaction.importBatchId,
+          source_fingerprint: mirrorTransaction.sourceFingerprint,
+          duplicate_key: mirrorTransaction.duplicateKey,
+          transaction_date: mirrorTransaction.transactionDate,
+          posted_date: mirrorTransaction.postedDate,
+          amount_original: mirrorTransaction.amountOriginal,
+          currency_original: mirrorTransaction.currencyOriginal,
+          amount_base_eur: mirrorTransaction.amountBaseEur,
+          fx_rate_to_eur: mirrorTransaction.fxRateToEur,
+          description_raw: mirrorTransaction.descriptionRaw,
+          description_clean: mirrorTransaction.descriptionClean,
+          merchant_normalized: mirrorTransaction.merchantNormalized,
+          counterparty_name: mirrorTransaction.counterpartyName,
+          transaction_class: mirrorTransaction.transactionClass,
+          category_code: mirrorTransaction.categoryCode,
+          subcategory_code: mirrorTransaction.subcategoryCode,
+          transfer_group_id: mirrorTransaction.transferGroupId,
+          related_account_id: mirrorTransaction.relatedAccountId,
+          related_transaction_id: mirrorTransaction.relatedTransactionId,
+          transfer_match_status: mirrorTransaction.transferMatchStatus,
+          cross_entity_flag: mirrorTransaction.crossEntityFlag,
+          reimbursement_status: mirrorTransaction.reimbursementStatus,
+          classification_status: mirrorTransaction.classificationStatus,
+          classification_source: mirrorTransaction.classificationSource,
+          classification_confidence: mirrorTransaction.classificationConfidence,
+          needs_review: mirrorTransaction.needsReview,
+          review_reason: mirrorTransaction.reviewReason,
+          exclude_from_analytics: mirrorTransaction.excludeFromAnalytics,
+          correction_of_transaction_id: mirrorTransaction.correctionOfTransactionId,
+          voided_at: mirrorTransaction.voidedAt,
+          manual_notes: mirrorTransaction.manualNotes,
+          llm_payload: mirrorTransaction.llmPayload,
+          raw_payload: mirrorTransaction.rawPayload,
+          security_id: mirrorTransaction.securityId,
+          quantity: mirrorTransaction.quantity,
+          unit_price_original: mirrorTransaction.unitPriceOriginal,
+          credit_card_statement_status: mirrorTransaction.creditCardStatementStatus,
+          linked_credit_card_account_id: mirrorTransaction.linkedCreditCardAccountId,
+          created_at: mirrorTransaction.createdAt,
+          updated_at: mirrorTransaction.updatedAt,
+        } as Record<string, unknown>)}
       `;
-      const commitDuplicates =
-        (preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates) +
-        ((preparedTransactions?.inserted.length ?? 0) -
-          insertedTransactions.length);
+
+      const afterSettlementRow = await updateTransactionRecord(sql, {
+        userId: this.userId,
+        transactionId: settlementTransaction.id,
+        updatePayload: {
+          related_account_id: linkedCreditCardAccount.id,
+          related_transaction_id: settlementMirrorTransactionId,
+          transfer_match_status: "matched",
+          needs_review: false,
+          review_reason: null,
+          credit_card_statement_status: "uploaded",
+          linked_credit_card_account_id: linkedCreditCardAccount.id,
+          updated_at: new Date().toISOString(),
+        },
+      });
+      if (!afterSettlementRow) {
+        throw new Error(
+          `Settlement transaction ${settlementTransaction.id} could not be linked.`,
+        );
+      }
+      const afterSettlementTransaction =
+        mapFromSql<Transaction>(afterSettlementRow);
+
+      await insertAuditEventRecord(
+        sql,
+        createAuditEvent(
+          "web",
+          "web-credit-card-statement",
+          "transactions.credit-card-settlement-mirror",
+          "transaction",
+          mirrorTransaction.id,
+          null,
+          mirrorTransaction as unknown as Record<string, unknown>,
+        ),
+      );
+      await insertAuditEventRecord(
+        sql,
+        createAuditEvent(
+          "web",
+          "web-credit-card-statement",
+          "transactions.link-credit-card-statement",
+          "transaction",
+          settlementTransaction.id,
+          settlementTransaction as unknown as Record<string, unknown>,
+          afterSettlementTransaction as unknown as Record<string, unknown>,
+        ),
+      );
       await sql`
         update public.import_batches
-        set row_count_inserted = ${insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed)},
-            row_count_duplicates = ${preparedTransactions ? commitDuplicates : preview.rowCountDuplicates},
-            commit_summary_json = ${serializeJson(sql, {
-              jobsQueued,
-              transactionIds: insertedTransactions.map(
-                (transaction) => transaction.id,
-              ),
-            })}::jsonb
-        where id = ${importBatchId}
+        set commit_summary_json =
+          coalesce(commit_summary_json, '{}'::jsonb) ||
+          ${serializeJson(sql, {
+            settlementMirrorTransactionId,
+            linkedCreditCardAccountId: linkedCreditCardAccount.id,
+          })}::jsonb
+        where id = ${committed.importBatchId}
           and user_id = ${this.userId}
       `;
+      await queueJob(sql, "metric_refresh", {
+        trigger: "credit_card_statement_import",
+        settlementTransactionId: settlementTransaction.id,
+        accountId: settlementAccount.id,
+        linkedCreditCardAccountId: linkedCreditCardAccount.id,
+        importBatchId: committed.importBatchId,
+      });
+
       return {
-        ...preview,
-        importBatchId,
-        rowCountInserted:
-          insertedTransactions.length ||
-          (preparedTransactions ? 0 : preview.rowCountParsed),
-        rowCountDuplicates: preparedTransactions
-          ? commitDuplicates
-          : preview.rowCountDuplicates,
-        transactionIds: insertedTransactions.map(
-          (transaction) => transaction.id,
-        ),
-        jobsQueued: [...jobsQueued],
+        ...committed.preview,
+        settlementTransactionId: settlementTransaction.id,
+        linkedCreditCardAccountId: linkedCreditCardAccount.id,
+        linkedCreditCardAccountName: linkedCreditCardAccount.displayName,
+        settlementMirrorTransactionId,
+        statementNetAmountBaseEur,
       };
     });
+
     return result;
   }
 

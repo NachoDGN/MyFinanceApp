@@ -13,6 +13,8 @@ import type {
   AuditEvent,
   CreateEntityInput,
   CreateAccountInput,
+  CreditCardStatementImportInput,
+  CreditCardStatementImportResult,
   CreateRuleInput,
   CreateTemplateInput,
   DeleteEntityInput,
@@ -165,6 +167,9 @@ export interface FinanceRepository {
   ): Promise<{ applied: boolean; ruleId: string }>;
   previewImport(input: ImportExecutionInput): Promise<ImportPreviewResult>;
   commitImport(input: ImportExecutionInput): Promise<ImportCommitResult>;
+  commitCreditCardStatementImport(
+    input: CreditCardStatementImportInput,
+  ): Promise<CreditCardStatementImportResult>;
   runPendingJobs(apply: boolean): Promise<JobRunResult>;
 }
 
@@ -380,6 +385,16 @@ export function sanitizeImportResult(result: DeterministicImportResult) {
 
 function normalizeDescriptionForImport(value: string) {
   return value.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+function isCreditCardSettlementLikeDescription(value: string) {
+  const normalized = normalizeDescriptionForImport(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return (
+    normalized.includes("LIQUIDACION") &&
+    normalized.includes("TARJETAS DE CREDITO")
+  );
 }
 
 function normalizeFingerprintText(value: string | null | undefined) {
@@ -751,6 +766,9 @@ export function buildImportedTransactions(
     }
     const initialReviewReasons = [
       "Queued for automatic transaction analysis.",
+      isCreditCardSettlementLikeDescription(descriptionRaw)
+        ? "Upload the matching credit-card statement to resolve category KPIs."
+        : null,
       currencyOriginal !== "EUR" && !fxRateToEur
         ? "Missing FX rate for base-currency conversion."
         : null,
@@ -812,6 +830,12 @@ export function buildImportedTransactions(
       securityId,
       quantity,
       unitPriceOriginal,
+      creditCardStatementStatus: isCreditCardSettlementLikeDescription(
+        descriptionRaw,
+      )
+        ? "upload_required"
+        : "not_applicable",
+      linkedCreditCardAccountId: null,
       createdAt,
       updatedAt: createdAt,
     });

@@ -6,6 +6,7 @@ import argparse
 import csv
 import io
 import json
+import os
 import re
 import sys
 import uuid
@@ -21,6 +22,8 @@ from zipfile import ZipFile
 import pandas as pd
 from openpyxl import load_workbook
 
+from pdf_statement import extract_credit_card_statement_rows
+
 
 TEXT_JOIN_SEPARATOR = " "
 EXCEL_COLUMN_PATTERN = re.compile(r"^[A-Z]+$")
@@ -31,6 +34,7 @@ TABLE_PREVIEW_COLUMN_LIMIT = 12
 CSV_DELIMITER_CANDIDATES = [",", ";", "\t", "|"]
 OPENXML_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 LEGACY_EXCEL_SUFFIXES = {".xls"}
+PDF_SUFFIXES = {".pdf"}
 STRICT_OPENXML_MAIN_NAMESPACE = b"http://purl.oclc.org/ooxml/spreadsheetml/main"
 STRICT_OPENXML_REL_NAMESPACE = b"http://purl.oclc.org/ooxml/officeDocument/relationships"
 TRANSITIONAL_OPENXML_MAIN_NAMESPACE = (
@@ -129,6 +133,8 @@ def index_to_column_letter(index: int) -> str:
 
 def infer_file_kind(file_path: Path) -> str:
     suffix = file_path.suffix.lower()
+    if suffix in PDF_SUFFIXES:
+        return "pdf"
     if suffix in LEGACY_EXCEL_SUFFIXES:
         return "xls"
     if suffix in OPENXML_EXCEL_SUFFIXES:
@@ -138,6 +144,10 @@ def infer_file_kind(file_path: Path) -> str:
 
 def is_excel_file_kind(file_kind: str) -> bool:
     return file_kind in {"xls", "xlsx"}
+
+
+def is_pdf_file_kind(file_kind: str) -> bool:
+    return file_kind == "pdf"
 
 
 def excel_engine_for_kind(file_kind: str) -> str | None:
@@ -448,6 +458,72 @@ def load_excel_display_frame(
     return pd.DataFrame(padded_rows, dtype=object)
 
 
+def build_pdf_preview_csv() -> str:
+    frame = pd.DataFrame(
+        [
+            [
+                "PDF statement uploads use ADE first and Gemini fallback during import.",
+            ]
+        ],
+        columns=["document"],
+        dtype=object,
+    )
+    return frame_to_coordinate_preview_csv(frame)
+
+
+def build_pdf_validation() -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    has_ade_key = bool((os.getenv("ADE_API_KEY") or os.getenv("api_key") or "").strip())
+    has_gemini_key = bool((os.getenv("GEMINI_API_KEY") or "").strip())
+
+    if not has_ade_key and not has_gemini_key:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "missing_pdf_extractor_credentials",
+                "message": "PDF statement imports require ADE_API_KEY or GEMINI_API_KEY for AI extraction.",
+                "sheetName": None,
+                "columnName": None,
+            }
+        )
+        return {
+            "fileKind": "pdf",
+            "issues": issues,
+        }
+
+    if not has_ade_key:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "pdf_ade_unavailable",
+                "message": "ADE_API_KEY is not configured. The importer will fall back to Gemini-only PDF parsing, which is less deterministic.",
+                "sheetName": None,
+                "columnName": None,
+            }
+        )
+        try:
+            from pdf2image import convert_from_path as _convert_from_path
+            from PIL import Image as _Image
+
+            _ = _convert_from_path
+            _ = _Image
+        except Exception:
+            issues.append(
+                {
+                    "severity": "error",
+                    "code": "missing_pdf_render_dependencies",
+                    "message": "Gemini PDF fallback requires pdf2image and Pillow to render statement pages.",
+                    "sheetName": None,
+                    "columnName": None,
+                }
+            )
+
+    return {
+        "fileKind": "pdf",
+        "issues": issues,
+    }
+
+
 def apply_header_row(
     frame: pd.DataFrame,
     *,
@@ -468,6 +544,19 @@ def apply_header_row(
 
 def build_workbook_preview(file_path: Path) -> dict[str, Any]:
     file_kind = infer_file_kind(file_path)
+    if is_pdf_file_kind(file_kind):
+        return {
+            "fileKind": file_kind,
+            "delimiter": None,
+            "encoding": None,
+            "sheetPreviews": [
+                {
+                    "sheetName": "Statement PDF",
+                    "previewCsv": build_pdf_preview_csv(),
+                }
+            ],
+        }
+
     if file_kind == "csv":
         delimiter, encoding = detect_csv_format(file_path)
         frame = load_raw_preview_frame(
@@ -516,6 +605,9 @@ def build_workbook_preview(file_path: Path) -> dict[str, Any]:
 
 def build_workbook_validation(file_path: Path) -> dict[str, Any]:
     file_kind = infer_file_kind(file_path)
+    if is_pdf_file_kind(file_kind):
+        return build_pdf_validation()
+
     issues: list[dict[str, Any]] = []
 
     if file_kind == "csv":
@@ -603,6 +695,11 @@ def build_table_preview(
     encoding: str | None = None,
 ) -> dict[str, Any]:
     header_zero_index = max(header_row_index - 1 - rows_to_skip_before_header, 0)
+
+    if is_pdf_file_kind(file_kind):
+        raise ValueError(
+            "Table preview is not available for PDF statement imports.",
+        )
 
     if file_kind == "csv":
         frame = pd.read_csv(
@@ -962,6 +1059,10 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
             header=header_zero_index,
             dtype=object,
         )
+    elif is_pdf_file_kind(file_kind):
+        raise ValueError(
+            "PDF statement imports use a dedicated parsing path and do not support dataframe loading.",
+        )
     elif is_excel_file_kind(file_kind):
         frame = apply_header_row(
             load_excel_display_frame(
@@ -980,6 +1081,144 @@ def load_dataframe(file_path: Path, template: dict[str, Any]) -> pd.DataFrame:
         frame = frame.iloc[rows_to_skip_after_header:]
 
     return frame.reset_index(drop=True)
+
+
+def build_pdf_source_preview_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "transaction_date": row.get("transaction_date"),
+                "posted_date": row.get("posted_date"),
+                "description_raw": row.get("description_raw"),
+                "amount_original_signed": row.get("amount_original_signed"),
+                "currency_original": row.get("currency_original"),
+            }
+            for row in rows
+        ],
+        dtype=object,
+    )
+
+
+def canonicalize_pdf_statement(
+    file_path: Path,
+    template: dict[str, Any],
+    *,
+    reference_date: str | None = None,
+) -> tuple[pd.DataFrame, CanonicalizationResult]:
+    default_currency = (
+        normalize_text(template.get("default_currency")).upper() or "EUR"
+    )
+    reference_date_value = parse_reference_date(reference_date)
+    parsed_statement = extract_credit_card_statement_rows(
+        str(file_path),
+        default_currency=default_currency,
+        reference_date=reference_date,
+    )
+
+    normalized_rows: list[dict[str, Any]] = []
+    parse_errors: list[dict[str, Any]] = []
+
+    for index, row in enumerate(parsed_statement.rows, start=1):
+        try:
+            transaction_date = parse_date_value(
+                row.get("transaction_date"),
+                format_hint=None,
+                dayfirst=True,
+                reference_date=reference_date_value,
+            )
+            if not transaction_date:
+                raise ValueError("Missing transaction date.")
+
+            posted_date = parse_date_value(
+                row.get("posted_date"),
+                format_hint=None,
+                dayfirst=True,
+                reference_date=reference_date_value,
+            )
+            amount = parse_decimal_value(row.get("amount_original_signed"))
+            if amount is None:
+                raise ValueError("Missing amount.")
+
+            description = normalize_text(row.get("description_raw"))
+            if not description:
+                raise ValueError("Missing description.")
+
+            balance = parse_decimal_value(row.get("balance_original"))
+            raw_row_json = json.dumps(
+                {
+                    **row,
+                    "_source_row": index,
+                    "_source_kind": "credit_card_statement_pdf",
+                    "_extraction_method": parsed_statement.extraction_method,
+                    "_statement_net_total": parsed_statement.statement_net_total,
+                    "_parser_model": parsed_statement.parser_model,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+
+            normalized_rows.append(
+                {
+                    "transaction_date": transaction_date,
+                    "posted_date": posted_date,
+                    "description_raw": description,
+                    "amount_original_signed": decimal_to_string(amount),
+                    "currency_original": normalize_text(
+                        row.get("currency_original") or default_currency,
+                    ).upper()
+                    or default_currency,
+                    "balance_original": decimal_to_string(balance),
+                    "external_reference": normalize_text(
+                        row.get("external_reference"),
+                    )
+                    or None,
+                    "transaction_type_raw": normalize_text(
+                        row.get("transaction_type_raw"),
+                    )
+                    or None,
+                    "security_symbol": None,
+                    "security_name": None,
+                    "quantity": None,
+                    "unit_price_original": None,
+                    "fees_original": None,
+                    "fx_rate": None,
+                    "raw_row_json": raw_row_json,
+                }
+            )
+        except Exception as exc:
+            parse_errors.append({"row": index, "message": str(exc)})
+
+    return (
+        build_pdf_source_preview_frame(parsed_statement.rows),
+        CanonicalizationResult(
+            normalized=pd.DataFrame(normalized_rows, dtype=object),
+            row_count_detected=len(parsed_statement.rows),
+            parse_errors=parse_errors,
+        ),
+    )
+
+
+def load_source_and_canonicalize(
+    file_path: Path,
+    template: dict[str, Any],
+    *,
+    reference_date: str | None = None,
+) -> tuple[pd.DataFrame, CanonicalizationResult]:
+    file_kind = str(template.get("file_kind", file_path.suffix.lstrip("."))).lower()
+    if is_pdf_file_kind(file_kind):
+        return canonicalize_pdf_statement(
+            file_path,
+            template,
+            reference_date=reference_date,
+        )
+
+    frame = load_dataframe(file_path, template)
+    canonical = canonicalize_frame(
+        frame,
+        template,
+        reference_date=reference_date,
+    )
+    return frame, canonical
 
 
 def resolve_amount_series(
@@ -1392,9 +1631,8 @@ def main() -> int:
         )
 
     template = normalize_template_payload(json.loads(args.template_json))
-    frame = load_dataframe(file_path, template)
-    canonical = canonicalize_frame(
-        frame,
+    frame, canonical = load_source_and_canonicalize(
+        file_path,
         template,
         reference_date=args.reference_date,
     )

@@ -5802,7 +5802,7 @@ test("spending read model respects the selected period when building merchant to
   ]);
 });
 
-test("spending read model treats unmatched card settlements and loan payments as spend without double counting matched transfers", () => {
+test("spending read model excludes unmatched card settlements from period spend until the card ledger is imported", () => {
   const dataset = createDataset({
     transactions: [
       createTransaction({
@@ -5882,18 +5882,23 @@ test("spending read model treats unmatched card settlements and loan payments as
     referenceDate: "2026-04-03",
   });
 
-  assert.equal(model.spendMetric?.valueBaseEur, "245.00");
-  assert.equal(model.transactions.length, 3);
-  assert.equal(model.topCategory?.label, "Credit Card Payments");
-  assert.equal(model.topCategory?.amountEur, "120.00");
+  assert.equal(model.spendMetric?.valueBaseEur, "125.00");
+  assert.equal(model.transactions.length, 2);
+  assert.equal(model.topCategory?.label, "Loan Principal");
+  assert.equal(model.topCategory?.amountEur, "80.00");
   assert.deepEqual(model.merchantRows[0], {
-    label: "Credit Card Settlement",
-    amountEur: "120.00",
+    label: "Loan Servicer",
+    amountEur: "80.00",
   });
-  assert.equal(model.uncategorizedSpendEur, "200.00");
-  assert.equal(model.coverage, "18.37");
+  assert.equal(model.uncategorizedSpendEur, "80.00");
+  assert.equal(model.coverage, "36.00");
+  assert.equal(model.excludedCreditCardSettlementAmountEur, "120.00");
+  assert.equal(model.excludedCreditCardSettlementCount, 1);
+  assert.equal(model.creditCardSettlementRows.length, 1);
+  assert.equal(model.creditCardSettlementRows[0]?.id, "card-settlement");
+  assert.equal(model.hasImportedCreditCardAccount, false);
   assert.equal(model.trendSeries.length, 6);
-  assert.equal(model.trendSeries.at(-1)?.spendingEur, "245.00");
+  assert.equal(model.trendSeries.at(-1)?.spendingEur, "125.00");
 });
 
 test("template config builder converts typed inputs into stored JSON rules", () => {
@@ -6863,6 +6868,53 @@ test("cash metric derives statement balances for cash accounts from imported row
 
   assert.equal(balances[0]?.balanceBaseEur, "6911.24000000");
   assert.equal(balances[0]?.sourceKind, "statement");
+  assert.equal(cashMetric.valueBaseEur, "6911.24");
+});
+
+test("cash metric excludes credit-card liabilities from the cash position KPI", () => {
+  const checkingAccount = createAccount({
+    id: "cash-account-for-credit-card-balance",
+    accountType: "checking",
+    assetDomain: "cash",
+  });
+  const creditCardAccount = createAccount({
+    id: "credit-card-liability-account",
+    accountType: "credit_card",
+    assetDomain: "cash",
+    displayName: "Santander Credit Card",
+  });
+  const dataset = createDataset({
+    accounts: [checkingAccount, creditCardAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: checkingAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "6911.24",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "6911.24",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+      {
+        accountId: creditCardAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "-432.65",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "-432.65",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+  });
+
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-10" },
+  );
+
   assert.equal(cashMetric.valueBaseEur, "6911.24");
 });
 

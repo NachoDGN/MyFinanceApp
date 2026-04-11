@@ -59,6 +59,12 @@ function todayIsoInTimezone(timezone: string) {
   return new Date().toISOString().slice(0, 10);
 }
 
+function jobImportBatchId(job: { payloadJson: Record<string, unknown> }) {
+  return typeof job.payloadJson.importBatchId === "string"
+    ? job.payloadJson.importBatchId
+    : null;
+}
+
 export async function resolveAppState(searchParams: RawSearchParams) {
   const params = await searchParams;
   const dataset = await repository.getDataset();
@@ -269,11 +275,68 @@ export type SpendingModel = Awaited<ReturnType<typeof getSpendingModel>>;
 export type IncomeModel = Awaited<ReturnType<typeof getIncomeModel>>;
 export type InsightsModel = Awaited<ReturnType<typeof getInsightsModel>>;
 export type PromptsModel = Awaited<ReturnType<typeof getPromptsModel>>;
+export type CreditCardStatementModel = Awaited<
+  ReturnType<typeof getCreditCardStatementModel>
+>;
 
 export async function getTransactionsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
   const ledger = await domainService.listTransactions(state.scope);
   return { ...state, ledger };
+}
+
+export async function getCreditCardStatementModel(
+  searchParams: RawSearchParams,
+  importBatchId: string,
+) {
+  const state = await resolveAppState(searchParams);
+  const importBatch = state.dataset.importBatches.find(
+    (batch) => batch.id === importBatchId,
+  );
+  if (!importBatch) {
+    return { ...state, importBatch: null };
+  }
+
+  const settlementTransaction = importBatch.creditCardSettlementTransactionId
+    ? (state.dataset.transactions.find(
+        (transaction) =>
+          transaction.id === importBatch.creditCardSettlementTransactionId,
+      ) ?? null)
+    : null;
+
+  const statementTransactions = [...state.dataset.transactions]
+    .filter((transaction) => transaction.importBatchId === importBatchId)
+    .sort((left, right) =>
+      `${right.transactionDate}${right.createdAt}`.localeCompare(
+        `${left.transactionDate}${left.createdAt}`,
+      ),
+    );
+
+  const jobs = [...state.dataset.jobs]
+    .filter((job) => jobImportBatchId(job) === importBatchId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+  const linkedAccount =
+    state.dataset.accounts.find(
+      (account) => account.id === importBatch.accountId,
+    ) ?? null;
+  const unresolvedCount = statementTransactions.filter(
+    (transaction) => transaction.needsReview,
+  ).length;
+  const llmResolvedCount = statementTransactions.filter(
+    (transaction) => transaction.classificationSource === "llm",
+  ).length;
+
+  return {
+    ...state,
+    importBatch,
+    linkedAccount,
+    settlementTransaction,
+    statementTransactions,
+    jobs,
+    unresolvedCount,
+    llmResolvedCount,
+  };
 }
 
 export async function getAccountsModel(searchParams: RawSearchParams) {

@@ -18,7 +18,7 @@ export const fileKindOptions = [
 
 export function isWorkbookFileKind(
   fileKind: FileKind,
-): fileKind is Exclude<FileKind, "csv"> {
+): fileKind is "xlsx" | "xls" {
   return fileKind === "xlsx" || fileKind === "xls";
 }
 

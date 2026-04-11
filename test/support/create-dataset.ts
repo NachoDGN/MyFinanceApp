@@ -97,6 +97,8 @@ export function createTransaction(overrides: Partial<Transaction> = {}): Transac
     securityId: null,
     quantity: null,
     unitPriceOriginal: null,
+    creditCardStatementStatus: "not_applicable",
+    linkedCreditCardAccountId: null,
     createdAt: "2026-04-01T08:00:00Z",
     updatedAt: "2026-04-01T08:00:00Z",
     ...overrides,

@@ -205,6 +205,11 @@ export async function inferImportTemplateDraft(
   const previewTable = deps.previewTable ?? previewSpreadsheetTable;
 
   const workbookPreview = await inspectWorkbook(input.filePath);
+  if (workbookPreview.fileKind === "pdf") {
+    throw new Error(
+      "PDF statement uploads use the dedicated AI PDF parser and do not support spreadsheet template inference.",
+    );
+  }
   if (workbookPreview.sheetPreviews.length === 0) {
     throw new Error(
       isWorkbookFileKind(workbookPreview.fileKind)
