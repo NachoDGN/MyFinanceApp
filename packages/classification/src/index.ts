@@ -48,8 +48,14 @@ import {
 
 export { normalizeInvestmentMatchingText };
 export { rankSimilarAccountTransactions, parseInvestmentEvent };
-export { rankReviewPropagationTransactions, getReviewPropagationEmbeddingModel } from "./investment-support";
-export { applyRuleMatch, detectInternalTransfer } from "./deterministic-classification";
+export {
+  rankReviewPropagationTransactions,
+  getReviewPropagationEmbeddingModel,
+} from "./investment-support";
+export {
+  applyRuleMatch,
+  detectInternalTransfer,
+} from "./deterministic-classification";
 export type {
   ReviewPropagationTransactionMatch,
   SimilarAccountTransactionMatch,
@@ -236,6 +242,54 @@ type TransactionEnrichmentTrigger = Exclude<
   "import_classification"
 >;
 
+function buildReviewExamplesUsed(
+  reviewExamples: ReturnType<typeof buildHistoricalReviewExamples>,
+) {
+  return reviewExamples.map((example) => ({
+    auditEventId: example.auditEventId,
+    objectId: example.objectId,
+    createdAt: example.createdAt,
+  }));
+}
+
+function buildTransactionReviewContext(
+  transaction: Transaction,
+  persistedSecurityMappings: unknown[],
+  options?: TransactionEnrichmentOptions,
+) {
+  const existingReviewContext = readOptionalRecord(
+    readOptionalRecord(transaction.llmPayload)?.reviewContext,
+  );
+
+  return {
+    trigger: options?.trigger ?? "import_classification",
+    previousReviewReason:
+      options?.reviewContext?.previousReviewReason ??
+      transaction.reviewReason ??
+      null,
+    previousUserContext:
+      options?.reviewContext?.previousUserContext ??
+      transaction.manualNotes ??
+      null,
+    userProvidedContext: options?.reviewContext?.userProvidedContext ?? null,
+    previousLlmPayload:
+      options?.reviewContext?.previousLlmPayload ??
+      (transaction.llmPayload as Record<string, unknown> | null | undefined) ??
+      null,
+    propagatedContexts:
+      options?.reviewContext?.propagatedContexts ??
+      readUnknownArray(existingReviewContext?.propagatedContexts) ??
+      [],
+    persistedSecurityMappings:
+      options?.reviewContext?.persistedSecurityMappings ??
+      persistedSecurityMappings,
+    resolvedSourcePrecedent:
+      options?.reviewContext?.resolvedSourcePrecedent ??
+      existingReviewContext?.resolvedSourcePrecedent ??
+      null,
+  };
+}
+
 export function getTransactionClassifierConfig() {
   const defaultModel =
     process.env.LLM_TRANSACTION_MODEL ??
@@ -317,9 +371,6 @@ async function requestLlmClassification(
   deterministic: DeterministicClassification,
   options?: TransactionEnrichmentOptions,
 ): Promise<LlmClassification> {
-  const existingReviewContext = readOptionalRecord(
-    readOptionalRecord(transaction.llmPayload)?.reviewContext,
-  );
   const persistedSecurityMappings = buildPersistedInvestmentSecurityMappings(
     dataset,
     account,
@@ -331,14 +382,19 @@ async function requestLlmClassification(
   const providerMerchantName = readOptionalString(
     readOptionalRecord(providerContext?.merchant)?.name,
   );
-  const allowedTransactionClasses = buildAllowedTransactionClassesForAccount(
-    account,
-  );
+  const allowedTransactionClasses =
+    buildAllowedTransactionClassesForAccount(account);
   const allowedCategories = buildAllowedCategoriesForAccount(dataset, account);
   const reviewExamples = buildHistoricalReviewExamples(
     dataset,
     account,
     transaction,
+  );
+  const reviewExamplesUsed = buildReviewExamplesUsed(reviewExamples);
+  const reviewContext = buildTransactionReviewContext(
+    transaction,
+    persistedSecurityMappings,
+    options,
   );
   const similarAccountTransactions =
     options?.similarAccountTransactions ??
@@ -386,11 +442,7 @@ async function requestLlmClassification(
       completedAt,
       durationMs:
         new Date(completedAt).getTime() - new Date(requestedAt).getTime(),
-      reviewExamplesUsed: reviewExamples.map((example) => ({
-        auditEventId: example.auditEventId,
-        objectId: example.objectId,
-        createdAt: example.createdAt,
-      })),
+      reviewExamplesUsed,
     };
   }
 
@@ -449,37 +501,7 @@ async function requestLlmClassification(
             ? "investment_transaction_analyzer"
             : "cash_transaction_analyzer"
         ] ?? null,
-      reviewContext: {
-        trigger: options?.trigger ?? "import_classification",
-        previousReviewReason:
-          options?.reviewContext?.previousReviewReason ??
-          transaction.reviewReason ??
-          null,
-        previousUserContext:
-          options?.reviewContext?.previousUserContext ??
-          transaction.manualNotes ??
-          null,
-        userProvidedContext:
-          options?.reviewContext?.userProvidedContext ?? null,
-        previousLlmPayload:
-          options?.reviewContext?.previousLlmPayload ??
-          (transaction.llmPayload as
-            | Record<string, unknown>
-            | null
-            | undefined) ??
-          null,
-        propagatedContexts:
-          options?.reviewContext?.propagatedContexts ??
-          readUnknownArray(existingReviewContext?.propagatedContexts) ??
-          [],
-        persistedSecurityMappings:
-          options?.reviewContext?.persistedSecurityMappings ??
-          persistedSecurityMappings,
-        resolvedSourcePrecedent:
-          options?.reviewContext?.resolvedSourcePrecedent ??
-          existingReviewContext?.resolvedSourcePrecedent ??
-          null,
-      },
+      reviewContext,
     },
     model,
   );
@@ -507,11 +529,7 @@ async function requestLlmClassification(
       requestedAt,
       completedAt,
       durationMs,
-      reviewExamplesUsed: reviewExamples.map((example) => ({
-        auditEventId: example.auditEventId,
-        objectId: example.objectId,
-        createdAt: example.createdAt,
-      })),
+      reviewExamplesUsed,
     };
   }
 
@@ -543,11 +561,7 @@ async function requestLlmClassification(
     requestedAt,
     completedAt,
     durationMs,
-    reviewExamplesUsed: reviewExamples.map((example) => ({
-      auditEventId: example.auditEventId,
-      objectId: example.objectId,
-      createdAt: example.createdAt,
-    })),
+    reviewExamplesUsed,
   };
 }
 
@@ -557,9 +571,6 @@ export async function enrichImportedTransaction(
   transaction: Transaction,
   options?: TransactionEnrichmentOptions,
 ): Promise<TransactionEnrichmentDecision> {
-  const existingReviewContext = readOptionalRecord(
-    readOptionalRecord(transaction.llmPayload)?.reviewContext,
-  );
   const providerContext = extractProviderContext(transaction);
   const deterministic = buildDeterministicClassification(
     dataset,
@@ -571,6 +582,11 @@ export async function enrichImportedTransaction(
     account,
     transaction,
     deterministic,
+  );
+  const reviewContext = buildTransactionReviewContext(
+    transaction,
+    persistedSecurityMappings,
+    options,
   );
   const llm = await requestLlmClassification(
     dataset,
@@ -734,30 +750,7 @@ export async function enrichImportedTransaction(
       deterministic,
       llm,
       providerContext,
-      reviewContext: {
-        trigger: options?.trigger ?? "import_classification",
-        previousReviewReason:
-          options?.reviewContext?.previousReviewReason ??
-          transaction.reviewReason ??
-          null,
-        previousUserContext:
-          options?.reviewContext?.previousUserContext ??
-          transaction.manualNotes ??
-          null,
-        userProvidedContext:
-          options?.reviewContext?.userProvidedContext ?? null,
-        propagatedContexts:
-          options?.reviewContext?.propagatedContexts ??
-          readUnknownArray(existingReviewContext?.propagatedContexts) ??
-          [],
-        persistedSecurityMappings:
-          options?.reviewContext?.persistedSecurityMappings ??
-          persistedSecurityMappings,
-        resolvedSourcePrecedent:
-          options?.reviewContext?.resolvedSourcePrecedent ??
-          existingReviewContext?.resolvedSourcePrecedent ??
-          null,
-      },
+      reviewContext,
       reviewExamplesUsed: llm.reviewExamplesUsed,
       timing: {
         requestedAt: llm.requestedAt,

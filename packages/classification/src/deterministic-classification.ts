@@ -137,6 +137,66 @@ function getFallbackCategory(transaction: Transaction, account: Account) {
   return transaction.categoryCode ?? null;
 }
 
+type DeterministicClassificationDraft = Pick<
+  DeterministicClassification,
+  | "transactionClass"
+  | "categoryCode"
+  | "classificationStatus"
+  | "classificationSource"
+  | "classificationConfidence"
+  | "explanation"
+  | "needsReview"
+  | "reviewReason"
+> &
+  Partial<
+    Pick<
+      DeterministicClassification,
+      | "merchantNormalized"
+      | "counterpartyName"
+      | "economicEntityId"
+      | "securityHint"
+      | "quantity"
+      | "unitPriceOriginal"
+    >
+  >;
+
+function buildDeterministicResult(
+  transaction: Transaction,
+  draft: DeterministicClassificationDraft,
+): DeterministicClassification {
+  return {
+    transactionClass: draft.transactionClass,
+    categoryCode: draft.categoryCode,
+    merchantNormalized:
+      draft.merchantNormalized === undefined
+        ? (transaction.merchantNormalized ?? null)
+        : draft.merchantNormalized,
+    counterpartyName:
+      draft.counterpartyName === undefined
+        ? (transaction.counterpartyName ?? null)
+        : draft.counterpartyName,
+    economicEntityId:
+      draft.economicEntityId === undefined
+        ? transaction.economicEntityId
+        : draft.economicEntityId,
+    classificationStatus: draft.classificationStatus,
+    classificationSource: draft.classificationSource,
+    classificationConfidence: draft.classificationConfidence,
+    explanation: draft.explanation,
+    needsReview: draft.needsReview,
+    reviewReason: draft.reviewReason,
+    securityHint: draft.securityHint === undefined ? null : draft.securityHint,
+    quantity:
+      draft.quantity === undefined
+        ? (transaction.quantity ?? null)
+        : draft.quantity,
+    unitPriceOriginal:
+      draft.unitPriceOriginal === undefined
+        ? (transaction.unitPriceOriginal ?? null)
+        : draft.unitPriceOriginal,
+  };
+}
+
 export function extractProviderContext(transaction: Transaction) {
   const rawPayload = readOptionalRecord(transaction.rawPayload);
   return (
@@ -175,12 +235,10 @@ function buildRevolutDeterministicClassification(
   ]);
 
   if (revolutType === "exchange") {
-    return {
+    return buildDeterministicResult(transaction, {
       transactionClass: "fx_conversion",
       categoryCode: transaction.categoryCode ?? null,
       merchantNormalized: merchantName,
-      counterpartyName: transaction.counterpartyName ?? null,
-      economicEntityId: transaction.economicEntityId,
       classificationStatus: "rule",
       classificationSource: "system_fallback",
       classificationConfidence: "0.98",
@@ -188,19 +246,16 @@ function buildRevolutDeterministicClassification(
         "Revolut marks this transaction as an exchange, so it is treated as an FX conversion.",
       needsReview: false,
       reviewReason: null,
-      securityHint: null,
       quantity: null,
       unitPriceOriginal: null,
-    };
+    });
   }
 
   if (revolutType === "fee") {
-    return {
+    return buildDeterministicResult(transaction, {
       transactionClass: "fee",
       categoryCode: transaction.categoryCode ?? null,
       merchantNormalized: merchantName,
-      counterpartyName: transaction.counterpartyName ?? null,
-      economicEntityId: transaction.economicEntityId,
       classificationStatus: "rule",
       classificationSource: "system_fallback",
       classificationConfidence: "0.96",
@@ -208,19 +263,16 @@ function buildRevolutDeterministicClassification(
         "Revolut marks this transaction as a fee, so it is treated as bank fees.",
       needsReview: false,
       reviewReason: null,
-      securityHint: null,
       quantity: null,
       unitPriceOriginal: null,
-    };
+    });
   }
 
   if (refundTypes.has(revolutType)) {
-    return {
+    return buildDeterministicResult(transaction, {
       transactionClass: "refund",
       categoryCode: transaction.categoryCode ?? null,
       merchantNormalized: merchantName,
-      counterpartyName: transaction.counterpartyName ?? null,
-      economicEntityId: transaction.economicEntityId,
       classificationStatus: "rule",
       classificationSource: "system_fallback",
       classificationConfidence: "0.96",
@@ -228,10 +280,9 @@ function buildRevolutDeterministicClassification(
         "Revolut marks this transaction as a refund, so it is treated as money returning from a prior charge.",
       needsReview: false,
       reviewReason: null,
-      securityHint: null,
       quantity: null,
       unitPriceOriginal: null,
-    };
+    });
   }
 
   return null;
@@ -272,7 +323,10 @@ export function buildDeterministicClassification(
     ) {
       rejectedRuleOutputs.push("transaction class");
     }
-    if (requestedCategoryCode && !allowedCategoryCodes.has(requestedCategoryCode)) {
+    if (
+      requestedCategoryCode &&
+      !allowedCategoryCodes.has(requestedCategoryCode)
+    ) {
       rejectedRuleOutputs.push("category");
     }
     if (
@@ -297,7 +351,8 @@ export function buildDeterministicClassification(
     const categoryCode =
       requestedCategoryCode && allowedCategoryCodes.has(requestedCategoryCode)
         ? requestedCategoryCode
-        : (transaction.categoryCode ?? getFallbackCategory(transaction, account));
+        : (transaction.categoryCode ??
+          getFallbackCategory(transaction, account));
     const economicEntityId = resolveConstrainedEconomicEntityId(
       dataset,
       account,
@@ -305,7 +360,7 @@ export function buildDeterministicClassification(
       transaction.economicEntityId,
     );
 
-    return {
+    return buildDeterministicResult(transaction, {
       transactionClass,
       categoryCode,
       merchantNormalized:
@@ -330,10 +385,7 @@ export function buildDeterministicClassification(
         rejectedRuleOutputs.length > 0
           ? `Saved rule requested an incompatible ${rejectedRuleOutputs.join(", ")} for this account.`
           : null,
-      securityHint: null,
-      quantity: transaction.quantity ?? null,
-      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
-    };
+    });
   }
 
   const transferMatch = detectInternalTransfer(
@@ -342,15 +394,13 @@ export function buildDeterministicClassification(
     dataset.accounts,
   );
   if (transferMatch) {
-    return {
+    return buildDeterministicResult(transaction, {
       transactionClass: "transfer_internal",
       categoryCode: transaction.categoryCode ?? null,
-      merchantNormalized: transaction.merchantNormalized ?? null,
       counterpartyName:
         transferMatch.counterpartyName ??
         transferMatch.merchantNormalized ??
         null,
-      economicEntityId: transaction.economicEntityId,
       classificationStatus: "transfer_match",
       classificationSource: "transfer_matcher",
       classificationConfidence: "1.00",
@@ -358,15 +408,11 @@ export function buildDeterministicClassification(
         "Matched an opposite-signed owned-account transfer candidate.",
       needsReview: false,
       reviewReason: null,
-      securityHint: null,
-      quantity: transaction.quantity ?? null,
-      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
-    };
+    });
   }
 
-  const revolutDeterministic = buildRevolutDeterministicClassification(
-    transaction,
-  );
+  const revolutDeterministic =
+    buildRevolutDeterministicClassification(transaction);
   if (revolutDeterministic) {
     return revolutDeterministic;
   }
@@ -383,16 +429,13 @@ export function buildDeterministicClassification(
               ? "broker_fee"
               : parsed.transactionClass === "transfer_internal"
                 ? "uncategorized_investment"
-              : parsed.transactionClass === "investment_trade_buy"
-                ? "stock_buy"
-                : "uncategorized_investment";
+                : parsed.transactionClass === "investment_trade_buy"
+                  ? "stock_buy"
+                  : "uncategorized_investment";
 
-      return {
+      return buildDeterministicResult(transaction, {
         transactionClass: parsed.transactionClass,
         categoryCode,
-        merchantNormalized: transaction.merchantNormalized ?? null,
-        counterpartyName: transaction.counterpartyName ?? null,
-        economicEntityId: transaction.economicEntityId,
         classificationStatus: "investment_parser",
         classificationSource: "investment_parser",
         classificationConfidence: "0.96",
@@ -409,24 +452,18 @@ export function buildDeterministicClassification(
         ),
         unitPriceOriginal:
           transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null,
-      };
+      });
     }
   }
 
-  return {
+  return buildDeterministicResult(transaction, {
     transactionClass: "unknown",
     categoryCode: getFallbackCategory(transaction, account),
-    merchantNormalized: transaction.merchantNormalized ?? null,
-    counterpartyName: transaction.counterpartyName ?? null,
-    economicEntityId: transaction.economicEntityId,
     classificationStatus: "unknown",
     classificationSource: "system_fallback",
     classificationConfidence: "0.00",
     explanation: "No deterministic classifier matched the imported row.",
     needsReview: true,
     reviewReason: "Needs LLM enrichment.",
-    securityHint: null,
-    quantity: transaction.quantity ?? null,
-    unitPriceOriginal: transaction.unitPriceOriginal ?? null,
-  };
+  });
 }

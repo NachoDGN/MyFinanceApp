@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 import { Decimal } from "decimal.js";
 
 import { todayIso } from "./finance";
-import { normalizeUppercaseText } from "./text";
+import { normalizeSecurityText } from "./text";
+import { isCreditCardSettlementText } from "./transaction-review";
 import type {
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
@@ -405,15 +406,7 @@ export function sanitizeImportResult(result: DeterministicImportResult) {
 }
 
 function normalizeDescriptionForImport(value: string) {
-  return normalizeUppercaseText(value.trim().replace(/\s+/g, " "));
-}
-
-function isCreditCardSettlementLikeDescription(value: string) {
-  const normalized = normalizeUppercaseText(normalizeDescriptionForImport(value));
-  return (
-    normalized.includes("LIQUIDACION") &&
-    normalized.includes("TARJETAS DE CREDITO")
-  );
+  return normalizeSecurityText(value);
 }
 
 function normalizeFingerprintText(value: string | null | undefined) {
@@ -791,7 +784,7 @@ export function buildImportedTransactions(
     }
     const initialReviewReasons = [
       "Queued for automatic transaction analysis.",
-      isCreditCardSettlementLikeDescription(descriptionRaw)
+      isCreditCardSettlementText(descriptionRaw)
         ? "Upload the matching credit-card statement to resolve category KPIs."
         : null,
       currencyOriginal !== "EUR" && !fxRateToEur
@@ -857,9 +850,7 @@ export function buildImportedTransactions(
       securityId,
       quantity,
       unitPriceOriginal,
-      creditCardStatementStatus: isCreditCardSettlementLikeDescription(
-        descriptionRaw,
-      )
+      creditCardStatementStatus: isCreditCardSettlementText(descriptionRaw)
         ? "upload_required"
         : "not_applicable",
       linkedCreditCardAccountId: null,
