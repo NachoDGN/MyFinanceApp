@@ -3,14 +3,13 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import type { Entity } from "@myfinance/domain";
+import type { Entity, WorkspaceSettings } from "@myfinance/domain";
 import {
   createEntityAction,
   deleteEntityAction,
   updateEntityAction,
   updateWorkspaceProfileAction,
 } from "../app/actions";
-import type { WorkspaceSettings } from "../lib/workspace-settings";
 import { SectionCard } from "./primitives";
 
 type ManagedEntity = Pick<

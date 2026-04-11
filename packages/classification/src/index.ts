@@ -16,11 +16,16 @@ import {
   buildAllowedCategoriesForAccount,
   buildAllowedTransactionClassesForAccount,
   getAllowedCategoryCodesForAccount,
-  normalizeDescription,
   normalizeInvestmentMatchingText,
   resolveConstrainedEconomicEntityId,
 } from "@myfinance/domain";
 
+import {
+  applyRuleMatch,
+  buildDeterministicClassification,
+  extractProviderContext,
+  resolveValidEconomicEntityOverride,
+} from "./deterministic-classification";
 import {
   buildHistoricalReviewExamples,
   buildInvestmentPortfolioState,
@@ -43,7 +48,14 @@ import {
 
 export { normalizeInvestmentMatchingText };
 export { rankSimilarAccountTransactions, parseInvestmentEvent };
-export { rankReviewPropagationTransactions, getReviewPropagationEmbeddingModel } from "./investment-support";
+export {
+  rankReviewPropagationTransactions,
+  getReviewPropagationEmbeddingModel,
+} from "./investment-support";
+export {
+  applyRuleMatch,
+  detectInternalTransfer,
+} from "./deterministic-classification";
 export type {
   ReviewPropagationTransactionMatch,
   SimilarAccountTransactionMatch,
@@ -131,100 +143,6 @@ export const CLASSIFICATION_PRECEDENCE = [
   "llm",
   "system_fallback",
 ] as const;
-
-export function applyRuleMatch(
-  transaction: Transaction,
-  rules: ClassificationRule[],
-): ClassificationRule | null {
-  const ordered = [...rules]
-    .filter((rule) => rule.active)
-    .sort((a, b) => a.priority - b.priority);
-
-  const comparison = normalizeDescription(
-    transaction.descriptionRaw,
-  ).comparison;
-
-  for (const rule of ordered) {
-    const scopeAccountId =
-      typeof rule.scopeJson.account_id === "string"
-        ? rule.scopeJson.account_id
-        : null;
-    const scopeEntityId =
-      typeof rule.scopeJson.entity_id === "string"
-        ? rule.scopeJson.entity_id
-        : null;
-    if (scopeAccountId && scopeAccountId !== transaction.accountId) {
-      continue;
-    }
-    if (
-      scopeEntityId &&
-      scopeEntityId !== transaction.economicEntityId &&
-      scopeEntityId !== transaction.accountEntityId
-    ) {
-      continue;
-    }
-
-    const regex = rule.conditionsJson.normalized_description_regex;
-    const merchant = rule.conditionsJson.merchant_equals;
-
-    if (typeof regex === "string" && new RegExp(regex).test(comparison)) {
-      return rule;
-    }
-
-    if (
-      typeof merchant === "string" &&
-      transaction.merchantNormalized?.toUpperCase() === merchant.toUpperCase()
-    ) {
-      return rule;
-    }
-  }
-
-  return null;
-}
-
-export function detectInternalTransfer(
-  transaction: Transaction,
-  candidateRows: Transaction[],
-  ownedAccounts: Account[],
-  dayWindow = 3,
-): Transaction | null {
-  if (!ownedAccounts.some((account) => account.id === transaction.accountId)) {
-    return null;
-  }
-
-  return (
-    candidateRows.find((candidate) => {
-      if (candidate.id === transaction.id) return false;
-      const dateDelta =
-        Math.abs(
-          (Date.parse(`${candidate.transactionDate}T00:00:00Z`) -
-            Date.parse(`${transaction.transactionDate}T00:00:00Z`)) /
-            86400000,
-        ) <= dayWindow;
-      const oppositeSign =
-        Number(transaction.amountBaseEur) * Number(candidate.amountBaseEur) < 0;
-      const sameMagnitude =
-        Math.abs(
-          Math.abs(Number(transaction.amountBaseEur)) -
-            Math.abs(Number(candidate.amountBaseEur)),
-        ) < 0.01;
-      const sameCurrency =
-        candidate.currencyOriginal === transaction.currencyOriginal;
-      const aliasHint = ownedAccounts.some(
-        (account) =>
-          account.id === candidate.accountId &&
-          account.matchingAliases.some((alias) =>
-            normalizeDescription(
-              transaction.descriptionRaw,
-            ).comparison.includes(alias.toUpperCase()),
-          ),
-      );
-      return (
-        dateDelta && oppositeSign && sameMagnitude && sameCurrency && aliasHint
-      );
-    }) ?? null
-  );
-}
 
 type LlmClassification = {
   analysisStatus: "done" | "failed" | "skipped";
@@ -324,318 +242,51 @@ type TransactionEnrichmentTrigger = Exclude<
   "import_classification"
 >;
 
-function resolveValidEconomicEntityOverride(
-  dataset: DomainDataset,
-  value: string | null | undefined,
+function buildReviewExamplesUsed(
+  reviewExamples: ReturnType<typeof buildHistoricalReviewExamples>,
 ) {
-  const normalized = normalizeOptionalText(value);
-  if (!normalized) {
-    return null;
-  }
-
-  return dataset.entities.some((entity) => entity.id === normalized)
-    ? normalized
-    : null;
+  return reviewExamples.map((example) => ({
+    auditEventId: example.auditEventId,
+    objectId: example.objectId,
+    createdAt: example.createdAt,
+  }));
 }
 
-function getFallbackCategory(transaction: Transaction, account: Account) {
-  if (account.assetDomain === "investment") {
-    return "uncategorized_investment";
-  }
-  return transaction.categoryCode ?? null;
-}
-
-function extractProviderContext(transaction: Transaction) {
-  const rawPayload = readOptionalRecord(transaction.rawPayload);
-  return (
-    readOptionalRecord(rawPayload?.providerContext) ??
-    readOptionalRecord(rawPayload?.provider_context) ??
-    readOptionalRecord(rawPayload?.ProviderContext) ??
-    null
-  );
-}
-
-function buildRevolutDeterministicClassification(
+function buildTransactionReviewContext(
   transaction: Transaction,
-): DeterministicClassification | null {
-  if (transaction.providerName !== "revolut_business") {
-    return null;
-  }
-
-  const providerContext = extractProviderContext(transaction);
-  if (!providerContext) {
-    return null;
-  }
-
-  const revolutTransaction = readOptionalRecord(providerContext.transaction);
-  const merchant = readOptionalRecord(providerContext.merchant);
-  const revolutType = readOptionalString(revolutTransaction?.type);
-  if (!revolutType) {
-    return null;
-  }
-
-  const merchantName = readOptionalString(merchant?.name);
-  const refundTypes = new Set([
-    "refund",
-    "card_refund",
-    "charge_refund",
-    "tax_refund",
-  ]);
-
-  if (revolutType === "exchange") {
-    return {
-      transactionClass: "fx_conversion",
-      categoryCode: transaction.categoryCode ?? null,
-      merchantNormalized: merchantName,
-      counterpartyName: transaction.counterpartyName ?? null,
-      economicEntityId: transaction.economicEntityId,
-      classificationStatus: "rule",
-      classificationSource: "system_fallback",
-      classificationConfidence: "0.98",
-      explanation:
-        "Revolut marks this transaction as an exchange, so it is treated as an FX conversion.",
-      needsReview: false,
-      reviewReason: null,
-      securityHint: null,
-      quantity: null,
-      unitPriceOriginal: null,
-    };
-  }
-
-  if (revolutType === "fee") {
-    return {
-      transactionClass: "fee",
-      categoryCode: transaction.categoryCode ?? null,
-      merchantNormalized: merchantName,
-      counterpartyName: transaction.counterpartyName ?? null,
-      economicEntityId: transaction.economicEntityId,
-      classificationStatus: "rule",
-      classificationSource: "system_fallback",
-      classificationConfidence: "0.96",
-      explanation:
-        "Revolut marks this transaction as a fee, so it is treated as bank fees.",
-      needsReview: false,
-      reviewReason: null,
-      securityHint: null,
-      quantity: null,
-      unitPriceOriginal: null,
-    };
-  }
-
-  if (refundTypes.has(revolutType)) {
-    return {
-      transactionClass: "refund",
-      categoryCode: transaction.categoryCode ?? null,
-      merchantNormalized: merchantName,
-      counterpartyName: transaction.counterpartyName ?? null,
-      economicEntityId: transaction.economicEntityId,
-      classificationStatus: "rule",
-      classificationSource: "system_fallback",
-      classificationConfidence: "0.96",
-      explanation:
-        "Revolut marks this transaction as a refund, so it is treated as money returning from a prior charge.",
-      needsReview: false,
-      reviewReason: null,
-      securityHint: null,
-      quantity: null,
-      unitPriceOriginal: null,
-    };
-  }
-
-  return null;
-}
-
-function buildDeterministicClassification(
-  dataset: DomainDataset,
-  account: Account,
-  transaction: Transaction,
-): DeterministicClassification {
-  const matchedRule = applyRuleMatch(transaction, dataset.rules);
-  if (matchedRule) {
-    const allowedTransactionClasses = new Set(
-      buildAllowedTransactionClassesForAccount(account),
-    );
-    const allowedCategoryCodes = getAllowedCategoryCodesForAccount(
-      dataset,
-      account,
-    );
-    const requestedTransactionClass =
-      typeof matchedRule.outputsJson.transaction_class === "string"
-        ? matchedRule.outputsJson.transaction_class
-        : null;
-    const requestedCategoryCode =
-      typeof matchedRule.outputsJson.category_code === "string"
-        ? matchedRule.outputsJson.category_code
-        : null;
-    const requestedEconomicEntityId =
-      typeof matchedRule.outputsJson.economic_entity_id_override === "string"
-        ? matchedRule.outputsJson.economic_entity_id_override
-        : null;
-    const rejectedRuleOutputs: string[] = [];
-    if (
-      requestedTransactionClass &&
-      !allowedTransactionClasses.has(
-        requestedTransactionClass as Transaction["transactionClass"],
-      )
-    ) {
-      rejectedRuleOutputs.push("transaction class");
-    }
-    if (requestedCategoryCode && !allowedCategoryCodes.has(requestedCategoryCode)) {
-      rejectedRuleOutputs.push("category");
-    }
-    if (
-      requestedEconomicEntityId &&
-      resolveConstrainedEconomicEntityId(
-        dataset,
-        account,
-        requestedEconomicEntityId,
-        transaction.economicEntityId,
-      ) !== requestedEconomicEntityId
-    ) {
-      rejectedRuleOutputs.push("economic entity");
-    }
-
-    const transactionClass =
-      requestedTransactionClass &&
-      allowedTransactionClasses.has(
-        requestedTransactionClass as Transaction["transactionClass"],
-      )
-        ? requestedTransactionClass
-        : transaction.transactionClass;
-    const categoryCode =
-      requestedCategoryCode && allowedCategoryCodes.has(requestedCategoryCode)
-        ? requestedCategoryCode
-        : (transaction.categoryCode ?? getFallbackCategory(transaction, account));
-    const economicEntityId = resolveConstrainedEconomicEntityId(
-      dataset,
-      account,
-      requestedEconomicEntityId,
-      transaction.economicEntityId,
-    );
-
-    return {
-      transactionClass,
-      categoryCode,
-      merchantNormalized:
-        typeof matchedRule.outputsJson.merchant_normalized === "string"
-          ? matchedRule.outputsJson.merchant_normalized
-          : (transaction.merchantNormalized ?? null),
-      counterpartyName:
-        typeof matchedRule.outputsJson.counterparty_name === "string"
-          ? matchedRule.outputsJson.counterparty_name
-          : (transaction.counterpartyName ?? null),
-      economicEntityId,
-      classificationStatus: "rule",
-      classificationSource: "user_rule",
-      classificationConfidence:
-        rejectedRuleOutputs.length === 0 ? "1.00" : "0.00",
-      explanation:
-        rejectedRuleOutputs.length === 0
-          ? "Matched an existing saved classification rule."
-          : "A saved rule matched, but some requested outputs were incompatible with this account.",
-      needsReview: rejectedRuleOutputs.length > 0,
-      reviewReason:
-        rejectedRuleOutputs.length > 0
-          ? `Saved rule requested an incompatible ${rejectedRuleOutputs.join(", ")} for this account.`
-          : null,
-      securityHint: null,
-      quantity: transaction.quantity ?? null,
-      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
-    };
-  }
-
-  const transferMatch = detectInternalTransfer(
-    transaction,
-    dataset.transactions,
-    dataset.accounts,
+  persistedSecurityMappings: unknown[],
+  options?: TransactionEnrichmentOptions,
+) {
+  const existingReviewContext = readOptionalRecord(
+    readOptionalRecord(transaction.llmPayload)?.reviewContext,
   );
-  if (transferMatch) {
-    return {
-      transactionClass: "transfer_internal",
-      categoryCode: transaction.categoryCode ?? null,
-      merchantNormalized: transaction.merchantNormalized ?? null,
-      counterpartyName:
-        transferMatch.counterpartyName ??
-        transferMatch.merchantNormalized ??
-        null,
-      economicEntityId: transaction.economicEntityId,
-      classificationStatus: "transfer_match",
-      classificationSource: "transfer_matcher",
-      classificationConfidence: "1.00",
-      explanation:
-        "Matched an opposite-signed owned-account transfer candidate.",
-      needsReview: false,
-      reviewReason: null,
-      securityHint: null,
-      quantity: transaction.quantity ?? null,
-      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
-    };
-  }
-
-  const revolutDeterministic = buildRevolutDeterministicClassification(
-    transaction,
-  );
-  if (revolutDeterministic) {
-    return revolutDeterministic;
-  }
-
-  if (account.assetDomain === "investment") {
-    const parsed = parseInvestmentEvent(transaction);
-    if (parsed.transactionClass !== "unknown") {
-      const categoryCode =
-        parsed.transactionClass === "dividend"
-          ? "dividend"
-          : parsed.transactionClass === "interest"
-            ? "interest"
-            : parsed.transactionClass === "fee"
-              ? "broker_fee"
-              : parsed.transactionClass === "transfer_internal"
-                ? "uncategorized_investment"
-              : parsed.transactionClass === "investment_trade_buy"
-                ? "stock_buy"
-                : "uncategorized_investment";
-
-      return {
-        transactionClass: parsed.transactionClass,
-        categoryCode,
-        merchantNormalized: transaction.merchantNormalized ?? null,
-        counterpartyName: transaction.counterpartyName ?? null,
-        economicEntityId: transaction.economicEntityId,
-        classificationStatus: "investment_parser",
-        classificationSource: "investment_parser",
-        classificationConfidence: "0.96",
-        explanation: "Matched the deterministic investment statement parser.",
-        needsReview: !transaction.securityId && Boolean(parsed.securityHint),
-        reviewReason:
-          !transaction.securityId && parsed.securityHint
-            ? `Parsed investment trade for "${parsed.securityHint}", but the system has not matched it to a tracked security yet.`
-            : null,
-        securityHint: parsed.securityHint ?? null,
-        quantity: normalizeTradeQuantity(
-          parsed.transactionClass,
-          transaction.quantity ?? parsed.quantity ?? null,
-        ),
-        unitPriceOriginal:
-          transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null,
-      };
-    }
-  }
 
   return {
-    transactionClass: "unknown",
-    categoryCode: getFallbackCategory(transaction, account),
-    merchantNormalized: transaction.merchantNormalized ?? null,
-    counterpartyName: transaction.counterpartyName ?? null,
-    economicEntityId: transaction.economicEntityId,
-    classificationStatus: "unknown",
-    classificationSource: "system_fallback",
-    classificationConfidence: "0.00",
-    explanation: "No deterministic classifier matched the imported row.",
-    needsReview: true,
-    reviewReason: "Needs LLM enrichment.",
-    securityHint: null,
-    quantity: transaction.quantity ?? null,
-    unitPriceOriginal: transaction.unitPriceOriginal ?? null,
+    trigger: options?.trigger ?? "import_classification",
+    previousReviewReason:
+      options?.reviewContext?.previousReviewReason ??
+      transaction.reviewReason ??
+      null,
+    previousUserContext:
+      options?.reviewContext?.previousUserContext ??
+      transaction.manualNotes ??
+      null,
+    userProvidedContext: options?.reviewContext?.userProvidedContext ?? null,
+    previousLlmPayload:
+      options?.reviewContext?.previousLlmPayload ??
+      (transaction.llmPayload as Record<string, unknown> | null | undefined) ??
+      null,
+    propagatedContexts:
+      options?.reviewContext?.propagatedContexts ??
+      readUnknownArray(existingReviewContext?.propagatedContexts) ??
+      [],
+    persistedSecurityMappings:
+      options?.reviewContext?.persistedSecurityMappings ??
+      persistedSecurityMappings,
+    resolvedSourcePrecedent:
+      options?.reviewContext?.resolvedSourcePrecedent ??
+      existingReviewContext?.resolvedSourcePrecedent ??
+      null,
   };
 }
 
@@ -720,9 +371,6 @@ async function requestLlmClassification(
   deterministic: DeterministicClassification,
   options?: TransactionEnrichmentOptions,
 ): Promise<LlmClassification> {
-  const existingReviewContext = readOptionalRecord(
-    readOptionalRecord(transaction.llmPayload)?.reviewContext,
-  );
   const persistedSecurityMappings = buildPersistedInvestmentSecurityMappings(
     dataset,
     account,
@@ -734,14 +382,19 @@ async function requestLlmClassification(
   const providerMerchantName = readOptionalString(
     readOptionalRecord(providerContext?.merchant)?.name,
   );
-  const allowedTransactionClasses = buildAllowedTransactionClassesForAccount(
-    account,
-  );
+  const allowedTransactionClasses =
+    buildAllowedTransactionClassesForAccount(account);
   const allowedCategories = buildAllowedCategoriesForAccount(dataset, account);
   const reviewExamples = buildHistoricalReviewExamples(
     dataset,
     account,
     transaction,
+  );
+  const reviewExamplesUsed = buildReviewExamplesUsed(reviewExamples);
+  const reviewContext = buildTransactionReviewContext(
+    transaction,
+    persistedSecurityMappings,
+    options,
   );
   const similarAccountTransactions =
     options?.similarAccountTransactions ??
@@ -789,11 +442,7 @@ async function requestLlmClassification(
       completedAt,
       durationMs:
         new Date(completedAt).getTime() - new Date(requestedAt).getTime(),
-      reviewExamplesUsed: reviewExamples.map((example) => ({
-        auditEventId: example.auditEventId,
-        objectId: example.objectId,
-        createdAt: example.createdAt,
-      })),
+      reviewExamplesUsed,
     };
   }
 
@@ -852,37 +501,7 @@ async function requestLlmClassification(
             ? "investment_transaction_analyzer"
             : "cash_transaction_analyzer"
         ] ?? null,
-      reviewContext: {
-        trigger: options?.trigger ?? "import_classification",
-        previousReviewReason:
-          options?.reviewContext?.previousReviewReason ??
-          transaction.reviewReason ??
-          null,
-        previousUserContext:
-          options?.reviewContext?.previousUserContext ??
-          transaction.manualNotes ??
-          null,
-        userProvidedContext:
-          options?.reviewContext?.userProvidedContext ?? null,
-        previousLlmPayload:
-          options?.reviewContext?.previousLlmPayload ??
-          (transaction.llmPayload as
-            | Record<string, unknown>
-            | null
-            | undefined) ??
-          null,
-        propagatedContexts:
-          options?.reviewContext?.propagatedContexts ??
-          readUnknownArray(existingReviewContext?.propagatedContexts) ??
-          [],
-        persistedSecurityMappings:
-          options?.reviewContext?.persistedSecurityMappings ??
-          persistedSecurityMappings,
-        resolvedSourcePrecedent:
-          options?.reviewContext?.resolvedSourcePrecedent ??
-          existingReviewContext?.resolvedSourcePrecedent ??
-          null,
-      },
+      reviewContext,
     },
     model,
   );
@@ -910,11 +529,7 @@ async function requestLlmClassification(
       requestedAt,
       completedAt,
       durationMs,
-      reviewExamplesUsed: reviewExamples.map((example) => ({
-        auditEventId: example.auditEventId,
-        objectId: example.objectId,
-        createdAt: example.createdAt,
-      })),
+      reviewExamplesUsed,
     };
   }
 
@@ -946,11 +561,7 @@ async function requestLlmClassification(
     requestedAt,
     completedAt,
     durationMs,
-    reviewExamplesUsed: reviewExamples.map((example) => ({
-      auditEventId: example.auditEventId,
-      objectId: example.objectId,
-      createdAt: example.createdAt,
-    })),
+    reviewExamplesUsed,
   };
 }
 
@@ -960,9 +571,6 @@ export async function enrichImportedTransaction(
   transaction: Transaction,
   options?: TransactionEnrichmentOptions,
 ): Promise<TransactionEnrichmentDecision> {
-  const existingReviewContext = readOptionalRecord(
-    readOptionalRecord(transaction.llmPayload)?.reviewContext,
-  );
   const providerContext = extractProviderContext(transaction);
   const deterministic = buildDeterministicClassification(
     dataset,
@@ -974,6 +582,11 @@ export async function enrichImportedTransaction(
     account,
     transaction,
     deterministic,
+  );
+  const reviewContext = buildTransactionReviewContext(
+    transaction,
+    persistedSecurityMappings,
+    options,
   );
   const llm = await requestLlmClassification(
     dataset,
@@ -1137,30 +750,7 @@ export async function enrichImportedTransaction(
       deterministic,
       llm,
       providerContext,
-      reviewContext: {
-        trigger: options?.trigger ?? "import_classification",
-        previousReviewReason:
-          options?.reviewContext?.previousReviewReason ??
-          transaction.reviewReason ??
-          null,
-        previousUserContext:
-          options?.reviewContext?.previousUserContext ??
-          transaction.manualNotes ??
-          null,
-        userProvidedContext:
-          options?.reviewContext?.userProvidedContext ?? null,
-        propagatedContexts:
-          options?.reviewContext?.propagatedContexts ??
-          readUnknownArray(existingReviewContext?.propagatedContexts) ??
-          [],
-        persistedSecurityMappings:
-          options?.reviewContext?.persistedSecurityMappings ??
-          persistedSecurityMappings,
-        resolvedSourcePrecedent:
-          options?.reviewContext?.resolvedSourcePrecedent ??
-          existingReviewContext?.resolvedSourcePrecedent ??
-          null,
-      },
+      reviewContext,
       reviewExamplesUsed: llm.reviewExamplesUsed,
       timing: {
         requestedAt: llm.requestedAt,

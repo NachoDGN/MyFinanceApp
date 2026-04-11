@@ -14,6 +14,12 @@ function describePeriodLabel(period: string) {
   return period === "ytd" ? "YTD" : "MTD";
 }
 
+function metricDirection(
+  deltaDisplay: string | null | undefined,
+): "up" | "down" {
+  return Number(deltaDisplay ?? "0") >= 0 ? "up" : "down";
+}
+
 export function DashboardView({
   pathname,
   scopeOptions,
@@ -43,10 +49,62 @@ export function DashboardView({
   const unrealizedMetric = metricMap.get("portfolio_unrealized_pnl_current");
   const netWorthMetric = metricMap.get("net_worth_current");
   const periodLabel = describePeriodLabel(state.period);
+  const comparisonLabel = state.period === "ytd" ? "year-start" : "month-start";
 
   const monthlySeries = model.summary.monthlySeries.slice(-5);
   const chartFrom = (key: "incomeEur" | "spendingEur" | "operatingNetEur") =>
     monthlySeries.map((row) => Math.abs(Number(row[key])));
+  const metricCards: Array<{
+    label: string;
+    metric: DashboardModel["summary"]["metrics"][number] | undefined;
+    subtitle: string;
+    chartValues: number[];
+    direction: "up" | "down";
+  }> = [
+    {
+      label: "Cash Position",
+      metric: cashMetric,
+      subtitle: `vs ${comparisonLabel}`,
+      chartValues: chartFrom("incomeEur"),
+      direction: metricDirection(cashMetric?.deltaDisplay),
+    },
+    {
+      label: `Income ${periodLabel}`,
+      metric: incomeMetric,
+      subtitle: "from prior pace",
+      chartValues: chartFrom("incomeEur"),
+      direction: metricDirection(incomeMetric?.deltaDisplay),
+    },
+    {
+      label: `Spending ${periodLabel}`,
+      metric: spendingMetric,
+      subtitle: "from prior pace",
+      chartValues: chartFrom("spendingEur"),
+      direction:
+        Number(spendingMetric?.deltaDisplay ?? "0") <= 0 ? "down" : "up",
+    },
+    {
+      label: `Operating Net ${periodLabel}`,
+      metric: netMetric,
+      subtitle: "from prior pace",
+      chartValues: chartFrom("operatingNetEur"),
+      direction: metricDirection(netMetric?.deltaDisplay),
+    },
+    {
+      label: "Portfolio Value",
+      metric: portfolioMetric,
+      subtitle: `vs ${comparisonLabel}`,
+      chartValues: chartFrom("incomeEur"),
+      direction: metricDirection(portfolioMetric?.deltaDisplay),
+    },
+    {
+      label: "Unrealized Gain",
+      metric: unrealizedMetric,
+      subtitle: `vs ${comparisonLabel}`,
+      chartValues: chartFrom("operatingNetEur"),
+      direction: metricDirection(unrealizedMetric?.deltaDisplay),
+    },
+  ];
 
   const qualityRows = [
     {
@@ -126,68 +184,17 @@ export function DashboardView({
         </div>
 
         <div className="dashboard-metrics-grid">
-          <MetricCard
-            label="Cash Position"
-            value={formatCurrency(cashMetric?.valueDisplay, model.currency)}
-            delta={`${cashMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(cashMetric?.deltaDisplay, model.currency)} vs ${state.period === "ytd" ? "year-start" : "month-start"}`}
-            direction={
-              Number(cashMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
-            }
-            chartValues={chartFrom("incomeEur")}
-          />
-          <MetricCard
-            label={`Income ${periodLabel}`}
-            value={formatCurrency(incomeMetric?.valueDisplay, model.currency)}
-            delta={`${incomeMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(incomeMetric?.deltaDisplay, model.currency)} from prior pace`}
-            direction={
-              Number(incomeMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
-            }
-            chartValues={chartFrom("incomeEur")}
-          />
-          <MetricCard
-            label={`Spending ${periodLabel}`}
-            value={formatCurrency(spendingMetric?.valueDisplay, model.currency)}
-            delta={`${spendingMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(spendingMetric?.deltaDisplay, model.currency)} from prior pace`}
-            direction={
-              Number(spendingMetric?.deltaDisplay ?? "0") <= 0 ? "down" : "up"
-            }
-            chartValues={chartFrom("spendingEur")}
-          />
-          <MetricCard
-            label={`Operating Net ${periodLabel}`}
-            value={formatCurrency(netMetric?.valueDisplay, model.currency)}
-            delta={`${netMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(netMetric?.deltaDisplay, model.currency)} from prior pace`}
-            direction={
-              Number(netMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
-            }
-            chartValues={chartFrom("operatingNetEur")}
-          />
-          <MetricCard
-            label="Portfolio Value"
-            value={formatCurrency(portfolioMetric?.valueDisplay, model.currency)}
-            delta={`${portfolioMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(portfolioMetric?.deltaDisplay, model.currency)} vs ${state.period === "ytd" ? "year-start" : "month-start"}`}
-            direction={
-              Number(portfolioMetric?.deltaDisplay ?? "0") >= 0 ? "up" : "down"
-            }
-            chartValues={chartFrom("incomeEur")}
-          />
-          <MetricCard
-            label="Unrealized Gain"
-            value={formatCurrency(unrealizedMetric?.valueDisplay, model.currency)}
-            delta={`${unrealizedMetric?.deltaPercent ?? "0.00"}%`}
-            subtitle={`${formatCurrency(unrealizedMetric?.deltaDisplay, model.currency)} vs ${state.period === "ytd" ? "year-start" : "month-start"}`}
-            direction={
-              Number(unrealizedMetric?.deltaDisplay ?? "0") >= 0
-                ? "up"
-                : "down"
-            }
-            chartValues={chartFrom("operatingNetEur")}
-          />
+          {metricCards.map((card) => (
+            <MetricCard
+              key={card.label}
+              label={card.label}
+              value={formatCurrency(card.metric?.valueDisplay, model.currency)}
+              delta={`${card.metric?.deltaPercent ?? "0.00"}%`}
+              subtitle={`${formatCurrency(card.metric?.deltaDisplay, model.currency)} ${card.subtitle}`}
+              direction={card.direction}
+              chartValues={card.chartValues}
+            />
+          ))}
         </div>
 
         <div className="dashboard-secondary-grid">
@@ -205,13 +212,19 @@ export function DashboardView({
                 {model.summary.quality.pendingReviewCount}
               </div>
               <div className="metric-nominal">
-                {model.summary.quality.pendingEnrichmentCount} rows still in the auto-analysis queue
+                {model.summary.quality.pendingEnrichmentCount} rows still in the
+                auto-analysis queue
               </div>
             </div>
 
             <div className="dashboard-action-card">
-              <span className="label-sm">Current-Month Spending Categories</span>
-              <a className="btn-ghost dashboard-action-button" href={spendingHref}>
+              <span className="label-sm">
+                Current-Month Spending Categories
+              </span>
+              <a
+                className="btn-ghost dashboard-action-button"
+                href={spendingHref}
+              >
                 Full Analysis
               </a>
             </div>

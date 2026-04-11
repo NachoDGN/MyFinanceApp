@@ -82,7 +82,9 @@ function amountMagnitudeEur(transaction: Transaction) {
   return new Decimal(transaction.amountBaseEur).abs();
 }
 
-function humanizeTransactionClass(transactionClass: Transaction["transactionClass"]) {
+function humanizeTransactionClass(
+  transactionClass: Transaction["transactionClass"],
+) {
   return transactionClass
     .replace(/_/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
@@ -236,7 +238,11 @@ function buildTrailingMonthlyFlowSeries(
     }
   >();
 
-  for (let month = seriesStart; month <= seriesEnd; month = shiftMonthIso(month, 1)) {
+  for (
+    let month = seriesStart;
+    month <= seriesEnd;
+    month = shiftMonthIso(month, 1)
+  ) {
     monthRows.set(month, {
       month,
       incomeEur: new Decimal(0),
@@ -331,7 +337,9 @@ function buildTrailingMonthlyIncomeComposition(
     month: row.month,
     operatingIncomeEur: row.operatingIncomeEur.toFixed(2),
     investmentIncomeEur: row.investmentIncomeEur.toFixed(2),
-    totalIncomeEur: row.operatingIncomeEur.plus(row.investmentIncomeEur).toFixed(2),
+    totalIncomeEur: row.operatingIncomeEur
+      .plus(row.investmentIncomeEur)
+      .toFixed(2),
   }));
 }
 
@@ -349,7 +357,9 @@ function currentCashTotal(
     const account = dataset.accounts.find((row) => row.id === accountId);
     return (
       account?.assetDomain === expectedAssetDomain &&
-      !(expectedAssetDomain === "cash" && account.accountType === "credit_card") &&
+      !(
+        expectedAssetDomain === "cash" && account.accountType === "credit_card"
+      ) &&
       !(
         expectedAssetDomain === "cash" &&
         isCryptoCurrency(balanceCurrency ?? account.defaultCurrency)
@@ -360,7 +370,9 @@ function currentCashTotal(
   };
   return getLatestAccountBalances(dataset, asOfDate)
     .filter((snapshot) => {
-      const account = dataset.accounts.find((row) => row.id === snapshot.accountId);
+      const account = dataset.accounts.find(
+        (row) => row.id === snapshot.accountId,
+      );
       if (!account) {
         return false;
       }
@@ -859,7 +871,10 @@ export function buildDashboardSummary(
           return totals;
         }
 
-        const bucket = resolveSpendingCategoryBucket(categoryByCode, transaction);
+        const bucket = resolveSpendingCategoryBucket(
+          categoryByCode,
+          transaction,
+        );
         const current = totals.get(bucket.categoryCode) ?? {
           categoryCode: bucket.categoryCode,
           label: bucket.label,
@@ -869,10 +884,7 @@ export function buildDashboardSummary(
         current.amountEur = current.amountEur.plus(contribution);
         totals.set(bucket.categoryCode, current);
         return totals;
-      }, new Map<
-        string,
-        { categoryCode: string; label: string; amountEur: Decimal }
-      >())
+      }, new Map<string, { categoryCode: string; label: string; amountEur: Decimal }>())
       .values(),
   ]
     .map((row) => ({
@@ -952,18 +964,16 @@ function sortTransactionsNewestFirst(transactions: Transaction[]) {
   });
 }
 
-function scopedTransactions(
-  dataset: DomainDataset,
-  scope: Scope,
-  period: PeriodSelection,
-  classes: string[],
+function selectTransactions(
+  transactions: Transaction[],
+  predicate: (transaction: Transaction) => boolean,
 ) {
-  return sortTransactionsNewestFirst(
-    filterTransactionsByPeriod(
-      filterTransactionsByScope(dataset, scope),
-      period,
-    ).filter((row) => classes.includes(row.transactionClass)),
-  );
+  return sortTransactionsNewestFirst(transactions.filter(predicate));
+}
+
+function hasTransactionClass(classes: readonly string[]) {
+  return (transaction: Transaction) =>
+    classes.includes(transaction.transactionClass);
 }
 
 function sumTransactionAmounts(
@@ -1085,16 +1095,17 @@ export function buildDashboardReadModel(
   const personalEntityId = dataset.entities.find(
     (entity) => entity.entityKind === "personal",
   )?.id;
+  const referenceDate = input.referenceDate ?? todayIso();
   const personalMetric = personalEntityId
-    ? findMetric(
-        buildDashboardSummary(dataset, {
-          ...input,
-          scope: { kind: "entity", entityId: personalEntityId },
-        }),
+    ? buildMetricResult(
+        dataset,
+        { kind: "entity", entityId: personalEntityId },
+        input.displayCurrency,
         "net_worth_current",
+        { referenceDate, period: summary.period },
       )
     : undefined;
-  const totalMetric = findMetric(summary, "net_worth_current");
+  const totalMetric = findMetric(summary, "net_worth_current")!;
 
   return {
     summary,
@@ -1120,18 +1131,17 @@ export function buildSpendingReadModel(
 ) {
   const summary = buildDashboardSummary(dataset, input);
   const context = buildAnalyticsReadModelContext(dataset, input, summary);
-  const excludedCreditCardSettlementRows = sortTransactionsNewestFirst(
-    context.scopedPeriodTransactions.filter((transaction) =>
-      needsCreditCardStatementUpload(transaction),
-    ),
+  const excludedCreditCardSettlementRows = selectTransactions(
+    context.scopedPeriodTransactions,
+    needsCreditCardStatementUpload,
   );
-  const transactions = sortTransactionsNewestFirst(
-    context.scopedPeriodTransactions.filter((transaction) =>
-      isSpendingLike(transaction),
-    ),
+  const transactions = selectTransactions(
+    context.scopedPeriodTransactions,
+    isSpendingLike,
   );
-  const resolvedTransactions = transactions.filter(
-    isTransactionResolvedForAnalytics,
+  const resolvedTransactions = selectTransactions(
+    context.resolvedScopedPeriodTransactions,
+    isSpendingLike,
   );
   const spendMetric = findMetric(summary, "spending_mtd_total");
   const merchantRows = aggregateAmountRows(
@@ -1155,9 +1165,11 @@ export function buildSpendingReadModel(
     .toFixed(2);
   const coverage = spendMetric?.valueBaseEur
     ? new Decimal(1)
-        .minus(new Decimal(uncategorizedSpendEur).div(
-          Decimal.max(new Decimal(spendMetric.valueBaseEur), new Decimal(1)),
-        ))
+        .minus(
+          new Decimal(uncategorizedSpendEur).div(
+            Decimal.max(new Decimal(spendMetric.valueBaseEur), new Decimal(1)),
+          ),
+        )
         .mul(100)
         .toFixed(2)
     : "100.00";
@@ -1204,13 +1216,18 @@ export function buildIncomeReadModel(
 ) {
   const summary = buildDashboardSummary(dataset, input);
   const context = buildAnalyticsReadModelContext(dataset, input, summary);
-  const transactions = sortTransactionsNewestFirst(
-    context.scopedPeriodTransactions.filter((transaction) =>
-      ["income", "dividend", "interest"].includes(transaction.transactionClass),
-    ),
+  const isIncomeTransaction = hasTransactionClass([
+    "income",
+    "dividend",
+    "interest",
+  ]);
+  const transactions = selectTransactions(
+    context.scopedPeriodTransactions,
+    isIncomeTransaction,
   );
-  const resolvedTransactions = transactions.filter(
-    isTransactionResolvedForAnalytics,
+  const resolvedTransactions = selectTransactions(
+    context.resolvedScopedPeriodTransactions,
+    isIncomeTransaction,
   );
   const incomeMetric = findMetric(summary, "income_mtd_total");
   const sourceRows = aggregateAmountRows(
@@ -1288,23 +1305,27 @@ export function buildInvestmentsReadModel(
 ) {
   const summary = buildDashboardSummary(dataset, input);
   const context = buildAnalyticsReadModelContext(dataset, input, summary);
+  const isInvestmentLedgerTransaction = hasTransactionClass(
+    investmentLedgerClasses,
+  );
+  const isInvestmentCashFlowTransaction = hasTransactionClass([
+    "dividend",
+    "interest",
+    "transfer_internal",
+  ]);
   const holdings = buildHoldingsSnapshot(
     dataset,
     input.scope,
     context.referenceDate,
   );
-  const investmentRows = scopedTransactions(
-    dataset,
-    input.scope,
-    summary.period,
-    [...investmentLedgerClasses],
+  const investmentRows = selectTransactions(
+    context.scopedPeriodTransactions,
+    isInvestmentLedgerTransaction,
   );
-  const periodCashFlowRows = scopedTransactions(
-    dataset,
-    input.scope,
-    summary.period,
-    ["dividend", "interest", "transfer_internal"],
-  ).filter(isTransactionResolvedForAnalytics);
+  const periodCashFlowRows = selectTransactions(
+    context.resolvedScopedPeriodTransactions,
+    isInvestmentCashFlowTransaction,
+  );
   const accountAllocation = aggregateAmountRows(
     [...holdings.holdings, ...holdings.cryptoBalances],
     (row) =>
@@ -1338,20 +1359,8 @@ export function buildInvestmentsReadModel(
     investmentRows,
     processedRows,
     metrics: {
-      portfolioValue: buildMetricResult(
-        dataset,
-        input.scope,
-        input.displayCurrency,
-        "portfolio_market_value_current",
-        { referenceDate: context.referenceDate, period: summary.period },
-      ),
-      unrealized: buildMetricResult(
-        dataset,
-        input.scope,
-        input.displayCurrency,
-        "portfolio_unrealized_pnl_current",
-        { referenceDate: context.referenceDate, period: summary.period },
-      ),
+      portfolioValue: findMetric(summary, "portfolio_market_value_current")!,
+      unrealized: findMetric(summary, "portfolio_unrealized_pnl_current")!,
     },
     dividendsPeriod: sumTransactionAmounts(
       periodCashFlowRows.filter(

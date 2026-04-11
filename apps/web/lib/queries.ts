@@ -12,17 +12,15 @@ import {
   listPromptProfiles,
 } from "@myfinance/db";
 import {
+  type Entity,
   FinanceDomainService,
   getScopeLatestDate,
   needsTransactionManualReview,
+  parseWorkspaceSettings,
   resolvePeriodSelection,
   type Scope,
   type Transaction,
 } from "@myfinance/domain";
-import {
-  buildEntityScopeOptions,
-  parseWorkspaceSettings,
-} from "./workspace-settings";
 import {
   formatCurrency,
   formatDate,
@@ -44,6 +42,16 @@ function normalizeParam(
   const value = params[key];
   if (Array.isArray(value)) return value[0];
   return value;
+}
+
+function buildEntityScopeOptions(entities: Entity[]) {
+  return [
+    { value: "consolidated", label: "Consolidated" },
+    ...entities.map((entity) => ({
+      value: entity.slug,
+      label: entity.displayName,
+    })),
+  ];
 }
 
 function todayIsoInTimezone(timezone: string) {

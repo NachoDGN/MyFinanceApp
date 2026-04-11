@@ -12,32 +12,15 @@ export async function updateTransactionRecord(
     returning?: boolean;
   },
 ): Promise<Record<string, unknown> | null> {
-  if (input.returning === false) {
-    if (input.llmPayload !== undefined) {
-      await sql`
-        update public.transactions
-        set ${sql(input.updatePayload)},
-            llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb
-        where id = ${input.transactionId}
-          and user_id = ${input.userId}
-      `;
-      return null;
-    }
+  const llmPayloadSql =
+    input.llmPayload !== undefined
+      ? sql`, llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb`
+      : sql``;
 
-    await sql`
-      update public.transactions
-      set ${sql(input.updatePayload)}
-      where id = ${input.transactionId}
-        and user_id = ${input.userId}
-    `;
-    return null;
-  }
-
-  if (input.llmPayload !== undefined) {
+  if (input.returning !== false) {
     const rows = await sql`
       update public.transactions
-      set ${sql(input.updatePayload)},
-          llm_payload = ${serializeJson(sql, input.llmPayload)}::jsonb
+      set ${sql(input.updatePayload)}${llmPayloadSql}
       where id = ${input.transactionId}
         and user_id = ${input.userId}
       returning ${transactionColumnsSql(sql)}
@@ -50,17 +33,11 @@ export async function updateTransactionRecord(
     return rows[0];
   }
 
-  const rows = await sql`
+  await sql`
     update public.transactions
-    set ${sql(input.updatePayload)}
+    set ${sql(input.updatePayload)}${llmPayloadSql}
     where id = ${input.transactionId}
       and user_id = ${input.userId}
-    returning ${transactionColumnsSql(sql)}
   `;
-  if (!rows[0]) {
-    throw new Error(
-      `Transaction ${input.transactionId} was not found for update.`,
-    );
-  }
-  return rows[0];
+  return null;
 }

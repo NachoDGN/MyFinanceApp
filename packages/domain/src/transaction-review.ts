@@ -1,4 +1,4 @@
-import { normalizeUppercaseText } from "./text";
+import { normalizeSecurityText } from "./text";
 import type { Transaction } from "./types";
 
 export type TransactionReviewState =
@@ -27,8 +27,8 @@ type SettlementLikeTransaction = Pick<
   | "transferMatchStatus"
 >;
 
-function isCreditCardSettlementText(value: string) {
-  const normalizedText = normalizeUppercaseText(value);
+export function isCreditCardSettlementText(value: string) {
+  const normalizedText = normalizeSecurityText(value);
   return (
     normalizedText.includes("LIQUIDACION") &&
     normalizedText.includes("TARJETAS DE CREDITO")
@@ -156,7 +156,9 @@ export function getTransactionReviewState(
     return "pending_enrichment";
   }
 
-  return needsTransactionManualReview(transaction) ? "needs_review" : "resolved";
+  return needsTransactionManualReview(transaction)
+    ? "needs_review"
+    : "resolved";
 }
 
 export function isTransactionResolvedForAnalytics(
