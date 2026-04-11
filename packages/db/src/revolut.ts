@@ -477,7 +477,11 @@ async function fetchRevolutJson<T>(
   path: string,
   query: Record<string, string | number | null | undefined> = {},
 ) {
-  const url = new URL(path, `${config.apiBaseUrl}/`);
+  const normalizedBaseUrl = config.apiBaseUrl.endsWith("/")
+    ? config.apiBaseUrl
+    : `${config.apiBaseUrl}/`;
+  const normalizedPath = path.replace(/^\/+/, "");
+  const url = new URL(normalizedPath, normalizedBaseUrl);
   for (const [key, value] of Object.entries(query)) {
     if (value === null || value === undefined || value === "") {
       continue;
