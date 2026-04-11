@@ -1765,87 +1765,87 @@ test("vector similarity propagation includes abbreviated small-cap variants at t
   assert.deepEqual(strictMatches, []);
 });
 
-test("investment parser recognizes named fund purchases even without explicit quantity", () => {
-  const parsed = parseInvestmentEvent(
-    createTransaction({
-      accountId: "broker-1",
+[
+  {
+    name: "investment parser recognizes named fund purchases even without explicit quantity",
+    transaction: {
       amountOriginal: "-99.58",
       amountBaseEur: "-99.58",
       descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
       descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-      transactionClass: "unknown",
-      categoryCode: "uncategorized_investment",
-    }),
-  );
-
-  assert.equal(parsed.transactionClass, "investment_trade_buy");
-  assert.equal(parsed.securityHint, "VANGUARD US 500 STOCK INDEX EU");
-});
-
-test("investment parser stores sell quantities as negative values", () => {
-  const parsed = parseInvestmentEvent(
-    createTransaction({
-      accountId: "broker-1",
+    },
+    expectedClass: "investment_trade_buy",
+    expectedSecurityHint: "VANGUARD US 500 STOCK INDEX EU",
+  },
+  {
+    name: "investment parser stores sell quantities as negative values",
+    transaction: {
       amountOriginal: "240.00",
       amountBaseEur: "240.00",
       descriptionRaw: "ADVANCED MICRO DEVICES @ 8",
       descriptionClean: "ADVANCED MICRO DEVICES @ 8",
-      transactionClass: "unknown",
-      categoryCode: "uncategorized_investment",
-    }),
-  );
-
-  assert.equal(parsed.transactionClass, "investment_trade_sell");
-  assert.equal(parsed.quantity, "-8.00000000");
-});
-
-test("investment parser recognizes periodic brokerage credits as interest", () => {
-  const parsed = parseInvestmentEvent(
-    createTransaction({
-      accountId: "broker-1",
+    },
+    expectedClass: "investment_trade_sell",
+    expectedQuantity: "-8.00000000",
+  },
+  {
+    name: "investment parser recognizes periodic brokerage credits as interest",
+    transaction: {
       amountOriginal: "0.14",
       amountBaseEur: "0.14",
       descriptionRaw: "PERIODO 19/02/2026 19/03/2026",
       descriptionClean: "PERIODO 19/02/2026 19/03/2026",
-      transactionClass: "unknown",
-      categoryCode: "uncategorized_investment",
-    }),
-  );
-
-  assert.equal(parsed.transactionClass, "interest");
-});
-
-test("investment parser recognizes between-account brokerage transfers in Spanish", () => {
-  const parsed = parseInvestmentEvent(
-    createTransaction({
-      accountId: "broker-1",
+    },
+    expectedClass: "interest",
+  },
+  {
+    name: "investment parser recognizes between-account brokerage transfers in Spanish",
+    transaction: {
       amountOriginal: "500.00",
       amountBaseEur: "500.00",
       descriptionRaw: "transferencias entre cuentas",
       descriptionClean: "TRANSFERENCIAS ENTRE CUENTAS",
-      transactionClass: "unknown",
-      categoryCode: "uncategorized_investment",
-    }),
-  );
-
-  assert.equal(parsed.transactionClass, "transfer_internal");
-});
-
-test("investment parser recognizes zero-amount IRPF interest withholding memos as balance adjustments", () => {
-  const parsed = parseInvestmentEvent(
-    createTransaction({
-      accountId: "broker-1",
+    },
+    expectedClass: "transfer_internal",
+  },
+  {
+    name: "investment parser recognizes zero-amount IRPF interest withholding memos as balance adjustments",
+    transaction: {
       amountOriginal: "0.00",
       amountBaseEur: "0.00",
       descriptionRaw: "Retenci√≥n IRPF intereses dicie",
       descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
-      transactionClass: "unknown",
-      categoryCode: "uncategorized_investment",
-    }),
-  );
+    },
+    expectedClass: "balance_adjustment",
+  },
+].forEach(
+  ({
+    name,
+    transaction,
+    expectedClass,
+    expectedQuantity,
+    expectedSecurityHint,
+  }) => {
+    test(name, () => {
+      const parsed = parseInvestmentEvent(
+        createTransaction({
+          accountId: "broker-1",
+          transactionClass: "unknown",
+          categoryCode: "uncategorized_investment",
+          ...transaction,
+        }),
+      );
 
-  assert.equal(parsed.transactionClass, "balance_adjustment");
-});
+      assert.equal(parsed.transactionClass, expectedClass);
+      if (expectedQuantity) {
+        assert.equal(parsed.quantity, expectedQuantity);
+      }
+      if (expectedSecurityHint) {
+        assert.equal(parsed.securityHint, expectedSecurityHint);
+      }
+    });
+  },
+);
 
 test("rule matching respects account scope", () => {
   const transaction = createTransaction({
@@ -2322,198 +2322,191 @@ test("investment rebuild clears quantity and unit price for non-trade rows", asy
   assert.equal(patch?.unitPriceOriginal, null);
 });
 
-test("investment rebuild clears stale review flags for deterministic interest rows", async () => {
-  const dataset = createInvestmentDatasetFixture({
-    account: { id: "broker-interest" },
-    transactions: [
-      {
-        id: "period-interest",
-        transactionDate: "2026-03-20",
-        postedDate: "2026-03-20",
-        amountOriginal: "0.14",
-        amountBaseEur: "0.14",
-        descriptionRaw: "PERIODO 19/02/2026 19/03/2026",
-        descriptionClean: "PERIODO 19/02/2026 19/03/2026",
-        transactionClass: "interest",
-        categoryCode: "interest",
-        classificationStatus: "llm",
-        classificationSource: "llm",
-        classificationConfidence: "0.61",
-        reviewReason:
-          "The transaction description and data do not clearly indicate a known transaction type or category.",
-      },
-    ],
-  });
+[
+  {
+    name: "investment rebuild clears stale review flags for deterministic interest rows",
+    dataset: createInvestmentDatasetFixture({
+      account: { id: "broker-interest" },
+      transactions: [
+        {
+          id: "period-interest",
+          transactionDate: "2026-03-20",
+          postedDate: "2026-03-20",
+          amountOriginal: "0.14",
+          amountBaseEur: "0.14",
+          descriptionRaw: "PERIODO 19/02/2026 19/03/2026",
+          descriptionClean: "PERIODO 19/02/2026 19/03/2026",
+          transactionClass: "interest",
+          categoryCode: "interest",
+          classificationStatus: "llm",
+          classificationSource: "llm",
+          classificationConfidence: "0.61",
+          reviewReason:
+            "The transaction description and data do not clearly indicate a known transaction type or category.",
+        },
+      ],
+    }),
+    referenceDate: "2026-03-20",
+    transactionId: "period-interest",
+  },
+  {
+    name: "investment rebuild clears stale review flags for zero-amount IRPF interest withholding memos",
+    dataset: createInvestmentDatasetFixture({
+      account: { id: "broker-irpf-memo" },
+      transactions: [
+        {
+          id: "period-irpf-memo",
+          transactionDate: "2025-01-03",
+          postedDate: "2025-01-03",
+          amountOriginal: "0.00",
+          amountBaseEur: "0.00",
+          descriptionRaw: "Retenci√≥n IRPF intereses dicie",
+          descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
+        },
+      ],
+    }),
+    referenceDate: "2026-03-16",
+    transactionId: "period-irpf-memo",
+    expectedTransactionClass: "balance_adjustment",
+  },
+].forEach(
+  ({
+    name,
+    dataset,
+    referenceDate,
+    transactionId,
+    expectedTransactionClass,
+  }) => {
+    test(name, async () => {
+      const rebuilt = await prepareInvestmentRebuild(dataset, referenceDate);
+      const patch = rebuilt.transactionPatches.find(
+        (candidate) => candidate.id === transactionId,
+      );
 
-  const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-20");
-  const patch = rebuilt.transactionPatches[0];
-
-  assert.equal(patch?.needsReview, false);
-  assert.equal(patch?.reviewReason, null);
-});
-
-test("investment rebuild clears stale review flags for zero-amount IRPF interest withholding memos", async () => {
-  const dataset = createInvestmentDatasetFixture({
-    account: { id: "broker-irpf-memo" },
-    transactions: [
-      {
-        id: "period-irpf-memo",
-        transactionDate: "2025-01-03",
-        postedDate: "2025-01-03",
-        amountOriginal: "0.00",
-        amountBaseEur: "0.00",
-        descriptionRaw: "Retenci√≥n IRPF intereses dicie",
-        descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
-      },
-    ],
-  });
-
-  const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-16");
-  const patch = rebuilt.transactionPatches.find(
-    (candidate) => candidate.id === "period-irpf-memo",
-  );
-
-  assert.equal(patch?.transactionClass, "balance_adjustment");
-  assert.equal(patch?.needsReview, false);
-  assert.equal(patch?.reviewReason, null);
-});
+      if (expectedTransactionClass) {
+        assert.equal(patch?.transactionClass, expectedTransactionClass);
+      }
+      assert.equal(patch?.needsReview, false);
+      assert.equal(patch?.reviewReason, null);
+    });
+  },
+);
 
 test("investment rebuild remaps stale EU fund aliases away from USD OTC securities", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousFetch = globalThis.fetch;
-  process.env.TWELVE_DATA_API_KEY = "test-key";
-  globalThis.fetch = async (input) => {
-    const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
-    const url = new URL(requestUrl);
+  await withRuntimeOverrides(
+    {
+      env: { TWELVE_DATA_API_KEY: "test-key" },
+      fetch: async (input) => {
+        const url = readRequestUrl(input);
 
-    if (url.pathname.endsWith("/symbol_search")) {
-      return new Response(
-        JSON.stringify({
-          data: [
-            {
-              symbol: "0P00000MNK",
-              instrument_name: "Vanguard U.S. 500 Stock Index F",
-              exchange: "OTC",
-              mic_code: "OTCM",
-              instrument_type: "Mutual Fund",
-              country: "United States",
-              currency: "USD",
-            },
-            {
-              symbol: "0P00000G12",
-              instrument_name:
-                "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
-              exchange: "XHAM",
-              mic_code: "XHAM",
-              instrument_type: "Mutual Fund",
-              country: "Germany",
-              currency: "EUR",
-            },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
+        if (url.pathname.endsWith("/symbol_search")) {
+          return jsonResponse({
+            data: [
+              {
+                symbol: "0P00000MNK",
+                instrument_name: "Vanguard U.S. 500 Stock Index F",
+                exchange: "OTC",
+                mic_code: "OTCM",
+                instrument_type: "Mutual Fund",
+                country: "United States",
+                currency: "USD",
+              },
+              {
+                symbol: "0P00000G12",
+                instrument_name:
+                  "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+                exchange: "XHAM",
+                mic_code: "XHAM",
+                instrument_type: "Mutual Fund",
+                country: "Germany",
+                currency: "EUR",
+              },
+            ],
+          });
+        }
+
+        return jsonResponse({ status: "error" }, { status: 404 });
+      },
+    },
+    async () => {
+      const account = createAccount({
+        id: "broker-3",
+        assetDomain: "investment",
+        accountType: "brokerage_account",
+        institutionName: "Broker",
+        displayName: "Brokerage",
+      });
+      const transaction = createTransaction({
+        id: "stale-eu-alias",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-24",
+        postedDate: "2026-03-24",
+        amountOriginal: "-99.58",
+        amountBaseEur: "-99.58",
+        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+        descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "investment_parser",
+        classificationSource: "investment_parser",
+        classificationConfidence: "0.96",
+        securityId: "security-wrong-vanguard",
+        needsReview: true,
+        reviewReason:
+          'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+      });
+      const dataset = createDataset({
+        accounts: [account],
+        transactions: [transaction],
+        securities: [
+          {
+            id: "security-wrong-vanguard",
+            providerName: "twelve_data",
+            providerSymbol: "0P00000MNK",
+            canonicalSymbol: "0P00000MNK",
+            displaySymbol: "0P00000MNK",
+            name: "Vanguard U.S. 500 Stock Index F",
+            exchangeName: "OTC",
+            micCode: "OTCM",
+            assetType: "etf",
+            quoteCurrency: "USD",
+            country: "United States",
+            isin: null,
+            figi: null,
+            active: true,
+            metadataJson: {},
+            lastPriceRefreshAt: null,
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+        securityAliases: [
+          {
+            id: "alias-wrong-vanguard",
+            securityId: "security-wrong-vanguard",
+            aliasTextNormalized: "VANGUARD US 500 STOCK INDEX EU",
+            aliasSource: "provider",
+            templateId: null,
+            confidence: "0.9000",
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      });
+
+      const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
+
+      assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "0P00000G12");
+      assert.equal(
+        rebuilt.transactionPatches[0]?.securityId,
+        rebuilt.insertedSecurities[0]?.id,
       );
-    }
-
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
-    const account = createAccount({
-      id: "broker-3",
-      assetDomain: "investment",
-      accountType: "brokerage_account",
-      institutionName: "Broker",
-      displayName: "Brokerage",
-    });
-    const transaction = createTransaction({
-      id: "stale-eu-alias",
-      accountId: account.id,
-      accountEntityId: account.entityId,
-      economicEntityId: account.entityId,
-      transactionDate: "2026-03-24",
-      postedDate: "2026-03-24",
-      amountOriginal: "-99.58",
-      amountBaseEur: "-99.58",
-      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
-      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-      transactionClass: "investment_trade_buy",
-      categoryCode: "stock_buy",
-      classificationStatus: "investment_parser",
-      classificationSource: "investment_parser",
-      classificationConfidence: "0.96",
-      securityId: "security-wrong-vanguard",
-      needsReview: true,
-      reviewReason:
-        'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
-    });
-    const dataset = createDataset({
-      accounts: [account],
-      transactions: [transaction],
-      securities: [
-        {
-          id: "security-wrong-vanguard",
-          providerName: "twelve_data",
-          providerSymbol: "0P00000MNK",
-          canonicalSymbol: "0P00000MNK",
-          displaySymbol: "0P00000MNK",
-          name: "Vanguard U.S. 500 Stock Index F",
-          exchangeName: "OTC",
-          micCode: "OTCM",
-          assetType: "etf",
-          quoteCurrency: "USD",
-          country: "United States",
-          isin: null,
-          figi: null,
-          active: true,
-          metadataJson: {},
-          lastPriceRefreshAt: null,
-          createdAt: "2026-01-01T00:00:00Z",
-        },
-      ],
-      securityAliases: [
-        {
-          id: "alias-wrong-vanguard",
-          securityId: "security-wrong-vanguard",
-          aliasTextNormalized: "VANGUARD US 500 STOCK INDEX EU",
-          aliasSource: "provider",
-          templateId: null,
-          confidence: "0.9000",
-          createdAt: "2026-01-01T00:00:00Z",
-        },
-      ],
-    });
-
-    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
-
-    assert.equal(rebuilt.insertedSecurities[0]?.providerSymbol, "0P00000G12");
-    assert.equal(
-      rebuilt.transactionPatches[0]?.securityId,
-      rebuilt.insertedSecurities[0]?.id,
-    );
-    assert.equal(
-      rebuilt.insertedAliases[0]?.aliasTextNormalized,
-      "VANGUARD US 500 STOCK INDEX EU",
-    );
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-  }
+      assert.equal(
+        rebuilt.insertedAliases[0]?.aliasTextNormalized,
+        "VANGUARD US 500 STOCK INDEX EU",
+      );
+    },
+  );
 });
 
 test("investment rebuild prefers Samsung's London DR over preferred German listings when the hint does not mention preferred", async () => {
@@ -3087,194 +3080,181 @@ test("investment rebuild prefers an exact stored alias over a stale carried secu
 });
 
 test("investment rebuild derives quantity from stored NAV history for exact fund ISIN matches", async () => {
-  const previousApiKey = process.env.TWELVE_DATA_API_KEY;
-  const previousOpenAiKey = process.env.OPENAI_API_KEY;
-  const previousFetch = globalThis.fetch;
   let fetchCalls = 0;
-  delete process.env.TWELVE_DATA_API_KEY;
-  delete process.env.OPENAI_API_KEY;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
-    return new Response(JSON.stringify({ status: "error" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-
-  try {
-    const account = createAccount({
-      id: "broker-historical-nav-fund",
-      assetDomain: "investment",
-      accountType: "brokerage_account",
-      institutionName: "Broker",
-      displayName: "Brokerage",
-    });
-    const transaction = createTransaction({
-      id: "eurozone-fund-buy",
-      accountId: account.id,
-      accountEntityId: account.entityId,
-      economicEntityId: account.entityId,
-      transactionDate: "2026-03-03",
-      postedDate: "2026-03-03",
-      amountOriginal: "-99.58",
-      amountBaseEur: "-99.58",
-      currencyOriginal: "EUR",
-      descriptionRaw: "VANGUARD EUROZONE STOCK INDEX",
-      descriptionClean: "VANGUARD EUROZONE STOCK INDEX",
-      transactionClass: "investment_trade_buy",
-      categoryCode: "stock_buy",
-      classificationStatus: "llm",
-      classificationSource: "llm",
-      classificationConfidence: "0.94",
-      securityId: null,
-      quantity: null,
-      unitPriceOriginal: null,
-      needsReview: true,
-      reviewReason: "Quantity still needs to be derived.",
-      llmPayload: {
-        llm: {
-          rawOutput: {
-            resolved_instrument_name:
-              "Vanguard Eurozone Stock Index Fund EUR Acc",
-            resolved_instrument_isin: "IE0032126645",
-            current_price: 61.11,
-            current_price_currency: "EUR",
-            current_price_timestamp: "2026-04-04T09:00:00Z",
-            current_price_source: "Official Vanguard factsheet",
-            current_price_type: "NAV",
-          },
-        },
-        reviewContext: {
-          trigger: "manual_review_update",
-          userProvidedContext:
-            "Exact ISIN is IE0032126645 for the Vanguard Eurozone Stock Index Fund EUR Acc purchase.",
-        },
+  await withRuntimeOverrides(
+    {
+      env: {
+        TWELVE_DATA_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
       },
-    });
-    const dataset = createDataset({
-      accounts: [account],
-      transactions: [transaction],
-      securities: [
-        {
-          id: "security-web-eurozone",
-          providerName: "llm_web_search",
-          providerSymbol: "IE0032126645",
-          canonicalSymbol: "IE0032126645",
-          displaySymbol: "IE0032126645",
-          name: "Vanguard Eurozone Stock Index Fund EUR Acc",
-          exchangeName: "WEB",
-          micCode: null,
-          assetType: "other",
-          quoteCurrency: "EUR",
-          country: null,
-          isin: "IE0032126645",
-          figi: null,
-          active: true,
-          metadataJson: {
-            instrumentType: "Mutual Fund",
+      fetch: async () => {
+        fetchCalls += 1;
+        return jsonResponse({ status: "error" }, { status: 404 });
+      },
+    },
+    async () => {
+      const account = createAccount({
+        id: "broker-historical-nav-fund",
+        assetDomain: "investment",
+        accountType: "brokerage_account",
+        institutionName: "Broker",
+        displayName: "Brokerage",
+      });
+      const transaction = createTransaction({
+        id: "eurozone-fund-buy",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-03",
+        postedDate: "2026-03-03",
+        amountOriginal: "-99.58",
+        amountBaseEur: "-99.58",
+        currencyOriginal: "EUR",
+        descriptionRaw: "VANGUARD EUROZONE STOCK INDEX",
+        descriptionClean: "VANGUARD EUROZONE STOCK INDEX",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "llm",
+        classificationSource: "llm",
+        classificationConfidence: "0.94",
+        securityId: null,
+        quantity: null,
+        unitPriceOriginal: null,
+        needsReview: true,
+        reviewReason: "Quantity still needs to be derived.",
+        llmPayload: {
+          llm: {
+            rawOutput: {
+              resolved_instrument_name:
+                "Vanguard Eurozone Stock Index Fund EUR Acc",
+              resolved_instrument_isin: "IE0032126645",
+              current_price: 61.11,
+              current_price_currency: "EUR",
+              current_price_timestamp: "2026-04-04T09:00:00Z",
+              current_price_source: "Official Vanguard factsheet",
+              current_price_type: "NAV",
+            },
           },
-          lastPriceRefreshAt: null,
-          createdAt: "2026-03-01T00:00:00Z",
-        },
-        {
-          id: "security-manual-eurozone",
-          providerName: "manual_fund_nav",
-          providerSymbol: "IE0032126645",
-          canonicalSymbol: "VANESII",
-          displaySymbol: "VANESII",
-          name: "Vanguard Eurozone Stock Index Fund EUR Acc",
-          exchangeName: "VANGUARD",
-          micCode: null,
-          assetType: "other",
-          quoteCurrency: "EUR",
-          country: "IE",
-          isin: "IE0032126645",
-          figi: null,
-          active: true,
-          metadataJson: {
-            instrumentType: "mutual_fund",
-            shareClass: "EUR Acc",
+          reviewContext: {
+            trigger: "manual_review_update",
+            userProvidedContext:
+              "Exact ISIN is IE0032126645 for the Vanguard Eurozone Stock Index Fund EUR Acc purchase.",
           },
-          lastPriceRefreshAt: null,
-          createdAt: "2026-03-01T00:00:00Z",
         },
-      ],
-      securityPrices: [
-        {
-          securityId: "security-manual-eurozone",
-          priceDate: "2026-03-03",
-          quoteTimestamp: "2026-03-03T16:00:00Z",
-          price: "49.79000000",
-          currency: "EUR",
-          sourceName: "manual_nav_import",
-          isRealtime: false,
-          isDelayed: true,
-          marketState: "official_nav",
-          rawJson: {
-            priceType: "nav",
+      });
+      const dataset = createDataset({
+        accounts: [account],
+        transactions: [transaction],
+        securities: [
+          {
+            id: "security-web-eurozone",
+            providerName: "llm_web_search",
+            providerSymbol: "IE0032126645",
+            canonicalSymbol: "IE0032126645",
+            displaySymbol: "IE0032126645",
+            name: "Vanguard Eurozone Stock Index Fund EUR Acc",
+            exchangeName: "WEB",
+            micCode: null,
+            assetType: "other",
+            quoteCurrency: "EUR",
+            country: null,
+            isin: "IE0032126645",
+            figi: null,
+            active: true,
+            metadataJson: {
+              instrumentType: "Mutual Fund",
+            },
+            lastPriceRefreshAt: null,
+            createdAt: "2026-03-01T00:00:00Z",
           },
-          createdAt: "2026-03-03T16:00:00Z",
-        },
-      ],
-    });
+          {
+            id: "security-manual-eurozone",
+            providerName: "manual_fund_nav",
+            providerSymbol: "IE0032126645",
+            canonicalSymbol: "VANESII",
+            displaySymbol: "VANESII",
+            name: "Vanguard Eurozone Stock Index Fund EUR Acc",
+            exchangeName: "VANGUARD",
+            micCode: null,
+            assetType: "other",
+            quoteCurrency: "EUR",
+            country: "IE",
+            isin: "IE0032126645",
+            figi: null,
+            active: true,
+            metadataJson: {
+              instrumentType: "mutual_fund",
+              shareClass: "EUR Acc",
+            },
+            lastPriceRefreshAt: null,
+            createdAt: "2026-03-01T00:00:00Z",
+          },
+        ],
+        securityPrices: [
+          {
+            securityId: "security-manual-eurozone",
+            priceDate: "2026-03-03",
+            quoteTimestamp: "2026-03-03T16:00:00Z",
+            price: "49.79000000",
+            currency: "EUR",
+            sourceName: "manual_nav_import",
+            isRealtime: false,
+            isDelayed: true,
+            marketState: "official_nav",
+            rawJson: {
+              priceType: "nav",
+            },
+            createdAt: "2026-03-03T16:00:00Z",
+          },
+        ],
+      });
 
-    const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-03");
-    const patch = rebuilt.transactionPatches.find(
-      (candidate) => candidate.id === "eurozone-fund-buy",
-    );
+      const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-03");
+      const patch = rebuilt.transactionPatches.find(
+        (candidate) => candidate.id === "eurozone-fund-buy",
+      );
 
-    assert.equal(fetchCalls, 0);
-    assert.equal(rebuilt.insertedSecurities.length, 0);
-    assert.equal(patch?.securityId, "security-manual-eurozone");
-    assert.equal(patch?.quantity, "2.00000000");
-    assert.equal(patch?.unitPriceOriginal, "49.79000000");
-    assert.equal(patch?.needsReview, false);
-    assert.equal(patch?.reviewReason, null);
-    assert.equal(
-      (
-        patch?.rebuildEvidence as {
-          historicalPriceUsed?: {
-            sourceName?: string | null;
-            priceDate?: string | null;
-          } | null;
-          quantityDerivedFromHistoricalPrice?: boolean;
-        } | null
-      )?.historicalPriceUsed?.sourceName,
-      "manual_nav_import",
-    );
-    assert.equal(
-      (
-        patch?.rebuildEvidence as {
-          historicalPriceUsed?: {
-            sourceName?: string | null;
-            priceDate?: string | null;
-          } | null;
-          quantityDerivedFromHistoricalPrice?: boolean;
-        } | null
-      )?.historicalPriceUsed?.priceDate,
-      "2026-03-03",
-    );
-    assert.equal(
-      (
-        patch?.rebuildEvidence as {
-          quantityDerivedFromHistoricalPrice?: boolean;
-        } | null
-      )?.quantityDerivedFromHistoricalPrice,
-      true,
-    );
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousApiKey === undefined) {
-      delete process.env.TWELVE_DATA_API_KEY;
-    } else {
-      process.env.TWELVE_DATA_API_KEY = previousApiKey;
-    }
-    if (previousOpenAiKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousOpenAiKey;
-    }
-  }
+      assert.equal(fetchCalls, 0);
+      assert.equal(rebuilt.insertedSecurities.length, 0);
+      assert.equal(patch?.securityId, "security-manual-eurozone");
+      assert.equal(patch?.quantity, "2.00000000");
+      assert.equal(patch?.unitPriceOriginal, "49.79000000");
+      assert.equal(patch?.needsReview, false);
+      assert.equal(patch?.reviewReason, null);
+      assert.equal(
+        (
+          patch?.rebuildEvidence as {
+            historicalPriceUsed?: {
+              sourceName?: string | null;
+              priceDate?: string | null;
+            } | null;
+            quantityDerivedFromHistoricalPrice?: boolean;
+          } | null
+        )?.historicalPriceUsed?.sourceName,
+        "manual_nav_import",
+      );
+      assert.equal(
+        (
+          patch?.rebuildEvidence as {
+            historicalPriceUsed?: {
+              sourceName?: string | null;
+              priceDate?: string | null;
+            } | null;
+            quantityDerivedFromHistoricalPrice?: boolean;
+          } | null
+        )?.historicalPriceUsed?.priceDate,
+        "2026-03-03",
+      );
+      assert.equal(
+        (
+          patch?.rebuildEvidence as {
+            quantityDerivedFromHistoricalPrice?: boolean;
+          } | null
+        )?.quantityDerivedFromHistoricalPrice,
+        true,
+      );
+    },
+  );
 });
 
 test("investment rebuild derives signed sell quantity from stored NAV history for exact fund ISIN matches", async () => {
