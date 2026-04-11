@@ -72,6 +72,7 @@ const transactionPromptPlaceholders = [
   "security_id",
   "quantity",
   "unit_price_original",
+  "provider_context",
   "raw_payload",
   "deterministic_hint",
   "portfolio_state",
@@ -178,6 +179,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Security id: {{security_id}}.",
           "Quantity: {{quantity}}.",
           "Unit price: {{unit_price_original}}.",
+          "Provider context: {{provider_context}}.",
           "For cash accounts, do not use investment classes unless the transaction data explicitly supports them.",
           "For cash accounts, keep the owning account's economic attribution fixed. If a personal account receives money from a company, classify the inflow within the allowed personal/system taxonomy and use counterparty_name for the company name.",
           "Current raw payload: {{raw_payload}}.",
@@ -305,6 +307,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Security id: {{security_id}}.",
           "Quantity: {{quantity}}.",
           "Unit price: {{unit_price_original}}.",
+          "Provider context: {{provider_context}}.",
           "For investment accounts, prefer investment_trade_buy or investment_trade_sell when a company, fund, ETF, or index instrument is clearly named. Use transfer_internal for broker cash movements between owned accounts and leave statement-period rows as unknown.",
           "Current raw payload: {{raw_payload}}.",
           "Deterministic hint: {{deterministic_hint}}.",
@@ -510,10 +513,15 @@ function resolveSections(
   return Object.fromEntries(
     definition.editableSections.map((section) => {
       const override = overrideRecord[section.id];
-      const value =
+      let value =
         typeof override === "string" && override.trim()
           ? override.trim()
           : section.defaultValue;
+      try {
+        validateRequiredPlaceholders(section, value);
+      } catch {
+        value = section.defaultValue;
+      }
       return [section.id, value];
     }),
   ) as Record<string, string>;
@@ -695,6 +703,7 @@ export function buildPromptProfilePreview(
           security_id: "{{security_id}}",
           quantity: "{{quantity}}",
           unit_price_original: "{{unit_price_original}}",
+          provider_context: "{{provider_context}}",
           raw_payload: "{{raw_payload}}",
           deterministic_hint: "{{deterministic_hint}}",
           portfolio_state: "{{portfolio_state}}",
@@ -740,6 +749,7 @@ export function buildPromptProfilePreview(
           security_id: "{{security_id}}",
           quantity: "{{quantity}}",
           unit_price_original: "{{unit_price_original}}",
+          provider_context: "{{provider_context}}",
           raw_payload: "{{raw_payload}}",
           deterministic_hint: "{{deterministic_hint}}",
           portfolio_state: "{{portfolio_state}}",
@@ -817,6 +827,7 @@ export function renderTransactionAnalyzerPrompt(
     securityId: string;
     quantity: string;
     unitPriceOriginal: string;
+    providerContext: string;
     rawPayload: string;
     deterministicHint: string;
     portfolioState: string;
@@ -848,6 +859,7 @@ export function renderTransactionAnalyzerPrompt(
       security_id: input.securityId,
       quantity: input.quantity,
       unit_price_original: input.unitPriceOriginal,
+      provider_context: input.providerContext,
       raw_payload: input.rawPayload,
       deterministic_hint: input.deterministicHint,
       portfolio_state: input.portfolioState,

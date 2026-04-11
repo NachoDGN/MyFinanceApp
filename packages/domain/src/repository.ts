@@ -786,6 +786,8 @@ export function buildImportedTransactions(
       accountEntityId: account.entityId,
       economicEntityId: account.entityId,
       importBatchId,
+      providerName: null,
+      providerRecordId: null,
       sourceFingerprint,
       duplicateKey: sourceFingerprint,
       transactionDate,

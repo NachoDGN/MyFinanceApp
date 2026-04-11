@@ -172,6 +172,7 @@ const entitySchema = z.object({
   slug: z
     .string()
     .trim()
+    .toLowerCase()
     .min(1)
     .regex(
       entitySlugPattern,

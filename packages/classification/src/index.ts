@@ -1588,6 +1588,106 @@ function getFallbackCategory(transaction: Transaction, account: Account) {
   return transaction.categoryCode ?? null;
 }
 
+function extractProviderContext(transaction: Transaction) {
+  const rawPayload = readOptionalRecord(transaction.rawPayload);
+  return (
+    readOptionalRecord(rawPayload?.providerContext) ??
+    readOptionalRecord(rawPayload?.provider_context) ??
+    readOptionalRecord(rawPayload?.ProviderContext) ??
+    null
+  );
+}
+
+function buildRevolutDeterministicClassification(
+  transaction: Transaction,
+): DeterministicClassification | null {
+  if (transaction.providerName !== "revolut_business") {
+    return null;
+  }
+
+  const providerContext = extractProviderContext(transaction);
+  if (!providerContext) {
+    return null;
+  }
+
+  const revolutTransaction = readOptionalRecord(providerContext.transaction);
+  const merchant = readOptionalRecord(providerContext.merchant);
+  const revolutType = readOptionalString(revolutTransaction?.type);
+  if (!revolutType) {
+    return null;
+  }
+
+  const merchantName = readOptionalString(merchant?.name);
+  const refundTypes = new Set([
+    "refund",
+    "card_refund",
+    "charge_refund",
+    "tax_refund",
+  ]);
+
+  if (revolutType === "exchange") {
+    return {
+      transactionClass: "fx_conversion",
+      categoryCode: transaction.categoryCode ?? null,
+      merchantNormalized: merchantName,
+      counterpartyName: transaction.counterpartyName ?? null,
+      economicEntityId: transaction.economicEntityId,
+      classificationStatus: "rule",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.98",
+      explanation:
+        "Revolut marks this transaction as an exchange, so it is treated as an FX conversion.",
+      needsReview: false,
+      reviewReason: null,
+      securityHint: null,
+      quantity: null,
+      unitPriceOriginal: null,
+    };
+  }
+
+  if (revolutType === "fee") {
+    return {
+      transactionClass: "fee",
+      categoryCode: transaction.categoryCode ?? null,
+      merchantNormalized: merchantName,
+      counterpartyName: transaction.counterpartyName ?? null,
+      economicEntityId: transaction.economicEntityId,
+      classificationStatus: "rule",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.96",
+      explanation:
+        "Revolut marks this transaction as a fee, so it is treated as bank fees.",
+      needsReview: false,
+      reviewReason: null,
+      securityHint: null,
+      quantity: null,
+      unitPriceOriginal: null,
+    };
+  }
+
+  if (refundTypes.has(revolutType)) {
+    return {
+      transactionClass: "refund",
+      categoryCode: transaction.categoryCode ?? null,
+      merchantNormalized: merchantName,
+      counterpartyName: transaction.counterpartyName ?? null,
+      economicEntityId: transaction.economicEntityId,
+      classificationStatus: "rule",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.96",
+      explanation:
+        "Revolut marks this transaction as a refund, so it is treated as money returning from a prior charge.",
+      needsReview: false,
+      reviewReason: null,
+      securityHint: null,
+      quantity: null,
+      unitPriceOriginal: null,
+    };
+  }
+
+  return null;
+}
+
 function buildDeterministicClassification(
   dataset: DomainDataset,
   account: Account,
@@ -1713,6 +1813,13 @@ function buildDeterministicClassification(
       quantity: transaction.quantity ?? null,
       unitPriceOriginal: transaction.unitPriceOriginal ?? null,
     };
+  }
+
+  const revolutDeterministic = buildRevolutDeterministicClassification(
+    transaction,
+  );
+  if (revolutDeterministic) {
+    return revolutDeterministic;
   }
 
   if (account.assetDomain === "investment") {
@@ -1866,6 +1973,10 @@ async function requestLlmClassification(
     deterministic,
   );
   const model = getTransactionReviewModel(account, options?.trigger);
+  const providerContext = extractProviderContext(transaction);
+  const providerMerchantName = readOptionalString(
+    readOptionalRecord(providerContext?.merchant)?.name,
+  );
   const allowedTransactionClasses = buildAllowedTransactionClassesForAccount(
     account,
   );
@@ -1950,11 +2061,13 @@ async function requestLlmClassification(
         amountOriginal: transaction.amountOriginal,
         currencyOriginal: transaction.currencyOriginal,
         descriptionRaw: transaction.descriptionRaw,
-        merchantNormalized: transaction.merchantNormalized ?? null,
+        merchantNormalized:
+          transaction.merchantNormalized ?? providerMerchantName ?? null,
         counterpartyName: transaction.counterpartyName ?? null,
         securityId: transaction.securityId ?? null,
         quantity: transaction.quantity ?? null,
         unitPriceOriginal: transaction.unitPriceOriginal ?? null,
+        providerContext,
         rawPayload: transaction.rawPayload,
       },
       deterministicHint: {
@@ -2093,6 +2206,7 @@ export async function enrichImportedTransaction(
   const existingReviewContext = readOptionalRecord(
     readOptionalRecord(transaction.llmPayload)?.reviewContext,
   );
+  const providerContext = extractProviderContext(transaction);
   const deterministic = buildDeterministicClassification(
     dataset,
     account,
@@ -2265,6 +2379,7 @@ export async function enrichImportedTransaction(
       confidence: llm.confidence ?? deterministic.classificationConfidence,
       deterministic,
       llm,
+      providerContext,
       reviewContext: {
         trigger: options?.trigger ?? "import_classification",
         previousReviewReason:

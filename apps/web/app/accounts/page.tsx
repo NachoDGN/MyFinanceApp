@@ -1,5 +1,6 @@
 import { AppShell } from "../../components/app-shell";
 import { AccountsWorkbench } from "../../components/accounts-workbench";
+import { RevolutConnectionsCard } from "../../components/revolut-connections-card";
 import { formatCurrency, getAccountsModel } from "../../lib/queries";
 
 export default async function AccountsPage({
@@ -10,6 +11,9 @@ export default async function AccountsPage({
   const model = await getAccountsModel(searchParams);
   const snapshots = new Map(
     model.accounts.balances.map((row) => [row.accountId, row]),
+  );
+  const bankLinksByAccountId = new Map(
+    model.dataset.bankAccountLinks.map((link) => [link.accountId, link]),
   );
   const blockingUsageCounts = new Map<string, number>();
 
@@ -58,6 +62,39 @@ export default async function AccountsPage({
           </div>
         </div>
 
+        <RevolutConnectionsCard
+          configured={model.revolutRuntime.configured}
+          missingEnvKeys={model.revolutRuntime.missingEnvKeys}
+          entities={model.dataset.entities
+            .filter((entity) => entity.active && entity.entityKind === "company")
+            .map((entity) => ({
+              id: entity.id,
+              displayName: entity.displayName,
+            }))}
+          connections={model.dataset.bankConnections
+            .filter((connection) => connection.provider === "revolut_business")
+            .map((connection) => ({
+              id: connection.id,
+              entityName:
+                model.dataset.entities.find(
+                  (entity) => entity.id === connection.entityId,
+                )?.displayName ?? connection.entityId,
+              status: connection.status,
+              lastSuccessfulSyncAt: connection.lastSuccessfulSyncAt ?? null,
+              lastSyncQueuedAt: connection.lastSyncQueuedAt ?? null,
+              lastWebhookAt: connection.lastWebhookAt ?? null,
+              lastError: connection.lastError ?? null,
+              linkedAccounts: model.dataset.bankAccountLinks
+                .filter((link) => link.connectionId === connection.id)
+                .map(
+                  (link) =>
+                    model.dataset.accounts.find(
+                      (account) => account.id === link.accountId,
+                    )?.displayName ?? link.accountId,
+                ),
+            }))}
+        />
+
         <AccountsWorkbench
           entities={model.dataset.entities.filter((entity) => entity.active)}
           templates={model.dataset.templates}
@@ -94,9 +131,11 @@ export default async function AccountsPage({
               staleThreshold: account.staleAfterDays
                 ? `${account.staleAfterDays} days`
                 : `Workspace default · ${workspaceDefaultThreshold} days`,
-              setupStatus: account.importTemplateDefaultId
-                ? "Template assigned"
-                : "Setup incomplete",
+              setupStatus: bankLinksByAccountId.has(account.id)
+                ? "Revolut linked"
+                : account.importTemplateDefaultId
+                  ? "Template assigned"
+                  : "Setup incomplete",
               balanceMode: account.balanceMode,
               aliases: account.matchingAliases.join(", ") || "—",
               defaultCurrency: account.defaultCurrency,

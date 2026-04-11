@@ -79,9 +79,13 @@ export default async function ImportsPage({
             model.dataset.accounts.find(
               (account) => account.id === batch.accountId,
             )?.displayName ?? batch.accountId,
-            model.templates.templates.find(
-              (template) => template.id === batch.templateId,
-            )?.name ?? batch.templateId,
+            batch.templateId
+              ? model.templates.templates.find(
+                  (template) => template.id === batch.templateId,
+                )?.name ?? batch.templateId
+              : batch.sourceKind === "bank_sync"
+                ? "Bank sync"
+                : "—",
             batch.importedAt,
             batch.detectedDateRange
               ? `${batch.detectedDateRange.start} -> ${batch.detectedDateRange.end}`

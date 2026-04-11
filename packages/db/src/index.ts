@@ -30,12 +30,15 @@ import {
   isCreditCardSettlementTransaction,
   normalizeImportExecutionInput,
   rebuildInvestmentState,
+  resolveFxRate,
   runDeterministicImport,
   sanitizeImportResult,
   type AddOpeningPositionInput,
   type Account,
   type ApplyRuleDraftInput,
   type AuditEvent,
+  type BankAccountLink,
+  type BankConnection,
   type CreditCardStatementImportInput,
   type CreditCardStatementImportResult,
   type CreateEntityInput,
@@ -78,6 +81,26 @@ import {
   prepareInvestmentRebuild,
   type InvestmentRebuildProgress,
 } from "./investment-rebuild";
+import {
+  buildRevolutAuthorizationUrl,
+  buildRevolutProviderContext,
+  createSignedRevolutState,
+  decryptBankSecret,
+  encryptBankSecret,
+  exchangeRevolutAuthorizationCode,
+  fetchRevolutAccounts,
+  fetchRevolutExpenses,
+  fetchRevolutTransactions,
+  getRevolutRuntimeConfig,
+  getRevolutRuntimeStatus,
+  refreshRevolutAccessToken,
+  verifyRevolutWebhookSignature,
+  verifyRevolutWebhookTimestamp,
+  verifySignedRevolutState,
+  type RevolutAccount,
+  type RevolutExpense,
+  type RevolutTransaction,
+} from "./revolut";
 
 const DEFAULT_APP_USER_ID = "00000000-0000-0000-0000-000000000001";
 const DEFAULT_LOCAL_DATABASE_URL =
@@ -163,6 +186,8 @@ export const TRANSACTION_SELECT_COLUMN_NAMES = [
   "account_entity_id",
   "economic_entity_id",
   "import_batch_id",
+  "provider_name",
+  "provider_record_id",
   "source_fingerprint",
   "duplicate_key",
   "transaction_date",
@@ -212,6 +237,8 @@ const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
 const RESOLVED_REVIEW_SIMILARITY_THRESHOLD = 0.8;
 const MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT = 5;
 const STALE_RUNNING_JOB_THRESHOLD_MS = 10 * 60_000;
+const REVOLUT_PROVIDER_NAME = "revolut_business";
+const REVOLUT_CONNECTION_LABEL = "Revolut Business";
 const DEFAULT_IMPORT_JOBS_QUEUED = [
   "classification",
   "transfer_rematch",
@@ -247,6 +274,17 @@ type CommitPreparedImportBatchResult = {
   jobsQueued: ImportCommitResult["jobsQueued"];
   insertedTransactions: Transaction[];
 };
+
+type SyntheticImportBatchCommitResult = {
+  importBatchId: string;
+  insertedTransactions: Transaction[];
+};
+
+type BankSyncTrigger =
+  | "oauth_callback"
+  | "manual_sync"
+  | "webhook"
+  | "scheduled";
 
 export type ResolvedSourcePrecedent = {
   sourceTransactionId: string;
@@ -1518,6 +1556,9 @@ async function queueJob(
   sql: SqlClient,
   jobType: string,
   payloadJson: Record<string, unknown> = {},
+  options: {
+    availableAt?: string;
+  } = {},
 ) {
   const jobId = randomUUID();
   await sql`
@@ -1534,7 +1575,7 @@ async function queueJob(
       ${serializeJson(sql, payloadJson)}::jsonb,
       ${"queued"},
       0,
-      ${new Date().toISOString()}
+      ${options.availableAt ?? new Date().toISOString()}
     )
   `;
   return jobId;
@@ -1611,13 +1652,14 @@ async function claimNextQueuedJob(sql: SqlClient, workerId: string) {
         case job_type
           when 'review_reanalyze' then 0
           when 'rule_parse' then 1
-          when 'classification' then 2
-          when 'transfer_rematch' then 3
-          when 'security_resolution' then 4
-          when 'price_refresh' then 5
-          when 'position_rebuild' then 6
-          when 'metric_refresh' then 7
-          when 'review_propagation' then 8
+          when 'bank_sync' then 2
+          when 'classification' then 3
+          when 'transfer_rematch' then 4
+          when 'security_resolution' then 5
+          when 'price_refresh' then 6
+          when 'position_rebuild' then 7
+          when 'metric_refresh' then 8
+          when 'review_propagation' then 9
           else 99
         end asc,
         available_at asc,
@@ -2615,6 +2657,128 @@ function sumPreparedTransactionAmountBaseEur(transactions: Transaction[]) {
     .toFixed(2);
 }
 
+async function insertTransactions(
+  sql: SqlClient,
+  transactions: readonly Transaction[],
+) {
+  const insertedTransactions: Transaction[] = [];
+
+  for (const transaction of transactions) {
+    try {
+      const inserted = await sql`
+        insert into public.transactions (
+          id,
+          user_id,
+          account_id,
+          account_entity_id,
+          economic_entity_id,
+          import_batch_id,
+          provider_name,
+          provider_record_id,
+          source_fingerprint,
+          duplicate_key,
+          transaction_date,
+          posted_date,
+          amount_original,
+          currency_original,
+          amount_base_eur,
+          fx_rate_to_eur,
+          description_raw,
+          description_clean,
+          merchant_normalized,
+          counterparty_name,
+          transaction_class,
+          category_code,
+          subcategory_code,
+          transfer_group_id,
+          related_account_id,
+          related_transaction_id,
+          transfer_match_status,
+          cross_entity_flag,
+          reimbursement_status,
+          classification_status,
+          classification_source,
+          classification_confidence,
+          needs_review,
+          review_reason,
+          exclude_from_analytics,
+          correction_of_transaction_id,
+          voided_at,
+          manual_notes,
+          llm_payload,
+          raw_payload,
+          security_id,
+          quantity,
+          unit_price_original,
+          credit_card_statement_status,
+          linked_credit_card_account_id,
+          created_at,
+          updated_at
+        ) values (
+          ${transaction.id},
+          ${transaction.userId},
+          ${transaction.accountId},
+          ${transaction.accountEntityId},
+          ${transaction.economicEntityId},
+          ${transaction.importBatchId ?? null},
+          ${transaction.providerName ?? null},
+          ${transaction.providerRecordId ?? null},
+          ${transaction.sourceFingerprint},
+          ${transaction.duplicateKey ?? null},
+          ${transaction.transactionDate},
+          ${transaction.postedDate ?? null},
+          ${transaction.amountOriginal},
+          ${transaction.currencyOriginal},
+          ${transaction.amountBaseEur},
+          ${transaction.fxRateToEur ?? null},
+          ${transaction.descriptionRaw},
+          ${transaction.descriptionClean},
+          ${transaction.merchantNormalized ?? null},
+          ${transaction.counterpartyName ?? null},
+          ${transaction.transactionClass},
+          ${transaction.categoryCode ?? null},
+          ${transaction.subcategoryCode ?? null},
+          ${transaction.transferGroupId ?? null},
+          ${transaction.relatedAccountId ?? null},
+          ${transaction.relatedTransactionId ?? null},
+          ${transaction.transferMatchStatus},
+          ${transaction.crossEntityFlag},
+          ${transaction.reimbursementStatus},
+          ${transaction.classificationStatus},
+          ${transaction.classificationSource},
+          ${transaction.classificationConfidence},
+          ${transaction.needsReview},
+          ${transaction.reviewReason ?? null},
+          ${transaction.excludeFromAnalytics},
+          ${transaction.correctionOfTransactionId ?? null},
+          ${transaction.voidedAt ?? null},
+          ${transaction.manualNotes ?? null},
+          ${serializeJson(sql, transaction.llmPayload)}::jsonb,
+          ${serializeJson(sql, transaction.rawPayload)}::jsonb,
+          ${transaction.securityId ?? null},
+          ${transaction.quantity ?? null},
+          ${transaction.unitPriceOriginal ?? null},
+          ${transaction.creditCardStatementStatus},
+          ${transaction.linkedCreditCardAccountId ?? null},
+          ${transaction.createdAt},
+          ${transaction.updatedAt}
+        )
+        returning id
+      `;
+      if (inserted.length > 0) {
+        insertedTransactions.push(transaction);
+      }
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return insertedTransactions;
+}
+
 async function commitPreparedImportBatch(
   sql: SqlClient,
   input: {
@@ -2671,6 +2835,9 @@ async function commitPreparedImportBatch(
       user_id: input.userId,
       account_id: normalizedInput.accountId,
       template_id: normalizedInput.templateId,
+      source_kind: "upload",
+      provider_name: null,
+      bank_connection_id: null,
       storage_path: normalizedInput.filePath
         ? `private-imports/local/${normalizedInput.originalFilename}`
         : `private-imports/manual/${normalizedInput.originalFilename}`,
@@ -2697,125 +2864,22 @@ async function commitPreparedImportBatch(
   `;
 
   for (const jobType of jobsQueued) {
-    await sql`
-      insert into public.jobs (
-        id,
-        job_type,
-        payload_json,
-        status,
-        attempts,
-        available_at
-      ) values (
-        ${randomUUID()},
-        ${jobType},
-        ${serializeJson(sql, {
-          importBatchId,
-          accountId: normalizedInput.accountId,
-        })}::jsonb,
-        ${"queued"},
-        0,
-        ${new Date().toISOString()}
-      )
-    `;
+    await queueJob(
+      sql,
+      jobType,
+      {
+        importBatchId,
+        accountId: normalizedInput.accountId,
+      },
+      {
+        availableAt: new Date().toISOString(),
+      },
+    );
   }
 
-  const insertedTransactions: Transaction[] = [];
-  if (preparedTransactions) {
-    for (const transaction of preparedTransactions.inserted) {
-      try {
-        const inserted = await sql`
-          insert into public.transactions (
-            id,
-            user_id,
-            account_id,
-            account_entity_id,
-            economic_entity_id,
-            import_batch_id,
-            source_fingerprint,
-            duplicate_key,
-            transaction_date,
-            posted_date,
-            amount_original,
-            currency_original,
-            amount_base_eur,
-            fx_rate_to_eur,
-            description_raw,
-            description_clean,
-            merchant_normalized,
-            counterparty_name,
-            transaction_class,
-            category_code,
-            transfer_match_status,
-            cross_entity_flag,
-            reimbursement_status,
-            classification_status,
-            classification_source,
-            classification_confidence,
-            needs_review,
-            review_reason,
-            exclude_from_analytics,
-            llm_payload,
-            raw_payload,
-            security_id,
-            quantity,
-            unit_price_original,
-            credit_card_statement_status,
-            linked_credit_card_account_id,
-            created_at,
-            updated_at
-          ) values (
-            ${transaction.id},
-            ${transaction.userId},
-            ${transaction.accountId},
-            ${transaction.accountEntityId},
-            ${transaction.economicEntityId},
-            ${transaction.importBatchId ?? null},
-            ${transaction.sourceFingerprint},
-            ${transaction.duplicateKey ?? null},
-            ${transaction.transactionDate},
-            ${transaction.postedDate ?? null},
-            ${transaction.amountOriginal},
-            ${transaction.currencyOriginal},
-            ${transaction.amountBaseEur},
-            ${transaction.fxRateToEur ?? null},
-            ${transaction.descriptionRaw},
-            ${transaction.descriptionClean},
-            ${transaction.merchantNormalized ?? null},
-            ${transaction.counterpartyName ?? null},
-            ${transaction.transactionClass},
-            ${transaction.categoryCode ?? null},
-            ${transaction.transferMatchStatus},
-            ${transaction.crossEntityFlag},
-            ${transaction.reimbursementStatus},
-            ${transaction.classificationStatus},
-            ${transaction.classificationSource},
-            ${transaction.classificationConfidence},
-            ${transaction.needsReview},
-            ${transaction.reviewReason ?? null},
-            ${transaction.excludeFromAnalytics},
-            ${serializeJson(sql, transaction.llmPayload)}::jsonb,
-            ${serializeJson(sql, transaction.rawPayload)}::jsonb,
-            ${transaction.securityId ?? null},
-            ${transaction.quantity ?? null},
-            ${transaction.unitPriceOriginal ?? null},
-            ${transaction.creditCardStatementStatus},
-            ${transaction.linkedCreditCardAccountId ?? null},
-            ${transaction.createdAt},
-            ${transaction.updatedAt}
-          )
-          returning id
-        `;
-        if (inserted.length > 0) {
-          insertedTransactions.push(transaction);
-        }
-      } catch (error) {
-        if (isUniqueViolation(error)) {
-          continue;
-        }
-        throw error;
-      }
-    }
-  }
+  const insertedTransactions = preparedTransactions
+    ? await insertTransactions(sql, preparedTransactions.inserted)
+    : [];
 
   await sql`
     update public.accounts
@@ -2858,6 +2922,959 @@ async function commitPreparedImportBatch(
   };
 }
 
+async function commitSyntheticImportBatch(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    accountId: string;
+    originalFilename: string;
+    sourceKind: "bank_sync";
+    providerName: typeof REVOLUT_PROVIDER_NAME;
+    bankConnectionId: string;
+    preparedTransactions: Transaction[];
+    importedByActor: string;
+    jobsQueued?: ImportCommitResult["jobsQueued"];
+    dateRange?: { start: string; end: string } | null;
+  },
+): Promise<SyntheticImportBatchCommitResult> {
+  const importBatchId = randomUUID();
+  const jobsQueued =
+    input.jobsQueued ??
+    (input.preparedTransactions.length > 0
+      ? [...DEFAULT_IMPORT_JOBS_QUEUED]
+      : (["metric_refresh"] satisfies ImportCommitResult["jobsQueued"]));
+
+  await sql`
+    insert into public.import_batches ${sql({
+      id: importBatchId,
+      user_id: input.userId,
+      account_id: input.accountId,
+      template_id: null,
+      source_kind: input.sourceKind,
+      provider_name: input.providerName,
+      bank_connection_id: input.bankConnectionId,
+      storage_path: `bank-sync/${input.providerName}/${input.bankConnectionId}/${input.originalFilename}`,
+      original_filename: input.originalFilename,
+      file_sha256: randomUUID().replace(/-/g, ""),
+      status: "committed",
+      row_count_detected: input.preparedTransactions.length,
+      row_count_parsed: input.preparedTransactions.length,
+      row_count_inserted: input.preparedTransactions.length,
+      row_count_duplicates: 0,
+      row_count_failed: 0,
+      preview_summary_json: serializeJson(sql, {
+        dateRange: input.dateRange ?? null,
+        sampleRows: input.preparedTransactions
+          .slice(0, 3)
+          .map((transaction) => ({
+            providerRecordId: transaction.providerRecordId,
+            transactionDate: transaction.transactionDate,
+            amountOriginal: transaction.amountOriginal,
+            currencyOriginal: transaction.currencyOriginal,
+            descriptionRaw: transaction.descriptionRaw,
+          })),
+      }),
+      commit_summary_json: serializeJson(sql, {
+        jobsQueued,
+        sourceKind: input.sourceKind,
+        providerName: input.providerName,
+      }),
+      imported_by_actor: input.importedByActor,
+      imported_at: new Date().toISOString(),
+    } as Record<string, unknown>)}
+  `;
+
+  const preparedTransactions = input.preparedTransactions.map((transaction) => ({
+    ...transaction,
+    importBatchId,
+  }));
+  const insertedTransactions = await insertTransactions(sql, preparedTransactions);
+
+  for (const jobType of jobsQueued) {
+    await queueJob(
+      sql,
+      jobType,
+      {
+        importBatchId,
+        accountId: input.accountId,
+      },
+      {
+        availableAt: new Date().toISOString(),
+      },
+    );
+  }
+
+  await sql`
+    update public.accounts
+    set last_imported_at = ${new Date().toISOString()}
+    where id = ${input.accountId}
+      and user_id = ${input.userId}
+  `;
+
+  await sql`
+    update public.import_batches
+    set row_count_inserted = ${insertedTransactions.length},
+        row_count_duplicates = ${Math.max(
+          0,
+          input.preparedTransactions.length - insertedTransactions.length,
+        )},
+        commit_summary_json = ${serializeJson(sql, {
+          jobsQueued,
+          sourceKind: input.sourceKind,
+          providerName: input.providerName,
+          transactionIds: insertedTransactions.map((transaction) => transaction.id),
+        })}::jsonb
+    where id = ${importBatchId}
+      and user_id = ${input.userId}
+  `;
+
+  return {
+    importBatchId,
+    insertedTransactions,
+  };
+}
+
+function normalizeDescriptionForSourceImport(value: string) {
+  return value.trim().replace(/\s+/g, " ").replace(/\bSEPA\b/gi, "").trim();
+}
+
+function humanizeRevolutType(value: string) {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+function buildRevolutProviderRecordId(
+  transaction: RevolutTransaction,
+  legId: string,
+) {
+  return `${transaction.id}:${legId}`;
+}
+
+function buildRevolutSourceFingerprint(accountId: string, providerRecordId: string) {
+  return `${REVOLUT_PROVIDER_NAME}:${accountId}:${providerRecordId}`;
+}
+
+function sliceIsoDate(value: string | null | undefined) {
+  return typeof value === "string" && value.length >= 10
+    ? value.slice(0, 10)
+    : null;
+}
+
+function buildRevolutTransactionDescription(
+  transaction: RevolutTransaction,
+  merchantName: string | null,
+  legDescription: string | null,
+) {
+  const pieces = [
+    merchantName,
+    legDescription,
+    transaction.reference ?? null,
+  ].filter((value): value is string => Boolean(value));
+  return (
+    [...new Set(pieces)].join(" | ") || humanizeRevolutType(transaction.type)
+  );
+}
+
+async function upsertAccountBalanceSnapshot(
+  sql: SqlClient,
+  input: {
+    accountId: string;
+    asOfDate: string;
+    balanceOriginal: string;
+    balanceCurrency: string;
+    balanceBaseEur: string;
+  },
+) {
+  await sql`
+    insert into public.account_balance_snapshots ${sql({
+      account_id: input.accountId,
+      as_of_date: input.asOfDate,
+      balance_original: input.balanceOriginal,
+      balance_currency: input.balanceCurrency,
+      balance_base_eur: input.balanceBaseEur,
+      source_kind: "statement",
+      import_batch_id: null,
+    } as Record<string, unknown>)}
+    on conflict (account_id, as_of_date)
+    do update set
+      balance_original = excluded.balance_original,
+      balance_currency = excluded.balance_currency,
+      balance_base_eur = excluded.balance_base_eur,
+      source_kind = excluded.source_kind,
+      import_batch_id = excluded.import_batch_id
+  `;
+}
+
+async function createRevolutManagedAccount(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    entityId: string;
+    revolutAccount: RevolutAccount;
+    actorName: string;
+    sourceChannel: AuditEvent["sourceChannel"];
+  },
+): Promise<Account> {
+  const accountId = randomUUID();
+  const now = new Date().toISOString();
+  const matchingAliases = [
+    input.revolutAccount.currency,
+    input.revolutAccount.name,
+  ].filter((value, index, values) => values.indexOf(value) === index);
+  const account = {
+    id: accountId,
+    userId: input.userId,
+    entityId: input.entityId,
+    institutionName: REVOLUT_CONNECTION_LABEL,
+    displayName: input.revolutAccount.name,
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: input.revolutAccount.currency,
+    openingBalanceOriginal: null,
+    openingBalanceCurrency: null,
+    openingBalanceDate: null,
+    includeInConsolidation: true,
+    isActive: true,
+    importTemplateDefaultId: null,
+    matchingAliases,
+    accountSuffix: null,
+    balanceMode: "statement",
+    staleAfterDays: null,
+    lastImportedAt: null,
+    createdAt: now,
+  } satisfies Account;
+
+  await sql`
+    insert into public.accounts ${sql({
+      id: account.id,
+      user_id: account.userId,
+      entity_id: account.entityId,
+      institution_name: account.institutionName,
+      display_name: account.displayName,
+      account_type: account.accountType,
+      asset_domain: account.assetDomain,
+      default_currency: account.defaultCurrency,
+      opening_balance_original: null,
+      opening_balance_currency: null,
+      opening_balance_date: null,
+      include_in_consolidation: account.includeInConsolidation,
+      is_active: account.isActive,
+      import_template_default_id: null,
+      matching_aliases: account.matchingAliases,
+      account_suffix: null,
+      balance_mode: account.balanceMode,
+      stale_after_days: null,
+      last_imported_at: null,
+      created_at: account.createdAt,
+    } as Record<string, unknown>)}
+  `;
+
+  await insertAuditEventRecord(
+    sql,
+    createAuditEvent(
+      input.sourceChannel,
+      input.actorName,
+      "accounts.create",
+      "account",
+      account.id,
+      null,
+      account as unknown as Record<string, unknown>,
+    ),
+    "Auto-created a company bank account from a Revolut Business connection.",
+  );
+
+  return account;
+}
+
+async function resolveOrCreateRevolutAccountLinks(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    dataset: DomainDataset;
+    connectionId: string;
+    entityId: string;
+    revolutAccounts: RevolutAccount[];
+    actorName: string;
+    sourceChannel: AuditEvent["sourceChannel"];
+  },
+) {
+  const now = new Date().toISOString();
+  const nextAccounts = [...input.dataset.accounts];
+  const nextLinks = [...input.dataset.bankAccountLinks];
+
+  for (const revolutAccount of input.revolutAccounts.filter(
+    (account) => account.state === "active",
+  )) {
+    let linkedAccount =
+      nextLinks
+        .filter(
+          (link) =>
+            link.connectionId === input.connectionId &&
+            link.externalAccountId === revolutAccount.id,
+        )
+        .map((link) =>
+          nextAccounts.find((account) => account.id === link.accountId) ?? null,
+        )
+        .find((account): account is Account => Boolean(account)) ?? null;
+
+    if (!linkedAccount) {
+      const candidates = nextAccounts.filter(
+        (account) =>
+          account.entityId === input.entityId &&
+          account.accountType === "company_bank" &&
+          account.assetDomain === "cash" &&
+          account.isActive &&
+          account.institutionName === REVOLUT_CONNECTION_LABEL &&
+          account.defaultCurrency === revolutAccount.currency,
+      );
+      linkedAccount =
+        candidates.find(
+          (account) => account.displayName === revolutAccount.name,
+        ) ??
+        (candidates.length === 1 ? candidates[0] : null);
+    }
+
+    if (!linkedAccount) {
+      linkedAccount = await createRevolutManagedAccount(sql, {
+        userId: input.userId,
+        entityId: input.entityId,
+        revolutAccount,
+        actorName: input.actorName,
+        sourceChannel: input.sourceChannel,
+      });
+      nextAccounts.push(linkedAccount);
+    }
+
+    const linkId =
+      nextLinks.find(
+        (link) =>
+          link.connectionId === input.connectionId &&
+          link.externalAccountId === revolutAccount.id,
+      )?.id ?? randomUUID();
+
+    await sql`
+      insert into public.bank_account_links ${sql({
+        id: linkId,
+        user_id: input.userId,
+        connection_id: input.connectionId,
+        account_id: linkedAccount.id,
+        provider: REVOLUT_PROVIDER_NAME,
+        external_account_id: revolutAccount.id,
+        external_account_name: revolutAccount.name,
+        external_currency: revolutAccount.currency,
+        last_seen_at: now,
+        created_at: now,
+        updated_at: now,
+      } as Record<string, unknown>)}
+      on conflict (connection_id, external_account_id)
+      do update set
+        account_id = excluded.account_id,
+        external_account_name = excluded.external_account_name,
+        external_currency = excluded.external_currency,
+        last_seen_at = excluded.last_seen_at,
+        updated_at = excluded.updated_at
+    `;
+
+    const nextLink = {
+      id: linkId,
+      userId: input.userId,
+      connectionId: input.connectionId,
+      accountId: linkedAccount.id,
+      provider: REVOLUT_PROVIDER_NAME,
+      externalAccountId: revolutAccount.id,
+      externalAccountName: revolutAccount.name,
+      externalCurrency: revolutAccount.currency,
+      lastSeenAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies BankAccountLink;
+    const existingIndex = nextLinks.findIndex((link) => link.id === linkId);
+    if (existingIndex === -1) {
+      nextLinks.push(nextLink);
+    } else {
+      nextLinks[existingIndex] = nextLink;
+    }
+  }
+
+  return {
+    dataset: {
+      ...input.dataset,
+      accounts: nextAccounts,
+      bankAccountLinks: nextLinks,
+    } satisfies DomainDataset,
+    bankAccountLinks: nextLinks.filter(
+      (link) => link.connectionId === input.connectionId,
+    ),
+  };
+}
+
+function buildRevolutSyntheticTransaction(input: {
+  dataset: DomainDataset;
+  account: Account;
+  transaction: RevolutTransaction;
+  expense: RevolutExpense | null;
+  leg: RevolutTransaction["legs"][number];
+  importBatchId: string | null;
+}) {
+  const providerRecordId = buildRevolutProviderRecordId(
+    input.transaction,
+    input.leg.leg_id,
+  );
+  const transactionDate =
+    sliceIsoDate(input.transaction.completed_at) ??
+    sliceIsoDate(input.transaction.created_at) ??
+    new Date().toISOString().slice(0, 10);
+  const postedDate =
+    sliceIsoDate(input.transaction.completed_at) ??
+    sliceIsoDate(input.transaction.updated_at) ??
+    transactionDate;
+  const amountOriginal = new Decimal(input.leg.amount).toFixed(8);
+  const currencyOriginal = input.leg.currency.toUpperCase();
+  const fxRateToEur = resolveFxRate(
+    input.dataset,
+    currencyOriginal,
+    "EUR",
+    transactionDate,
+  ).toFixed(8);
+  const amountBaseEur = new Decimal(amountOriginal)
+    .times(new Decimal(fxRateToEur))
+    .toFixed(8);
+  const merchantName = input.transaction.merchant?.name?.trim() || null;
+  const descriptionRaw = buildRevolutTransactionDescription(
+    input.transaction,
+    merchantName,
+    input.leg.description?.trim() || null,
+  );
+  const createdAt = new Date().toISOString();
+  const providerContext = buildRevolutProviderContext({
+    transaction: input.transaction,
+    leg: input.leg,
+    expense: input.expense,
+  });
+
+  return {
+    id: randomUUID(),
+    userId: input.dataset.profile.id,
+    accountId: input.account.id,
+    accountEntityId: input.account.entityId,
+    economicEntityId: input.account.entityId,
+    importBatchId: input.importBatchId,
+    providerName: REVOLUT_PROVIDER_NAME,
+    providerRecordId,
+    sourceFingerprint: buildRevolutSourceFingerprint(
+      input.account.id,
+      providerRecordId,
+    ),
+    duplicateKey: providerRecordId,
+    transactionDate,
+    postedDate,
+    amountOriginal,
+    currencyOriginal,
+    amountBaseEur,
+    fxRateToEur,
+    descriptionRaw,
+    descriptionClean: normalizeDescriptionForSourceImport(descriptionRaw),
+    merchantNormalized: merchantName,
+    counterpartyName: null,
+    transactionClass: "unknown",
+    categoryCode: null,
+    subcategoryCode: null,
+    transferGroupId: null,
+    relatedAccountId: null,
+    relatedTransactionId: null,
+    transferMatchStatus: "not_transfer",
+    crossEntityFlag: false,
+    reimbursementStatus: "none",
+    classificationStatus: "unknown",
+    classificationSource: "system_fallback",
+    classificationConfidence: "0.00",
+    needsReview: true,
+    reviewReason: "Queued for automatic transaction analysis.",
+    excludeFromAnalytics: false,
+    correctionOfTransactionId: null,
+    voidedAt: null,
+    manualNotes: null,
+    llmPayload: {
+      analysisStatus: "pending",
+      explanation: null,
+      model: null,
+      error: null,
+      queuedAt: createdAt,
+      providerContext,
+    },
+    rawPayload: {
+      provider: REVOLUT_PROVIDER_NAME,
+      providerContext,
+      providerRaw: {
+        transaction: input.transaction,
+        expense: input.expense,
+      },
+    },
+    securityId: null,
+    quantity: null,
+    unitPriceOriginal: null,
+    creditCardStatementStatus: "not_applicable",
+    linkedCreditCardAccountId: null,
+    createdAt,
+    updatedAt: createdAt,
+  } satisfies Transaction;
+}
+
+async function queueUniqueRevolutSyncJob(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    connectionId: string;
+    trigger: BankSyncTrigger;
+    availableAt?: string;
+  },
+) {
+  const existing =
+    input.trigger === "scheduled"
+      ? await sql`
+          select id
+          from public.jobs
+          where job_type = ${"bank_sync"}
+            and (status = ${"queued"} or status = ${"running"})
+            and payload_json->>'connectionId' = ${input.connectionId}
+          limit 1
+        `
+      : await sql`
+          select id
+          from public.jobs
+          where job_type = ${"bank_sync"}
+            and (
+              status = ${"running"}
+              or (
+                status = ${"queued"}
+                and available_at <= ${new Date().toISOString()}
+              )
+            )
+            and payload_json->>'connectionId' = ${input.connectionId}
+          limit 1
+        `;
+  if (existing[0]?.id) {
+    return {
+      queued: false,
+      jobId: String(existing[0].id),
+    };
+  }
+
+  const queuedAt = new Date().toISOString();
+  const jobId = await queueJob(
+    sql,
+    "bank_sync",
+    {
+      connectionId: input.connectionId,
+      trigger: input.trigger,
+      queuedAt,
+    },
+    {
+      availableAt: input.availableAt,
+    },
+  );
+  await sql`
+    update public.bank_connections
+    set last_sync_queued_at = ${queuedAt},
+        updated_at = ${queuedAt}
+    where id = ${input.connectionId}
+      and user_id = ${input.userId}
+  `;
+  return {
+    queued: true,
+    jobId,
+  };
+}
+
+async function runRevolutSyncWithLock<T>(
+  sql: SqlClient,
+  connectionId: string,
+  runner: () => Promise<T>,
+) {
+  const lockRows = await sql`
+    select pg_try_advisory_lock(hashtext(${connectionId}), 814) as locked
+  `;
+  if (lockRows[0]?.locked !== true) {
+    throw new Error(
+      `Revolut connection ${connectionId} is already syncing in another worker.`,
+    );
+  }
+
+  try {
+    return await runner();
+  } finally {
+    await sql`
+      select pg_advisory_unlock(hashtext(${connectionId}), 814)
+    `;
+  }
+}
+
+async function processRevolutSyncJob(
+  sql: SqlClient,
+  userId: string,
+  payloadJson: Record<string, unknown>,
+) {
+  const connectionId =
+    typeof payloadJson.connectionId === "string"
+      ? payloadJson.connectionId
+      : "";
+  if (!connectionId) {
+    throw new Error("Bank sync job is missing connectionId.");
+  }
+
+  return runRevolutSyncWithLock(sql, connectionId, async () => {
+    const connectionRows = await sql`
+      select *
+      from public.bank_connections
+      where id = ${connectionId}
+        and user_id = ${userId}
+        and provider = ${REVOLUT_PROVIDER_NAME}
+      limit 1
+    `;
+    const connectionRow = connectionRows[0];
+    if (!connectionRow) {
+      throw new Error(`Bank connection ${connectionId} was not found.`);
+    }
+
+    const encryptedRefreshToken =
+      typeof connectionRow.encrypted_refresh_token === "string"
+        ? connectionRow.encrypted_refresh_token
+        : "";
+    if (!encryptedRefreshToken) {
+      throw new Error(
+        `Bank connection ${connectionId} is missing an encrypted refresh token.`,
+      );
+    }
+
+    const config = getRevolutRuntimeConfig();
+    const nowIso = new Date().toISOString();
+    try {
+      const refreshToken = decryptBankSecret(
+        config.masterKey,
+        encryptedRefreshToken,
+      );
+      const tokenResponse = await refreshRevolutAccessToken(config, refreshToken);
+      const nextEncryptedRefreshToken = tokenResponse.refresh_token
+        ? encryptBankSecret(config.masterKey, tokenResponse.refresh_token)
+        : encryptedRefreshToken;
+      const accessToken = tokenResponse.access_token;
+      const revolutAccounts = await fetchRevolutAccounts(config, accessToken);
+
+      let dataset = await loadDatasetForUser(sql, userId);
+      const linked = await resolveOrCreateRevolutAccountLinks(sql, {
+        userId,
+        dataset,
+        connectionId,
+        entityId: String(connectionRow.entity_id),
+        revolutAccounts,
+        actorName: "worker-revolut-sync",
+        sourceChannel: "worker",
+      });
+      dataset = linked.dataset;
+
+      const linksByExternalAccountId = new Map(
+        linked.bankAccountLinks.map((link) => [link.externalAccountId, link]),
+      );
+      const accountsById = new Map(
+        dataset.accounts.map((account) => [account.id, account]),
+      );
+      const revolutAccountsById = new Map(
+        revolutAccounts.map((account) => [account.id, account]),
+      );
+
+      const snapshotAsOfDate = nowIso.slice(0, 10);
+      for (const link of linked.bankAccountLinks) {
+        const revolutAccount = revolutAccountsById.get(link.externalAccountId);
+        if (!revolutAccount) {
+          continue;
+        }
+        const balanceOriginal = new Decimal(revolutAccount.balance).toFixed(8);
+        const balanceBaseEur = new Decimal(balanceOriginal)
+          .times(
+            resolveFxRate(dataset, revolutAccount.currency, "EUR", snapshotAsOfDate),
+          )
+          .toFixed(8);
+        await upsertAccountBalanceSnapshot(sql, {
+          accountId: link.accountId,
+          asOfDate: snapshotAsOfDate,
+          balanceOriginal,
+          balanceCurrency: revolutAccount.currency,
+          balanceBaseEur,
+        });
+        await sql`
+          update public.accounts
+          set last_imported_at = ${nowIso}
+          where id = ${link.accountId}
+            and user_id = ${userId}
+        `;
+      }
+
+      const lastCursorCreatedAt =
+        typeof connectionRow.last_cursor_created_at === "string"
+          ? connectionRow.last_cursor_created_at
+          : null;
+      const fromDate = lastCursorCreatedAt
+        ? new Date(
+            Date.parse(lastCursorCreatedAt) -
+              config.syncLookbackMinutes * 60_000,
+          ).toISOString()
+        : new Date(
+            Date.now() - config.initialBackfillDays * 24 * 60 * 60_000,
+          ).toISOString();
+
+      const fetchedTransactions: RevolutTransaction[] = [];
+      let nextToCursor: string | null = null;
+      while (true) {
+        const page = await fetchRevolutTransactions(config, accessToken, {
+          from: fromDate,
+          to: nextToCursor,
+          count: 1000,
+        });
+        if (page.length === 0) {
+          break;
+        }
+        fetchedTransactions.push(...page);
+        if (page.length < 1000) {
+          break;
+        }
+        const nextCursor = page.at(-1)?.created_at ?? null;
+        if (!nextCursor || nextCursor === nextToCursor) {
+          break;
+        }
+        nextToCursor = nextCursor;
+      }
+
+      const expenseByTransactionId = new Map<string, RevolutExpense>();
+      try {
+        let nextExpenseToCursor: string | null = null;
+        while (true) {
+          const page = await fetchRevolutExpenses(config, accessToken, {
+            from: fromDate,
+            to: nextExpenseToCursor,
+            count: 500,
+          });
+          if (page.length === 0) {
+            break;
+          }
+          for (const expense of page) {
+            if (expense.transaction_id) {
+              expenseByTransactionId.set(expense.transaction_id, expense);
+            }
+          }
+          if (page.length < 500) {
+            break;
+          }
+          const nextCursor = page.at(-1)?.expense_date ?? null;
+          if (!nextCursor || nextCursor === nextExpenseToCursor) {
+            break;
+          }
+          nextExpenseToCursor = nextCursor;
+        }
+      } catch (error) {
+        console.warn(
+          `[revolut-sync] Expenses enrichment skipped for connection ${connectionId}: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        );
+      }
+
+      const linkedAccountIds = linked.bankAccountLinks.map((link) => link.accountId);
+      const existingRows =
+        linkedAccountIds.length > 0
+          ? await sql`
+              select ${transactionColumnsSql(sql)}
+              from public.transactions
+              where user_id = ${userId}
+                and provider_name = ${REVOLUT_PROVIDER_NAME}
+                and account_id in ${sql(linkedAccountIds)}
+            `
+          : [];
+      const existingTransactionsByProviderRecordId = new Map(
+        existingRows
+          .map((row) => mapFromSql<Transaction>(row))
+          .filter((transaction) => transaction.providerRecordId)
+          .map((transaction) => [transaction.providerRecordId as string, transaction]),
+      );
+
+      const newTransactionsByAccount = new Map<string, Transaction[]>();
+      const touchedAccountIds = new Set<string>();
+      let latestSeenCursor = lastCursorCreatedAt;
+      let mutatedExistingRows = 0;
+
+      const chronologicalTransactions = [...fetchedTransactions].sort((left, right) =>
+        left.created_at.localeCompare(right.created_at),
+      );
+      for (const revolutTransaction of chronologicalTransactions) {
+        if (!latestSeenCursor || revolutTransaction.created_at > latestSeenCursor) {
+          latestSeenCursor = revolutTransaction.created_at;
+        }
+        const expense = expenseByTransactionId.get(revolutTransaction.id) ?? null;
+        for (const leg of revolutTransaction.legs) {
+          const link = linksByExternalAccountId.get(leg.account_id);
+          if (!link) {
+            continue;
+          }
+          const account = accountsById.get(link.accountId);
+          if (!account) {
+            continue;
+          }
+          touchedAccountIds.add(account.id);
+          const providerRecordId = buildRevolutProviderRecordId(
+            revolutTransaction,
+            leg.leg_id,
+          );
+          const nextTransaction = buildRevolutSyntheticTransaction({
+            dataset,
+            account,
+            transaction: revolutTransaction,
+            expense,
+            leg,
+            importBatchId: null,
+          });
+          const existingTransaction =
+            existingTransactionsByProviderRecordId.get(providerRecordId) ?? null;
+
+          if (revolutTransaction.state === "completed") {
+            if (existingTransaction) {
+              await updateTransactionRecord(sql, {
+                userId,
+                transactionId: existingTransaction.id,
+                updatePayload: {
+                  transaction_date: nextTransaction.transactionDate,
+                  posted_date: nextTransaction.postedDate,
+                  amount_original: nextTransaction.amountOriginal,
+                  currency_original: nextTransaction.currencyOriginal,
+                  amount_base_eur: nextTransaction.amountBaseEur,
+                  fx_rate_to_eur: nextTransaction.fxRateToEur,
+                  description_raw: nextTransaction.descriptionRaw,
+                  description_clean: nextTransaction.descriptionClean,
+                  source_fingerprint: nextTransaction.sourceFingerprint,
+                  duplicate_key: nextTransaction.duplicateKey,
+                  provider_name: nextTransaction.providerName,
+                  provider_record_id: nextTransaction.providerRecordId,
+                  raw_payload: nextTransaction.rawPayload,
+                  voided_at: null,
+                  exclude_from_analytics: false,
+                  updated_at: nowIso,
+                },
+                returning: false,
+              });
+              mutatedExistingRows += 1;
+            } else {
+              const accountTransactions =
+                newTransactionsByAccount.get(account.id) ?? [];
+              accountTransactions.push(nextTransaction);
+              newTransactionsByAccount.set(account.id, accountTransactions);
+            }
+            continue;
+          }
+
+          if (revolutTransaction.state === "reverted" && existingTransaction) {
+            await updateTransactionRecord(sql, {
+              userId,
+              transactionId: existingTransaction.id,
+              updatePayload: {
+                raw_payload: nextTransaction.rawPayload,
+                voided_at: nowIso,
+                updated_at: nowIso,
+              },
+              returning: false,
+            });
+            mutatedExistingRows += 1;
+          }
+        }
+      }
+
+      let insertedTransactions = 0;
+      for (const [accountId, preparedTransactions] of newTransactionsByAccount) {
+        if (preparedTransactions.length === 0) {
+          continue;
+        }
+        const account = accountsById.get(accountId);
+        if (!account) {
+          continue;
+        }
+        const dates = preparedTransactions.map((transaction) => transaction.transactionDate);
+        const committed = await commitSyntheticImportBatch(sql, {
+          userId,
+          accountId,
+          originalFilename: `revolut-sync-${account.defaultCurrency}-${snapshotAsOfDate}.json`,
+          sourceKind: "bank_sync",
+          providerName: REVOLUT_PROVIDER_NAME,
+          bankConnectionId: connectionId,
+          preparedTransactions,
+          importedByActor: "worker-revolut-sync",
+          dateRange: {
+            start: [...dates].sort()[0] ?? snapshotAsOfDate,
+            end: [...dates].sort().at(-1) ?? snapshotAsOfDate,
+          },
+        });
+        insertedTransactions += committed.insertedTransactions.length;
+      }
+
+      if (mutatedExistingRows > 0 && insertedTransactions === 0) {
+        await queueJob(sql, "metric_refresh", {
+          connectionId,
+          trigger: "bank_sync_update",
+        });
+      }
+
+      const nextScheduledSyncAt = new Date(
+        Date.now() + config.syncIntervalMinutes * 60_000,
+      ).toISOString();
+      await sql`
+        update public.bank_connections
+        set encrypted_refresh_token = ${nextEncryptedRefreshToken},
+            status = ${"active"},
+            last_cursor_created_at = ${latestSeenCursor ?? lastCursorCreatedAt},
+            last_successful_sync_at = ${nowIso},
+            auth_expires_at = ${new Date(
+              Date.now() + tokenResponse.expires_in * 1000,
+            ).toISOString()},
+            last_error = null,
+            updated_at = ${nowIso}
+        where id = ${connectionId}
+          and user_id = ${userId}
+      `;
+      await queueUniqueRevolutSyncJob(sql, {
+        userId,
+        connectionId,
+        trigger: "scheduled",
+        availableAt: nextScheduledSyncAt,
+      });
+
+      return {
+        connectionId,
+        fetchedTransactions: fetchedTransactions.length,
+        insertedTransactions,
+        updatedTransactions: mutatedExistingRows,
+        linkedAccountCount: linked.bankAccountLinks.length,
+        latestCursorCreatedAt: latestSeenCursor,
+        syncedAt: nowIso,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown Revolut sync failure.";
+      const nextStatus =
+        /invalid_grant|unauthorized|401/i.test(errorMessage)
+          ? "reauthorization_required"
+          : "error";
+      await sql`
+        update public.bank_connections
+        set status = ${nextStatus},
+            last_error = ${errorMessage},
+            updated_at = ${nowIso}
+        where id = ${connectionId}
+          and user_id = ${userId}
+      `;
+      throw error;
+    }
+  });
+}
+
 async function loadDatasetForUser(
   sql: SqlClient,
   userId: string,
@@ -2866,6 +3883,8 @@ async function loadDatasetForUser(
     profiles,
     entities,
     accounts,
+    bankConnections,
+    bankAccountLinks,
     templates,
     importBatches,
     transactions,
@@ -2886,6 +3905,34 @@ async function loadDatasetForUser(
     sql`select * from public.profiles where id = ${userId} limit 1`,
     sql`select * from public.entities where user_id = ${userId} order by created_at`,
     sql`select * from public.accounts where user_id = ${userId} order by created_at`,
+    sql`
+      select
+        id,
+        user_id,
+        entity_id,
+        provider,
+        connection_label,
+        status,
+        external_business_id,
+        last_cursor_created_at,
+        last_successful_sync_at,
+        last_sync_queued_at,
+        last_webhook_at,
+        auth_expires_at,
+        last_error,
+        metadata_json,
+        created_at,
+        updated_at
+      from public.bank_connections
+      where user_id = ${userId}
+      order by created_at
+    `,
+    sql`
+      select *
+      from public.bank_account_links
+      where user_id = ${userId}
+      order by created_at
+    `,
     sql`select * from public.import_templates where user_id = ${userId} order by created_at`,
     sql`select * from public.import_batches where user_id = ${userId} order by imported_at desc`,
     sql`
@@ -2943,6 +3990,10 @@ async function loadDatasetForUser(
     profile: mapFromSql<DomainDataset["profile"]>(profiles[0]),
     entities: mapFromSql<DomainDataset["entities"]>(entities),
     accounts: mapFromSql<DomainDataset["accounts"]>(accounts),
+    bankConnections:
+      mapFromSql<DomainDataset["bankConnections"]>(bankConnections),
+    bankAccountLinks:
+      mapFromSql<DomainDataset["bankAccountLinks"]>(bankAccountLinks),
     templates: mapFromSql<DomainDataset["templates"]>(templates),
     importBatches: mapFromSql<DomainDataset["importBatches"]>(importBatches),
     transactions: mapFromSql<DomainDataset["transactions"]>(transactions),
@@ -2969,6 +4020,233 @@ async function loadDatasetForUser(
       monthlyCashFlowRollups,
     ),
   };
+}
+
+export async function beginRevolutAuthorization(input: { entityId: string }) {
+  const config = getRevolutRuntimeConfig();
+  return withSeededUserContext(async (sql) => {
+    const userId = getDbRuntimeConfig().seededUserId;
+    const entityRows = await sql`
+      select *
+      from public.entities
+      where id = ${input.entityId}
+        and user_id = ${userId}
+      limit 1
+    `;
+    const entity = entityRows[0];
+    if (!entity) {
+      throw new Error(`Entity ${input.entityId} was not found.`);
+    }
+    if (entity.entity_kind !== "company") {
+      throw new Error(
+        "Revolut Business connections can only be attached to company entities.",
+      );
+    }
+
+    const state = createSignedRevolutState(config, {
+      userId,
+      entityId: input.entityId,
+    });
+
+    return {
+      url: buildRevolutAuthorizationUrl(config, state),
+      state,
+    };
+  });
+}
+
+export async function completeRevolutAuthorization(input: {
+  code: string;
+  state: string;
+}) {
+  const config = getRevolutRuntimeConfig();
+  return withSeededUserContext(async (sql) => {
+    const userId = getDbRuntimeConfig().seededUserId;
+    const statePayload = verifySignedRevolutState(config, input.state);
+    const entityId =
+      typeof statePayload.entityId === "string" ? statePayload.entityId : "";
+    const stateUserId =
+      typeof statePayload.userId === "string" ? statePayload.userId : "";
+    if (!entityId || stateUserId !== userId) {
+      throw new Error("Revolut OAuth state is invalid for this user session.");
+    }
+
+    const tokens = await exchangeRevolutAuthorizationCode(config, input.code);
+    const revolutAccounts = await fetchRevolutAccounts(
+      config,
+      tokens.access_token,
+    );
+    const encryptedRefreshToken = tokens.refresh_token
+      ? encryptBankSecret(config.masterKey, tokens.refresh_token)
+      : null;
+    if (!encryptedRefreshToken) {
+      throw new Error("Revolut did not return a refresh token.");
+    }
+
+    const upsertedConnections = await sql`
+      insert into public.bank_connections ${sql({
+        id: randomUUID(),
+        user_id: userId,
+        entity_id: entityId,
+        provider: REVOLUT_PROVIDER_NAME,
+        connection_label: REVOLUT_CONNECTION_LABEL,
+        status: "active",
+        encrypted_refresh_token: encryptedRefreshToken,
+        external_business_id: null,
+        last_cursor_created_at: null,
+        last_successful_sync_at: null,
+        last_sync_queued_at: null,
+        last_webhook_at: null,
+        auth_expires_at: new Date(
+          Date.now() + tokens.expires_in * 1000,
+        ).toISOString(),
+        last_error: null,
+        metadata_json: serializeJson(sql, {
+          scopes: ["READ"],
+          connectedVia: "oauth_callback",
+        }),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      } as Record<string, unknown>)}
+      on conflict (user_id, provider, entity_id)
+      do update set
+        connection_label = excluded.connection_label,
+        status = excluded.status,
+        encrypted_refresh_token = excluded.encrypted_refresh_token,
+        auth_expires_at = excluded.auth_expires_at,
+        last_error = excluded.last_error,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at
+      returning id
+    `;
+    const connectionId = String(upsertedConnections[0]?.id ?? "");
+    if (!connectionId) {
+      throw new Error("Failed to persist the Revolut bank connection.");
+    }
+
+    let dataset = await loadDatasetForUser(sql, userId);
+    const linked = await resolveOrCreateRevolutAccountLinks(sql, {
+      userId,
+      dataset,
+      connectionId,
+      entityId,
+      revolutAccounts,
+      actorName: "web-revolut-connect",
+      sourceChannel: "web",
+    });
+    dataset = linked.dataset;
+
+    await queueUniqueRevolutSyncJob(sql, {
+      userId,
+      connectionId,
+      trigger: "oauth_callback",
+    });
+
+    return {
+      connectionId,
+      linkedAccountIds: linked.bankAccountLinks.map((link) => link.accountId),
+    };
+  });
+}
+
+export async function queueRevolutConnectionSync(input: {
+  connectionId: string;
+  trigger: Exclude<BankSyncTrigger, "oauth_callback" | "scheduled">;
+}) {
+  return withSeededUserContext(async (sql) => {
+    const userId = getDbRuntimeConfig().seededUserId;
+    const connectionRows = await sql`
+      select id
+      from public.bank_connections
+      where id = ${input.connectionId}
+        and user_id = ${userId}
+        and provider = ${REVOLUT_PROVIDER_NAME}
+      limit 1
+    `;
+    if (!connectionRows[0]) {
+      throw new Error(`Bank connection ${input.connectionId} was not found.`);
+    }
+
+    return queueUniqueRevolutSyncJob(sql, {
+      userId,
+      connectionId: input.connectionId,
+      trigger: input.trigger,
+    });
+  });
+}
+
+export async function processRevolutWebhookEvent(input: {
+  headers: Record<string, string | null | undefined>;
+  body: string;
+}) {
+  const config = getRevolutRuntimeConfig();
+  const timestamp =
+    input.headers["revolut-request-timestamp"] ??
+    input.headers["Revolut-Request-Timestamp"] ??
+    null;
+  const signature =
+    input.headers["revolut-signature"] ??
+    input.headers["Revolut-Signature"] ??
+    null;
+  if (!config.webhookSigningSecret) {
+    throw new Error(
+      "REVOLUT_WEBHOOK_SIGNING_SECRET is required to validate Revolut webhooks.",
+    );
+  }
+  if (!timestamp || !signature) {
+    throw new Error("Revolut webhook is missing signature headers.");
+  }
+  if (!verifyRevolutWebhookTimestamp(timestamp)) {
+    throw new Error("Revolut webhook timestamp is outside the allowed window.");
+  }
+  if (
+    !verifyRevolutWebhookSignature({
+      signingSecret: config.webhookSigningSecret,
+      timestamp,
+      signatureHeader: signature,
+      body: input.body,
+    })
+  ) {
+    throw new Error("Revolut webhook signature verification failed.");
+  }
+
+  return withSeededUserContext(async (sql) => {
+    const userId = getDbRuntimeConfig().seededUserId;
+    const connectionRows = await sql`
+      select id
+      from public.bank_connections
+      where user_id = ${userId}
+        and provider = ${REVOLUT_PROVIDER_NAME}
+        and status = ${"active"}
+    `;
+    const queuedConnectionIds: string[] = [];
+    for (const row of connectionRows) {
+      const connectionId = String(row.id ?? "");
+      if (!connectionId) {
+        continue;
+      }
+      const queued = await queueUniqueRevolutSyncJob(sql, {
+        userId,
+        connectionId,
+        trigger: "webhook",
+      });
+      if (queued.queued) {
+        queuedConnectionIds.push(connectionId);
+      }
+      await sql`
+        update public.bank_connections
+        set last_webhook_at = ${new Date().toISOString()},
+            updated_at = ${new Date().toISOString()}
+        where id = ${connectionId}
+          and user_id = ${userId}
+      `;
+    }
+
+    return {
+      accepted: true,
+      queuedConnectionIds,
+    };
+  });
 }
 
 async function applyInvestmentRebuild(
@@ -5508,6 +6786,8 @@ class SqlFinanceRepository implements FinanceRepository {
         accountEntityId: linkedCreditCardAccount.entityId,
         economicEntityId: linkedCreditCardAccount.entityId,
         importBatchId: null,
+        providerName: null,
+        providerRecordId: null,
         sourceFingerprint: `credit-card-settlement-mirror:${settlementTransaction.id}`,
         duplicateKey: `credit-card-settlement-mirror:${settlementTransaction.id}`,
         transactionDate: settlementTransaction.transactionDate,
@@ -5896,6 +7176,24 @@ class SqlFinanceRepository implements FinanceRepository {
               continue;
             }
 
+            if (job.job_type === "bank_sync") {
+              const resultPayload = await processRevolutSyncJob(
+                sql,
+                this.userId,
+                payloadJson,
+              );
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                ...resultPayload,
+              });
+              processedJobs.push({
+                id: job.id,
+                jobType: "bank_sync",
+                status: "completed",
+              });
+              continue;
+            }
+
             if (job.job_type === "position_rebuild") {
               const rebuilt = await applyInvestmentRebuild(sql, this.userId);
               await completeJob(sql, job.id, startedAt, {
@@ -6052,3 +7350,5 @@ class SqlFinanceRepository implements FinanceRepository {
 export function createFinanceRepository(): FinanceRepository {
   return new SqlFinanceRepository();
 }
+
+export { getRevolutRuntimeStatus };

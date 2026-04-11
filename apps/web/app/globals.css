@@ -1350,6 +1350,40 @@ textarea {
   font-weight: 500;
 }
 
+.revolut-connect-row {
+  display: flex;
+  align-items: end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.revolut-connection-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.revolut-connection-card {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(145deg, #ffffff 0%, #f7fbff 100%);
+}
+
+.revolut-connection-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.revolut-connection-meta {
+  display: grid;
+  gap: 12px;
+}
+
 .settings-toolbar {
   grid-column: 1 / -1;
   display: flex;
@@ -2707,6 +2741,10 @@ textarea {
   .investment-position-values {
     width: 100%;
     text-align: left;
+  }
+
+  .revolut-connection-head {
+    flex-direction: column;
   }
 
   .settings-entity-head {

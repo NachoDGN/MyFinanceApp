@@ -220,6 +220,7 @@ export interface AnalyzeBankTransactionInput {
     securityId?: string | null;
     quantity?: string | null;
     unitPriceOriginal?: string | null;
+    providerContext?: unknown;
     rawPayload: unknown;
   };
   deterministicHint: {
@@ -375,6 +376,7 @@ export async function analyzeBankTransaction(
       securityId: input.transaction.securityId ?? "null",
       quantity: input.transaction.quantity ?? "null",
       unitPriceOriginal: input.transaction.unitPriceOriginal ?? "null",
+      providerContext: JSON.stringify(input.transaction.providerContext ?? null),
       rawPayload: JSON.stringify(input.transaction.rawPayload),
       deterministicHint: JSON.stringify(input.deterministicHint),
       portfolioState: JSON.stringify(input.portfolioState ?? null),

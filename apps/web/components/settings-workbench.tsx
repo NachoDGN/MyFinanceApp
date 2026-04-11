@@ -309,6 +309,9 @@ export function SettingsWorkbench({
               className="input-field"
               name="slug"
               placeholder="company_c"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               required
             />
           </label>
@@ -405,6 +408,9 @@ export function SettingsWorkbench({
                     className="input-field"
                     name="slug"
                     defaultValue={entity.slug}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     required
                   />
                 </label>

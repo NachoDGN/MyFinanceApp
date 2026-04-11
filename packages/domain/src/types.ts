@@ -10,12 +10,18 @@ export type AccountType =
   | "other";
 export type AssetDomain = "cash" | "investment";
 export type FileKind = "csv" | "xls" | "xlsx" | "pdf";
+export type ImportSourceKind = "upload" | "bank_sync";
 export type ImportBatchStatus =
   | "previewed"
   | "committed"
   | "failed"
   | "processing"
   | "queued";
+export type BankProvider = "revolut_business";
+export type BankConnectionStatus =
+  | "active"
+  | "reauthorization_required"
+  | "error";
 export type TransactionClass =
   | "income"
   | "expense"
@@ -78,6 +84,7 @@ export type ActorType = "user" | "agent" | "system";
 export type JobStatus = "queued" | "running" | "completed" | "failed";
 export type JobType =
   | "classification"
+  | "bank_sync"
   | "transfer_rematch"
   | "security_resolution"
   | "price_refresh"
@@ -174,7 +181,10 @@ export interface ImportBatch {
   id: string;
   userId: string;
   accountId: string;
-  templateId: string;
+  templateId?: string | null;
+  sourceKind: ImportSourceKind;
+  providerName?: BankProvider | null;
+  bankConnectionId?: string | null;
   storagePath: string;
   originalFilename: string;
   fileSha256: string;
@@ -202,6 +212,8 @@ export interface Transaction {
   accountEntityId: string;
   economicEntityId: string;
   importBatchId?: string | null;
+  providerName?: BankProvider | null;
+  providerRecordId?: string | null;
   sourceFingerprint: string;
   duplicateKey?: string | null;
   transactionDate: string;
@@ -239,6 +251,39 @@ export interface Transaction {
   unitPriceOriginal?: string | null;
   creditCardStatementStatus: CreditCardStatementStatus;
   linkedCreditCardAccountId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BankConnection {
+  id: string;
+  userId: string;
+  entityId: string;
+  provider: BankProvider;
+  connectionLabel: string;
+  status: BankConnectionStatus;
+  externalBusinessId?: string | null;
+  lastCursorCreatedAt?: string | null;
+  lastSuccessfulSyncAt?: string | null;
+  lastSyncQueuedAt?: string | null;
+  lastWebhookAt?: string | null;
+  authExpiresAt?: string | null;
+  lastError?: string | null;
+  metadataJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BankAccountLink {
+  id: string;
+  userId: string;
+  connectionId: string;
+  accountId: string;
+  provider: BankProvider;
+  externalAccountId: string;
+  externalAccountName: string;
+  externalCurrency: CurrencyCode;
+  lastSeenAt: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -536,6 +581,8 @@ export interface DomainDataset {
   profile: Profile;
   entities: Entity[];
   accounts: Account[];
+  bankConnections: BankConnection[];
+  bankAccountLinks: BankAccountLink[];
   templates: ImportTemplate[];
   importBatches: ImportBatch[];
   transactions: Transaction[];

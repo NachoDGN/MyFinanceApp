@@ -8,7 +8,11 @@ import {
   buildSpendingReadModel,
 } from "@myfinance/analytics";
 import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
-import { createFinanceRepository, listPromptProfiles } from "@myfinance/db";
+import {
+  createFinanceRepository,
+  getRevolutRuntimeStatus,
+  listPromptProfiles,
+} from "@myfinance/db";
 import {
   FinanceDomainService,
   getScopeLatestDate,
@@ -342,7 +346,11 @@ export async function getCreditCardStatementModel(
 export async function getAccountsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
   const accounts = await domainService.listAccounts();
-  return { ...state, accounts };
+  return {
+    ...state,
+    accounts,
+    revolutRuntime: getRevolutRuntimeStatus(),
+  };
 }
 
 export async function getImportsModel(searchParams: RawSearchParams) {

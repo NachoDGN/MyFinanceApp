@@ -556,6 +556,79 @@ test("saved classification rules win before fallback logic or LLM classification
   }
 });
 
+test("revolut exchange rows deterministically resolve to fx conversions before LLM fallback", async () => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "";
+
+  try {
+    const account = createAccount({
+      institutionName: "Revolut Business",
+      accountType: "company_bank",
+    });
+    const transaction = createTransaction({
+      id: "revolut-exchange-row",
+      accountId: account.id,
+      accountEntityId: account.entityId,
+      economicEntityId: account.entityId,
+      transactionClass: "unknown",
+      categoryCode: null,
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+      providerName: "revolut_business",
+      providerRecordId: "revolut-tx-1:leg-1",
+      descriptionRaw: "USD exchange",
+      descriptionClean: "USD EXCHANGE",
+      rawPayload: {
+        provider: "revolut_business",
+        providerContext: {
+          provider: "revolut_business",
+          transaction: {
+            id: "revolut-tx-1",
+            type: "exchange",
+            state: "completed",
+          },
+          merchant: null,
+          leg: {
+            legId: "leg-1",
+            amount: -250,
+            currency: "EUR",
+            accountId: "external-revolut-account",
+          },
+          expense: null,
+        },
+      },
+    });
+    const dataset = createDataset({
+      accounts: [account],
+      transactions: [transaction],
+    });
+
+    const decision = await enrichImportedTransaction(
+      dataset,
+      account,
+      transaction,
+    );
+
+    assert.equal(decision.transactionClass, "fx_conversion");
+    assert.equal(decision.needsReview, false);
+    assert.equal(
+      (
+        decision.llmPayload.providerContext as { provider?: string } | undefined
+      )?.provider,
+      "revolut_business",
+    );
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+  }
+});
+
 test("latest date helpers cap future imports at the provided fallback date", () => {
   const account = createAccount({
     id: "broker-future-dates",
@@ -5743,6 +5816,93 @@ test("transaction enrichment request schema keeps nullable quantity fields requi
     }
     globalThis.fetch = previousFetch;
   }
+});
+
+test("transaction analyzer prompt passes provider context as a dedicated section", async () => {
+  let capturedUserPrompt = "";
+
+  await analyzeBankTransaction(
+    {
+      async generateText() {
+        throw new Error("Not used in this test.");
+      },
+      async generateJson({ userPrompt }) {
+        capturedUserPrompt = userPrompt;
+        return {
+          transaction_class: "expense",
+          category_code: "groceries",
+          merchant_normalized: "Carrefour",
+          counterparty_name: null,
+          economic_entity_override: null,
+          security_hint: null,
+          quantity: null,
+          unit_price_original: null,
+          resolved_instrument_name: null,
+          resolved_instrument_isin: null,
+          resolved_instrument_ticker: null,
+          resolved_instrument_exchange: null,
+          current_price: null,
+          current_price_currency: null,
+          current_price_timestamp: null,
+          current_price_source: null,
+          current_price_type: null,
+          resolution_process: "Merchant and MCC indicate a grocery purchase.",
+          confidence: 0.94,
+          explanation: "Resolved from provider metadata.",
+          reason: "Merchant and MCC strongly indicate groceries.",
+        };
+      },
+    },
+    {
+      account: {
+        id: "cash-revolut-provider-context",
+        assetDomain: "cash",
+        institutionName: "Revolut Business",
+        displayName: "Operating EUR",
+        accountType: "company_bank",
+      },
+      allowedTransactionClasses: ["expense", "unknown"],
+      allowedCategories: [{ code: "groceries", displayName: "Groceries" }],
+      transaction: {
+        transactionDate: "2026-04-10",
+        postedDate: "2026-04-10",
+        amountOriginal: "-12.40",
+        currencyOriginal: "EUR",
+        descriptionRaw: "Carrefour | groceries",
+        merchantNormalized: null,
+        counterpartyName: null,
+        securityId: null,
+        quantity: null,
+        unitPriceOriginal: null,
+        providerContext: {
+          provider: "revolut_business",
+          merchant: {
+            name: "Carrefour",
+            categoryCode: "5411",
+          },
+        },
+        rawPayload: {
+          provider: "revolut_business",
+        },
+      },
+      deterministicHint: {
+        transactionClass: "unknown",
+        categoryCode: null,
+        explanation: "Needs provider-aware classification.",
+        source: "system_fallback",
+      },
+      portfolioState: null,
+      similarAccountTransactions: [],
+      reviewExamples: [],
+      reviewContext: null,
+      promptOverrides: null,
+    },
+    "gpt-5.4",
+  );
+
+  assert.match(capturedUserPrompt, /Provider context:/);
+  assert.match(capturedUserPrompt, /"provider":"revolut_business"/);
+  assert.match(capturedUserPrompt, /"categoryCode":"5411"/);
 });
 
 test("spending read model respects the selected period when building merchant totals", () => {
