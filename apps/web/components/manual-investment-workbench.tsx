@@ -7,6 +7,7 @@ import {
   createManualInvestmentAction,
   deleteManualInvestmentAction,
   recordManualInvestmentValuationAction,
+  updateManualInvestmentAction,
 } from "../app/actions";
 import { SectionCard } from "./primitives";
 
@@ -37,6 +38,7 @@ type ManualInvestmentSummary = {
   investedAmountDisplay: string;
   unrealizedDisplay: string;
   unrealizedPercent: string | null;
+  matchedFundingTransactionCount: number;
   freshnessLabel: string;
 };
 
@@ -132,6 +134,32 @@ export function ManualInvestmentWorkbench({
           error instanceof Error
             ? error.message
             : "Valuation could not be saved.",
+        );
+      }
+    });
+  }
+
+  function handleUpdateInvestment(
+    manualInvestmentId: string,
+    formData: FormData,
+  ) {
+    startTransition(async () => {
+      setFeedback(null);
+      try {
+        await updateManualInvestmentAction({
+          manualInvestmentId,
+          fundingAccountId: String(formData.get("fundingAccountId") ?? ""),
+          label: String(formData.get("label") ?? ""),
+          matcherText: String(formData.get("matcherText") ?? ""),
+          note: String(formData.get("note") ?? ""),
+        });
+        setFeedback("Tracked investment details saved.");
+        router.refresh();
+      } catch (error) {
+        setFeedback(
+          error instanceof Error
+            ? error.message
+            : "Tracked investment details could not be saved.",
         );
       }
     });
@@ -317,64 +345,151 @@ export function ManualInvestmentWorkbench({
               </div>
             </article>
           ) : (
-            manualInvestments.map((investment) => (
-              <article className="investment-position-card" key={investment.id}>
-                <div className="investment-position-head">
-                  <div className="investment-position-copy">
-                    <h3 className="investment-position-name">
-                      {investment.label}
-                    </h3>
-                    <p className="investment-position-symbol">
-                      {investment.entityName} · {investment.fundingAccountName}{" "}
-                      · {investment.freshnessLabel}
-                    </p>
+            manualInvestments.map((investment) => {
+              const investmentCashAccounts = cashAccounts.filter(
+                (account) => account.entityId === investment.entityId,
+              );
+
+              return (
+                <article className="investment-position-card" key={investment.id}>
+                  <div className="investment-position-head">
+                    <div className="investment-position-copy">
+                      <h3 className="investment-position-name">
+                        {investment.label}
+                      </h3>
+                      <p className="investment-position-symbol">
+                        {investment.entityName} · {investment.fundingAccountName}{" "}
+                        · {investment.freshnessLabel}
+                      </p>
+                    </div>
+                    <div className="investment-position-values">
+                      <strong>{investment.currentValueDisplay}</strong>
+                      <span
+                        className={`investment-return ${Number(investment.unrealizedPercent ?? "0") >= 0 ? "positive" : "negative"}`}
+                      >
+                        {investment.unrealizedDisplay}
+                        {investment.unrealizedPercent
+                          ? ` / ${investment.unrealizedPercent}%`
+                          : ""}
+                      </span>
+                    </div>
                   </div>
-                  <div className="investment-position-values">
-                    <strong>{investment.currentValueDisplay}</strong>
-                    <span
-                      className={`investment-return ${Number(investment.unrealizedPercent ?? "0") >= 0 ? "positive" : "negative"}`}
-                    >
-                      {investment.unrealizedDisplay}
-                      {investment.unrealizedPercent
-                        ? ` / ${investment.unrealizedPercent}%`
+                  <div
+                    className="investment-summary-meta"
+                    style={{
+                      display: "grid",
+                      gap: 6,
+                      marginTop: 12,
+                    }}
+                  >
+                    <span>
+                      Derived invested capital: {investment.investedAmountDisplay}
+                    </span>
+                    {investment.matchedFundingTransactionCount === 0 ? (
+                      <span>
+                        No funding transfers matched the current matcher terms
+                        yet.
+                      </span>
+                    ) : null}
+                    <span>
+                      Latest snapshot: {investment.latestSnapshotDate ?? "None"}
+                      {investment.latestValueOriginal &&
+                      investment.latestValueCurrency
+                        ? ` · ${investment.latestValueOriginal} ${investment.latestValueCurrency}`
                         : ""}
                     </span>
+                    <span>Matcher terms: {investment.matcherText}</span>
+                    {investment.note ? (
+                      <span>Note: {investment.note}</span>
+                    ) : null}
                   </div>
-                </div>
-                <div
-                  className="investment-summary-meta"
-                  style={{
-                    display: "grid",
-                    gap: 6,
-                    marginTop: 12,
-                  }}
-                >
-                  <span>
-                    Derived invested capital: {investment.investedAmountDisplay}
-                  </span>
-                  <span>
-                    Latest snapshot: {investment.latestSnapshotDate ?? "None"}
-                    {investment.latestValueOriginal &&
-                    investment.latestValueCurrency
-                      ? ` · ${investment.latestValueOriginal} ${investment.latestValueCurrency}`
-                      : ""}
-                  </span>
-                  <span>Matcher terms: {investment.matcherText}</span>
-                  {investment.note ? (
-                    <span>Note: {investment.note}</span>
-                  ) : null}
-                </div>
-                <form
-                  className="form-grid"
-                  style={{ marginTop: 16 }}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    handleRecordValuation(
-                      investment.id,
-                      new FormData(event.currentTarget),
-                    );
-                  }}
-                >
+                  <form
+                    className="form-grid"
+                    style={{ marginTop: 16 }}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleUpdateInvestment(
+                        investment.id,
+                        new FormData(event.currentTarget),
+                      );
+                    }}
+                  >
+                    <label className="input-label">
+                      Funding Account
+                      <select
+                        className="input-select"
+                        name="fundingAccountId"
+                        defaultValue={investment.fundingAccountId}
+                      >
+                        {investmentCashAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="input-label">
+                      Investment Label
+                      <input
+                        className="input-field"
+                        name="label"
+                        defaultValue={investment.label}
+                        required
+                      />
+                    </label>
+                    <label
+                      className="input-label"
+                      style={{ gridColumn: "1 / -1" }}
+                    >
+                      Matcher Terms
+                      <textarea
+                        className="input-textarea"
+                        name="matcherText"
+                        defaultValue={investment.matcherText}
+                        rows={3}
+                        required
+                      />
+                    </label>
+                    <label
+                      className="input-label"
+                      style={{ gridColumn: "1 / -1" }}
+                    >
+                      Investment Note
+                      <input
+                        className="input-field"
+                        name="note"
+                        defaultValue={investment.note ?? ""}
+                        placeholder="Used for Revolut treasury-fund cash movements."
+                      />
+                    </label>
+                    <div
+                      className="inline-actions"
+                      style={{ gridColumn: "1 / -1" }}
+                    >
+                      <button
+                        className="btn-pill"
+                        type="submit"
+                        disabled={isPending}
+                      >
+                        {isPending ? "Saving..." : "Save Details"}
+                      </button>
+                      <span className="muted">
+                        Use the exact transfer wording and the correct funding
+                        account here.
+                      </span>
+                    </div>
+                  </form>
+                  <form
+                    className="form-grid"
+                    style={{ marginTop: 16 }}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleRecordValuation(
+                        investment.id,
+                        new FormData(event.currentTarget),
+                      );
+                    }}
+                  >
                   <label className="input-label">
                     Snapshot Date
                     <input
@@ -437,9 +552,10 @@ export function ManualInvestmentWorkbench({
                       Remove
                     </button>
                   </div>
-                </form>
-              </article>
-            ))
+                  </form>
+                </article>
+              );
+            })
           )}
         </div>
       </SectionCard>

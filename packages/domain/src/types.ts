@@ -975,6 +975,17 @@ export interface CreateManualInvestmentInput {
   apply: boolean;
 }
 
+export interface UpdateManualInvestmentInput {
+  manualInvestmentId: string;
+  fundingAccountId: string;
+  label: string;
+  matcherText: string;
+  note?: string | null;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
 export interface RecordManualInvestmentValuationInput {
   manualInvestmentId: string;
   snapshotDate: string;

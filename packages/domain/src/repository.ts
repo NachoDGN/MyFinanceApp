@@ -34,6 +34,7 @@ import type {
   ResetWorkspaceResult,
   Transaction,
   UpdateAccountInput,
+  UpdateManualInvestmentInput,
   UpdateEntityInput,
   UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
@@ -163,6 +164,10 @@ export interface FinanceRepository {
     applied: boolean;
     manualInvestmentId: string;
     valuationId: string;
+  }>;
+  updateManualInvestment(input: UpdateManualInvestmentInput): Promise<{
+    applied: boolean;
+    manualInvestmentId: string;
   }>;
   recordManualInvestmentValuation(
     input: RecordManualInvestmentValuationInput,

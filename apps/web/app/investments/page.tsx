@@ -25,6 +25,10 @@ import {
   buildHoldingDisplayMetricsMap,
   getHoldingDisplayMetricKey,
 } from "../../lib/investment-display";
+import {
+  buildManualInvestmentMatchHaystack,
+  parseManualInvestmentMatcherTerms,
+} from "../../lib/manual-investment-matching";
 
 function normalizeInstrumentText(value: string | null | undefined) {
   return value?.trim().toUpperCase() ?? "";
@@ -61,6 +65,35 @@ function humanizeHoldingFreshness(
     default:
       return "Missing";
   }
+}
+
+function countManualInvestmentFundingMatches(
+  dataset: Awaited<ReturnType<typeof getInvestmentsModel>>["dataset"],
+  investment: Awaited<ReturnType<typeof getInvestmentsModel>>["dataset"]["manualInvestments"][number],
+  snapshotDate: string | null,
+) {
+  if (!snapshotDate) {
+    return 0;
+  }
+
+  const matcherTerms = parseManualInvestmentMatcherTerms(investment.matcherText);
+  if (matcherTerms.length === 0) {
+    return 0;
+  }
+
+  return dataset.transactions.filter((transaction) => {
+    if (
+      transaction.accountId !== investment.fundingAccountId ||
+      transaction.economicEntityId !== investment.entityId ||
+      transaction.transactionDate > snapshotDate ||
+      transaction.voidedAt !== null
+    ) {
+      return false;
+    }
+
+    const haystack = buildManualInvestmentMatchHaystack(transaction);
+    return matcherTerms.some((term) => haystack.includes(term));
+  }).length;
 }
 
 function holdingLooksLikeFund(
@@ -338,6 +371,12 @@ export default async function InvestmentsPage({
         investment.id,
       );
       const displayMetric = getHoldingDisplayMetric(holding);
+      const fundingAccount = accountById.get(investment.fundingAccountId);
+      const matchedFundingTransactionCount = countManualInvestmentFundingMatches(
+        model.dataset,
+        investment,
+        latestValuation?.snapshotDate ?? null,
+      );
 
       return {
         id: investment.id,
@@ -347,8 +386,9 @@ export default async function InvestmentsPage({
           investment.entityId,
         fundingAccountId: investment.fundingAccountId,
         fundingAccountName:
-          accountById.get(investment.fundingAccountId)?.displayName ??
-          investment.fundingAccountId,
+          fundingAccount
+            ? `${fundingAccount.displayName} (${fundingAccount.defaultCurrency})`
+            : investment.fundingAccountId,
         label: investment.label,
         matcherText: investment.matcherText,
         note: investment.note ?? null,
@@ -368,6 +408,7 @@ export default async function InvestmentsPage({
           model.currency,
         ),
         unrealizedPercent: displayMetric.unrealizedDisplayPercent,
+        matchedFundingTransactionCount,
         freshnessLabel: humanizeHoldingFreshness(holding.quoteFreshness),
       };
     })

@@ -257,6 +257,18 @@ const createManualInvestmentSchema = z.object({
     .transform((value) => value || null),
 });
 
+const updateManualInvestmentSchema = z.object({
+  manualInvestmentId: z.string().uuid(),
+  fundingAccountId: z.string().uuid(),
+  label: z.string().trim().min(1),
+  matcherText: manualInvestmentMatcherSchema,
+  note: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+});
+
 const manualInvestmentValuationSchema = z.object({
   manualInvestmentId: z.string().uuid(),
   snapshotDate: isoDateSchema,
@@ -941,6 +953,20 @@ export async function createManualInvestmentAction(
 ) {
   const trackedInvestment = createManualInvestmentSchema.parse(input);
   const result = await domain.createManualInvestment({
+    ...trackedInvestment,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function updateManualInvestmentAction(
+  input: z.input<typeof updateManualInvestmentSchema>,
+) {
+  const trackedInvestment = updateManualInvestmentSchema.parse(input);
+  const result = await domain.updateManualInvestment({
     ...trackedInvestment,
     actorName: "web-action",
     sourceChannel: "web",

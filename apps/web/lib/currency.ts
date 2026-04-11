@@ -19,10 +19,11 @@ function resolveStoredFxRate(
         row.quoteCurrency === to &&
         row.asOfDate <= effectiveDate,
     )
-    .sort((left, right) => right.asOfDate.localeCompare(left.asOfDate))[0];
-  if (direct) {
-    return new Decimal(direct.rate);
-  }
+    .sort(
+      (left, right) =>
+        right.asOfDate.localeCompare(left.asOfDate) ||
+        right.asOfTimestamp.localeCompare(left.asOfTimestamp),
+    )[0];
 
   const reverse = [...dataset.fxRates]
     .filter(
@@ -31,7 +32,26 @@ function resolveStoredFxRate(
         row.quoteCurrency === from &&
         row.asOfDate <= effectiveDate,
     )
-    .sort((left, right) => right.asOfDate.localeCompare(left.asOfDate))[0];
+    .sort(
+      (left, right) =>
+        right.asOfDate.localeCompare(left.asOfDate) ||
+        right.asOfTimestamp.localeCompare(left.asOfTimestamp),
+    )[0];
+
+  if (!direct && !reverse) {
+    return null;
+  }
+
+  if (
+    direct &&
+    (!reverse ||
+      direct.asOfDate > reverse.asOfDate ||
+      (direct.asOfDate === reverse.asOfDate &&
+        direct.asOfTimestamp >= reverse.asOfTimestamp))
+  ) {
+    return new Decimal(direct.rate);
+  }
+
   if (reverse) {
     return new Decimal(1).div(reverse.rate);
   }

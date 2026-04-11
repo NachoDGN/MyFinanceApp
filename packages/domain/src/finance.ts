@@ -669,15 +669,11 @@ function findLatestFxRateRecord(
         row.quoteCurrency === to &&
         row.asOfDate <= asOfDate,
     )
-    .sort((left, right) => right.asOfDate.localeCompare(left.asOfDate))[0];
-  if (direct) {
-    return {
-      rate: new Decimal(direct.rate),
-      asOfDate: direct.asOfDate,
-      asOfTimestamp: direct.asOfTimestamp,
-      sourceName: direct.sourceName,
-    };
-  }
+    .sort(
+      (left, right) =>
+        right.asOfDate.localeCompare(left.asOfDate) ||
+        right.asOfTimestamp.localeCompare(left.asOfTimestamp),
+    )[0];
 
   const reverse = [...dataset.fxRates]
     .filter(
@@ -686,7 +682,27 @@ function findLatestFxRateRecord(
         row.quoteCurrency === from &&
         row.asOfDate <= asOfDate,
     )
-    .sort((left, right) => right.asOfDate.localeCompare(left.asOfDate))[0];
+    .sort(
+      (left, right) =>
+        right.asOfDate.localeCompare(left.asOfDate) ||
+        right.asOfTimestamp.localeCompare(left.asOfTimestamp),
+    )[0];
+
+  if (
+    direct &&
+    (!reverse ||
+      direct.asOfDate > reverse.asOfDate ||
+      (direct.asOfDate === reverse.asOfDate &&
+        direct.asOfTimestamp >= reverse.asOfTimestamp))
+  ) {
+    return {
+      rate: new Decimal(direct.rate),
+      asOfDate: direct.asOfDate,
+      asOfTimestamp: direct.asOfTimestamp,
+      sourceName: direct.sourceName,
+    };
+  }
+
   if (reverse) {
     return {
       rate: new Decimal(1).div(reverse.rate),
@@ -1112,14 +1128,14 @@ function latestSecurityPrice(
   );
 }
 
-function normalizeMatcherText(value: string) {
+export function normalizeMatcherText(value: string) {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
 }
 
-function parseManualInvestmentMatcherTerms(matcherText: string) {
+export function parseManualInvestmentMatcherTerms(matcherText: string) {
   return [
     ...new Set(
       matcherText
@@ -1145,7 +1161,7 @@ function serializeMatchPayload(value: unknown) {
   }
 }
 
-function buildManualInvestmentMatchHaystack(transaction: Transaction) {
+export function buildManualInvestmentMatchHaystack(transaction: Transaction) {
   const rawPayload =
     transaction.rawPayload && typeof transaction.rawPayload === "object"
       ? transaction.rawPayload

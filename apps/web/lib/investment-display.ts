@@ -7,6 +7,10 @@ import {
 } from "@myfinance/domain";
 
 import { convertBaseEurToDisplayAmount } from "./currency";
+import {
+  buildManualInvestmentMatchHaystack,
+  parseManualInvestmentMatcherTerms,
+} from "./manual-investment-matching";
 
 type MutableHoldingDisplayMetric = {
   quantity: Decimal;
@@ -39,6 +43,88 @@ function buildHoldingCostBasisDisplayFallback(
     displayCurrency,
     referenceDate,
   );
+}
+
+function buildManualHoldingCostBasisDisplay(
+  dataset: DomainDataset,
+  holding: HoldingRow,
+  displayCurrency: string,
+  referenceDate: string,
+) {
+  if (holding.holdingSource !== "manual_valuation") {
+    return null;
+  }
+
+  const investment = dataset.manualInvestments.find(
+    (candidate) => candidate.id === holding.securityId,
+  );
+  if (!investment) {
+    return null;
+  }
+
+  const latestValuation = [...dataset.manualInvestmentValuations]
+    .filter(
+      (valuation) =>
+        valuation.manualInvestmentId === investment.id &&
+        valuation.snapshotDate <= referenceDate,
+    )
+    .sort(
+      (left, right) =>
+        right.snapshotDate.localeCompare(left.snapshotDate) ||
+        right.updatedAt.localeCompare(left.updatedAt) ||
+        right.createdAt.localeCompare(left.createdAt),
+    )[0];
+  if (!latestValuation) {
+    return null;
+  }
+
+  const matcherTerms = parseManualInvestmentMatcherTerms(investment.matcherText);
+  if (matcherTerms.length === 0) {
+    return "0.00";
+  }
+
+  let openCostBasisDisplay = new Decimal(0);
+  for (const transaction of dataset.transactions) {
+    if (
+      transaction.accountId !== investment.fundingAccountId ||
+      transaction.economicEntityId !== investment.entityId ||
+      transaction.transactionDate > latestValuation.snapshotDate ||
+      transaction.voidedAt !== null
+    ) {
+      continue;
+    }
+
+    const haystack = buildManualInvestmentMatchHaystack(transaction);
+    if (!matcherTerms.some((term) => haystack.includes(term))) {
+      continue;
+    }
+
+    if (
+      transaction.currencyOriginal === displayCurrency &&
+      transaction.amountOriginal !== null
+    ) {
+      openCostBasisDisplay = openCostBasisDisplay.plus(
+        new Decimal(transaction.amountOriginal).abs(),
+      );
+      continue;
+    }
+
+    const converted = convertBaseEurToDisplayAmount(
+      dataset,
+      transaction.amountBaseEur,
+      displayCurrency,
+      transaction.transactionDate,
+    );
+    if (converted === null) {
+      return null;
+    }
+
+    openCostBasisDisplay = openCostBasisDisplay.plus(
+      new Decimal(converted).abs(),
+    );
+  }
+
+  return openCostBasisDisplay.toFixed(2);
 }
 
 export function getHoldingDisplayMetricKey(holding: {
@@ -245,6 +331,12 @@ export function buildHoldingDisplayMetricsMap(
           : null;
       const openCostBasisDisplay =
         replayedOpenCostBasisDisplay ??
+        buildManualHoldingCostBasisDisplay(
+          dataset,
+          holding,
+          displayCurrency,
+          referenceDate,
+        ) ??
         buildHoldingCostBasisDisplayFallback(
           dataset,
           holding,

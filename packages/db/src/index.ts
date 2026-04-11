@@ -68,6 +68,7 @@ import {
   type Transaction,
   type UpdateAccountInput,
   type UpdateEntityInput,
+  type UpdateManualInvestmentInput,
   type UpdateWorkspaceProfileInput,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
@@ -6858,6 +6859,88 @@ class SqlFinanceRepository implements FinanceRepository {
       }
 
       return { applied: input.apply, manualInvestmentId, valuationId };
+    });
+
+    return result;
+  }
+
+  async updateManualInvestment(input: UpdateManualInvestmentInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const beforeRow = await selectManualInvestmentRowById(
+        sql,
+        this.userId,
+        input.manualInvestmentId,
+      );
+      if (!beforeRow) {
+        throw new Error(
+          `Tracked investment ${input.manualInvestmentId} was not found.`,
+        );
+      }
+
+      const accountRows = await sql`
+        select *
+        from public.accounts
+        where id = ${input.fundingAccountId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const fundingAccount = accountRows[0];
+      if (!fundingAccount) {
+        throw new Error(
+          `Funding account ${input.fundingAccountId} was not found.`,
+        );
+      }
+      if (fundingAccount.entity_id !== beforeRow.entity_id) {
+        throw new Error(
+          "The funding account must belong to the same entity as the tracked investment.",
+        );
+      }
+      if (fundingAccount.asset_domain !== "cash") {
+        throw new Error(
+          "Manual company investments must be linked to a cash account so cost basis can be derived from cash transfers.",
+        );
+      }
+
+      const nowIso = new Date().toISOString();
+      const nextRow = {
+        ...beforeRow,
+        funding_account_id: input.fundingAccountId,
+        label: input.label,
+        matcher_text: input.matcherText,
+        note: input.note ?? null,
+        updated_at: nowIso,
+      };
+
+      if (input.apply) {
+        await sql`
+          update public.manual_investments
+          set
+            funding_account_id = ${input.fundingAccountId},
+            label = ${input.label},
+            matcher_text = ${input.matcherText},
+            note = ${input.note ?? null},
+            updated_at = ${nowIso}
+          where id = ${input.manualInvestmentId}
+            and user_id = ${this.userId}
+        `;
+        await insertAuditEventRecord(
+          sql,
+          createAuditEvent(
+            input.sourceChannel,
+            input.actorName,
+            "manual_investments.update",
+            "manual_investment",
+            input.manualInvestmentId,
+            beforeRow,
+            nextRow,
+          ),
+        );
+      }
+
+      return {
+        applied: input.apply,
+        manualInvestmentId: input.manualInvestmentId,
+      };
     });
 
     return result;

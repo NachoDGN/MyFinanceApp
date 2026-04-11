@@ -24,6 +24,7 @@ import type {
   TemplateListResponse,
   TransactionListResponse,
   UpdateAccountInput,
+  UpdateManualInvestmentInput,
   UpdateEntityInput,
   UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
@@ -337,6 +338,10 @@ export class FinanceDomainService {
 
   createManualInvestment(input: CreateManualInvestmentInput) {
     return this.repository.createManualInvestment(input);
+  }
+
+  updateManualInvestment(input: UpdateManualInvestmentInput) {
+    return this.repository.updateManualInvestment(input);
   }
 
   recordManualInvestmentValuation(input: RecordManualInvestmentValuationInput) {
