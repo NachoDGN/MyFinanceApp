@@ -71,6 +71,10 @@ export {
   type RefreshOwnedStockPricesResult,
 } from "./market-data-refresh";
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
+import {
+  normalizeCreditCardSettlementText,
+  resolveOrCreateLinkedCreditCardAccount,
+} from "./credit-card-statement-linking";
 import { loadDatasetForUser } from "./dataset-loader";
 import {
   commitPreparedImportBatch,
@@ -221,33 +225,6 @@ export {
 import { transactionColumnsSql } from "./transaction-columns";
 
 const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
-
-function normalizeCreditCardSettlementText(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
-}
-
-function extractCreditCardContractSuffix(value: string) {
-  const normalized = normalizeCreditCardSettlementText(value);
-  const contractMatch = normalized.match(/CONTRATO\s+(\d{3,})/);
-  if (contractMatch?.[1]) {
-    return contractMatch[1];
-  }
-
-  const cardMatch = normalized.match(/TARJETAS?\s+DE\s+CREDITO.*?(\d{3,})/);
-  return cardMatch?.[1] ?? null;
-}
-
-function buildLinkedCreditCardAccountDisplayName(
-  account: Pick<Account, "institutionName">,
-  contractSuffix: string | null,
-) {
-  return contractSuffix
-    ? `${account.institutionName} Credit Card ${contractSuffix}`
-    : `${account.institutionName} Credit Card`;
-}
 
 type ReviewPropagationMode =
   | "unresolved_source_context"
@@ -799,130 +776,6 @@ async function selectManualInvestmentRowById(
   return rows[0] ?? null;
 }
 
-async function resolveOrCreateLinkedCreditCardAccount(
-  sql: SqlClient,
-  input: {
-    userId: string;
-    dataset: DomainDataset;
-    settlementTransaction: Transaction;
-    settlementAccount: Account;
-    templateId: string;
-    actorName: string;
-    sourceChannel: AuditEvent["sourceChannel"];
-  },
-) {
-  const template = input.dataset.templates.find(
-    (candidate) => candidate.id === input.templateId,
-  );
-  if (!template) {
-    throw new Error(`Template ${input.templateId} was not found.`);
-  }
-  if (template.compatibleAccountType !== "credit_card") {
-    throw new Error(
-      `Template ${input.templateId} is not compatible with credit-card statements.`,
-    );
-  }
-
-  if (input.settlementTransaction.linkedCreditCardAccountId) {
-    const linkedAccount = input.dataset.accounts.find(
-      (candidate) =>
-        candidate.id === input.settlementTransaction.linkedCreditCardAccountId,
-    );
-    if (linkedAccount) {
-      return linkedAccount;
-    }
-  }
-
-  const contractSuffix = extractCreditCardContractSuffix(
-    input.settlementTransaction.descriptionRaw,
-  );
-  const candidateAccounts = input.dataset.accounts.filter(
-    (candidate) =>
-      candidate.accountType === "credit_card" &&
-      candidate.isActive &&
-      candidate.entityId === input.settlementAccount.entityId &&
-      candidate.institutionName === input.settlementAccount.institutionName,
-  );
-  const linkedAccount =
-    (contractSuffix
-      ? candidateAccounts.find(
-          (candidate) =>
-            candidate.accountSuffix === contractSuffix ||
-            candidate.matchingAliases.includes(contractSuffix),
-        )
-      : null) ?? (candidateAccounts.length === 1 ? candidateAccounts[0] : null);
-
-  if (linkedAccount) {
-    return linkedAccount;
-  }
-
-  const accountId = randomUUID();
-  const afterJson = {
-    id: accountId,
-    userId: input.userId,
-    entityId: input.settlementAccount.entityId,
-    institutionName: input.settlementAccount.institutionName,
-    displayName: buildLinkedCreditCardAccountDisplayName(
-      input.settlementAccount,
-      contractSuffix,
-    ),
-    accountType: "credit_card",
-    assetDomain: "cash",
-    defaultCurrency: input.settlementAccount.defaultCurrency,
-    openingBalanceOriginal: null,
-    openingBalanceCurrency: null,
-    openingBalanceDate: null,
-    includeInConsolidation: true,
-    isActive: true,
-    importTemplateDefaultId: input.templateId,
-    matchingAliases: contractSuffix ? [contractSuffix] : [],
-    accountSuffix: contractSuffix,
-    balanceMode: "computed",
-    staleAfterDays: input.settlementAccount.staleAfterDays ?? null,
-    lastImportedAt: null,
-    createdAt: new Date().toISOString(),
-  } satisfies Account;
-
-  await sql`
-    insert into public.accounts ${sql({
-      id: accountId,
-      user_id: input.userId,
-      entity_id: input.settlementAccount.entityId,
-      institution_name: input.settlementAccount.institutionName,
-      display_name: afterJson.displayName,
-      account_type: "credit_card",
-      asset_domain: "cash",
-      default_currency: input.settlementAccount.defaultCurrency,
-      opening_balance_original: null,
-      opening_balance_currency: null,
-      opening_balance_date: null,
-      include_in_consolidation: true,
-      is_active: true,
-      import_template_default_id: input.templateId,
-      matching_aliases: contractSuffix ? [contractSuffix] : [],
-      account_suffix: contractSuffix,
-      balance_mode: "computed",
-      stale_after_days: input.settlementAccount.staleAfterDays ?? null,
-    } as Record<string, unknown>)}
-  `;
-
-  await insertAuditEventRecord(
-    sql,
-    createAuditEvent(
-      input.sourceChannel,
-      input.actorName,
-      "accounts.create",
-      "account",
-      accountId,
-      null,
-      afterJson as unknown as Record<string, unknown>,
-    ),
-    "Auto-created linked credit-card account from a settlement-row statement upload.",
-  );
-
-  return afterJson;
-}
-
 async function processRevolutSyncJob(
   sql: SqlClient,
   userId: string,
@@ -1120,7 +973,6 @@ async function processRevolutSyncJob(
       );
 
       const newTransactionsByAccount = new Map<string, Transaction[]>();
-      const touchedAccountIds = new Set<string>();
       let latestSeenCursor = lastCursorCreatedAt;
       let mutatedExistingRows = 0;
 
@@ -1145,7 +997,6 @@ async function processRevolutSyncJob(
           if (!account) {
             continue;
           }
-          touchedAccountIds.add(account.id);
           const providerRecordId = buildRevolutProviderRecordId(
             revolutTransaction,
             leg.leg_id,
@@ -3770,7 +3621,9 @@ class SqlFinanceRepository implements FinanceRepository {
         await resolveOrCreateLinkedCreditCardAccount(sql, {
           userId: this.userId,
           dataset,
-          settlementTransaction,
+          settlementLinkedCreditCardAccountId:
+            settlementTransaction.linkedCreditCardAccountId,
+          settlementDescriptionRaw: settlementTransaction.descriptionRaw,
           settlementAccount,
           templateId: input.templateId,
           actorName: "web-credit-card-statement",

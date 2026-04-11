@@ -10,7 +10,7 @@ import {
 import {
   buildWorkspaceSettingsJson,
   createTemplateConfig,
-  logTemporaryImportDebug,
+  logImportDebug,
 } from "@myfinance/domain";
 import { domain } from "../lib/action-service";
 import {
@@ -42,7 +42,7 @@ import {
 
 export async function previewImportAction(formData: FormData) {
   return withUploadedImport("preview", formData, async (input) => {
-    logTemporaryImportDebug("preview-action:start", {
+    logImportDebug("preview-action:start", {
       accountId: input.accountId,
       templateId: input.templateId,
       originalFilename: input.originalFilename,
@@ -52,11 +52,11 @@ export async function previewImportAction(formData: FormData) {
 }
 
 export async function commitImportAction(formData: FormData) {
-  logTemporaryImportDebug("commit-action:start");
+  logImportDebug("commit-action:start");
   const result = await withUploadedImport("commit", formData, (input) =>
     domain.commitImport(input),
   );
-  logTemporaryImportDebug("commit-action:complete", {
+  logImportDebug("commit-action:complete", {
     accountId: result.accountId,
     templateId: result.templateId,
     importBatchId: "importBatchId" in result ? result.importBatchId : null,

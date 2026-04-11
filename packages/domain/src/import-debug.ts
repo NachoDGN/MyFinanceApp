@@ -9,5 +9,3 @@ export function logImportDebug(step: string, metadata?: Record<string, unknown>)
 
   console.info("[import-debug]", step, metadata ?? {});
 }
-
-export const logTemporaryImportDebug = logImportDebug;

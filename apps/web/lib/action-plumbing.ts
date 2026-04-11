@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { getDbRuntimeConfig, getPromptOverrides } from "@myfinance/db";
 import {
   inferImportTemplateDraft,
-  logTemporaryImportDebug,
+  logImportDebug,
   type Account,
   validateSpreadsheetFile,
 } from "@myfinance/domain";
@@ -93,7 +93,7 @@ async function withUploadedImportFile<T>(
   await mkdir(uploadDirectory, { recursive: true });
   const filePath = join(uploadDirectory, file.name || "upload.bin");
   await writeFile(filePath, Buffer.from(await file.arrayBuffer()));
-  logTemporaryImportDebug("upload:start", {
+  logImportDebug("upload:start", {
     originalFilename: file.name,
     filePath,
     ...(options.logContext ?? {}),
@@ -101,7 +101,7 @@ async function withUploadedImportFile<T>(
 
   try {
     const validation = await validateSpreadsheetFile(filePath);
-    logTemporaryImportDebug("upload:file-validation", {
+    logImportDebug("upload:file-validation", {
       originalFilename: file.name,
       issues: validation.issues,
       ...(options.logContext ?? {}),
@@ -128,7 +128,7 @@ async function withUploadedImportFile<T>(
     }
     return result;
   } catch (error) {
-    logTemporaryImportDebug("upload:error", {
+    logImportDebug("upload:error", {
       originalFilename: file.name,
       error: error instanceof Error ? error.message : "Unknown upload error.",
       ...(options.logContext ?? {}),
@@ -269,7 +269,7 @@ async function withUploadedImport<T>(
       let resolvedTemplateName: string | null = null;
 
       if (fields.templateId === NEW_SPREADSHEET_TEMPLATE_ID) {
-        logTemporaryImportDebug("upload:new-spreadsheet-selected", {
+        logImportDebug("upload:new-spreadsheet-selected", {
           accountId: fields.accountId,
           originalFilename,
         });
@@ -300,7 +300,7 @@ async function withUploadedImport<T>(
         });
         resolvedTemplateId = createResult.templateId;
         resolvedTemplateName = inferredTemplate.name;
-        logTemporaryImportDebug("upload:template-created", {
+        logImportDebug("upload:template-created", {
           accountId: fields.accountId,
           templateId: resolvedTemplateId,
           templateName: resolvedTemplateName,
@@ -313,7 +313,7 @@ async function withUploadedImport<T>(
         originalFilename,
         filePath,
       });
-      logTemporaryImportDebug("upload:run-complete", {
+      logImportDebug("upload:run-complete", {
         accountId: fields.accountId,
         templateId: resolvedTemplateId,
         mode,
