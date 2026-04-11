@@ -9,7 +9,7 @@ import {
   type PromptProfileOverrides,
 } from "@myfinance/llm";
 
-import { logTemporaryImportDebug } from "./import-debug";
+import { logImportDebug } from "./import-debug";
 import { todayIso } from "./finance";
 import {
   columnLetterToIndex,
@@ -181,7 +181,7 @@ export async function inferImportTemplateDraft(
 ): Promise<Omit<ImportTemplate, "id" | "createdAt" | "updatedAt" | "version">> {
   const modelName = deps.modelName ?? getImportTemplateInferenceConfig().model;
   const referenceDate = deps.referenceDate ?? todayIso();
-  logTemporaryImportDebug("template-inference:start", {
+  logImportDebug("template-inference:start", {
     accountId: input.account.id,
     institutionName: input.account.institutionName,
     accountType: input.account.accountType,
@@ -191,7 +191,7 @@ export async function inferImportTemplateDraft(
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
   });
   if (!deps.llmClient && !isModelConfigured(modelName)) {
-    logTemporaryImportDebug("template-inference:missing-credentials", {
+    logImportDebug("template-inference:missing-credentials", {
       resolvedModel: modelName,
       hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     });
@@ -217,7 +217,7 @@ export async function inferImportTemplateDraft(
         : "No spreadsheet preview could be generated from the uploaded file.",
     );
   }
-  logTemporaryImportDebug("template-inference:workbook-preview", {
+  logImportDebug("template-inference:workbook-preview", {
     fileKind: workbookPreview.fileKind,
     sheetNames: workbookPreview.sheetPreviews.map((sheet) => sheet.sheetName),
     delimiter: workbookPreview.delimiter ?? null,
@@ -233,7 +233,7 @@ export async function inferImportTemplateDraft(
     },
     modelName,
   );
-  logTemporaryImportDebug("template-inference:table-start", {
+  logImportDebug("template-inference:table-start", {
     sheetName: tableStart.sheet_name ?? null,
     headerRowIndex: tableStart.header_row_index,
     rowsToSkipBeforeHeader: tableStart.rows_to_skip_before_header,
@@ -255,7 +255,7 @@ export async function inferImportTemplateDraft(
     tableStart.sheet_name &&
     resolvedSheetName !== tableStart.sheet_name
   ) {
-    logTemporaryImportDebug("template-inference:sheet-name-corrected", {
+    logImportDebug("template-inference:sheet-name-corrected", {
       inferredSheetName: tableStart.sheet_name,
       resolvedSheetName,
       availableSheetNames: workbookPreview.sheetPreviews.map(
@@ -274,7 +274,7 @@ export async function inferImportTemplateDraft(
     delimiter: workbookPreview.delimiter ?? null,
     encoding: workbookPreview.encoding ?? null,
   });
-  logTemporaryImportDebug("template-inference:table-preview", {
+  logImportDebug("template-inference:table-preview", {
     sheetName: tablePreview.sheetName ?? null,
     headers: tablePreview.headers,
   });
@@ -295,7 +295,7 @@ export async function inferImportTemplateDraft(
     modelName,
   );
   assertInferredLayout(layout);
-  logTemporaryImportDebug("template-inference:layout", {
+  logImportDebug("template-inference:layout", {
     columnMap: layout.column_map,
     signLogic: layout.sign_logic,
     dateDayFirst: layout.date_day_first,
@@ -332,7 +332,7 @@ export async function inferImportTemplateDraft(
     }),
     active: true,
   };
-  logTemporaryImportDebug("template-inference:complete", {
+  logImportDebug("template-inference:complete", {
     templateName: template.name,
     compatibleAccountType: template.compatibleAccountType,
     fileKind: template.fileKind,
