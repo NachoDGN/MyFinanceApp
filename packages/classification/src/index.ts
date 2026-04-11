@@ -20,10 +20,15 @@ import {
   buildAllowedCategoriesForAccount,
   buildAllowedTransactionClassesForAccount,
   buildLiveHoldingRows,
+  extractIsinFromText,
   getAllowedCategoryCodesForAccount,
   getDatasetLatestDate,
+  normalizeDescription,
+  normalizeInvestmentMatchingText,
   resolveConstrainedEconomicEntityId,
 } from "@myfinance/domain";
+
+export { normalizeInvestmentMatchingText };
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -107,25 +112,6 @@ export const CLASSIFICATION_PRECEDENCE = [
   "llm",
   "system_fallback",
 ] as const;
-
-export function normalizeDescription(input: string): {
-  raw: string;
-  clean: string;
-  comparison: string;
-} {
-  const clean = input
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(/\bSEPA\b/gi, "")
-    .replace(/\bCARD ENDING \d{4}\b/gi, "")
-    .trim();
-
-  return {
-    raw: input,
-    clean,
-    comparison: clean.toUpperCase(),
-  };
-}
 
 export function applyRuleMatch(
   transaction: Transaction,
@@ -629,21 +615,6 @@ export function getReviewPropagationEmbeddingModel() {
   );
 }
 
-export function normalizeInvestmentMatchingText(
-  value: string | null | undefined,
-) {
-  return normalizeDescription(value ?? "")
-    .comparison.replace(/\bGLOB\b/g, "GLOBAL")
-    .replace(/\bSM[\s-]?CAP\b/g, "SMALL CAP")
-    .replace(/\bSMALLCAP\b/g, "SMALL CAP")
-    .replace(/\bIDX\b/g, "INDEX")
-    .replace(/\bU\s*S\b/g, "US")
-    .replace(/\bS\s*&\s*P\b/g, "SP")
-    .replace(/[^A-Z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function looksLikeFundDescriptor(normalizedText: string) {
   return /\b(FUND|ETF|INDEX|UCITS|OEIC|NAV)\b/.test(normalizedText);
 }
@@ -672,19 +643,6 @@ function tokenizeInvestmentMatchingText(
         options.distinctiveOnly ? !stopwords.has(token) : true,
       ),
   );
-}
-
-function extractIsinFromText(...values: Array<string | null | undefined>) {
-  const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}\d\b/i;
-  for (const value of values) {
-    const match = String(value ?? "")
-      .toUpperCase()
-      .match(isinPattern);
-    if (match?.[0]) {
-      return match[0].replace(/\s+/g, "").toUpperCase();
-    }
-  }
-  return null;
 }
 
 function buildReviewPropagationContextText(transaction: Transaction) {

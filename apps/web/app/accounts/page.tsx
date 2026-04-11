@@ -1,7 +1,8 @@
 import { AppShell } from "../../components/app-shell";
 import { AccountsWorkbench } from "../../components/accounts-workbench";
 import { RevolutConnectionsCard } from "../../components/revolut-connections-card";
-import { formatCurrency, getAccountsModel } from "../../lib/queries";
+import { formatCurrency } from "../../lib/formatters";
+import { getAccountsModel } from "../../lib/queries";
 
 export default async function AccountsPage({
   searchParams,

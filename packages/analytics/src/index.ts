@@ -24,6 +24,7 @@ import {
   isTransactionPendingEnrichment,
   isTransactionResolvedForAnalytics,
   isCryptoCurrency,
+  isUnmatchedCreditCardSettlementTransaction,
   needsTransactionManualReview,
   resolveFxRate,
   resolvePeriodSelection,
@@ -34,6 +35,7 @@ import {
   todayIso,
 } from "@myfinance/domain";
 import { metricRegistry } from "./registry";
+import { buildAnalyticsReadModelContext } from "./read-model-context";
 
 export { metricRegistry } from "./registry";
 
@@ -80,39 +82,10 @@ function amountMagnitudeEur(transaction: Transaction) {
   return new Decimal(transaction.amountBaseEur).abs();
 }
 
-function normalizeMatchingText(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
-}
-
 function humanizeTransactionClass(transactionClass: Transaction["transactionClass"]) {
   return transactionClass
     .replace(/_/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function isUnmatchedCreditCardSettlement(transaction: Transaction) {
-  if (transaction.transactionClass !== "transfer_internal") {
-    return false;
-  }
-
-  if (
-    transaction.relatedAccountId ||
-    transaction.relatedTransactionId ||
-    transaction.transferMatchStatus === "matched"
-  ) {
-    return false;
-  }
-
-  const normalizedText = normalizeMatchingText(
-    `${transaction.descriptionRaw} ${transaction.descriptionClean}`,
-  );
-  return (
-    normalizedText.includes("LIQUIDACION") &&
-    normalizedText.includes("TARJETAS DE CREDITO")
-  );
 }
 
 function isIncomeLike(transaction: Transaction) {
@@ -164,10 +137,10 @@ function spendingContributionEur(transaction: Transaction) {
 }
 
 function resolveSpendingCategoryBucket(
-  dataset: DomainDataset,
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
   transaction: Transaction,
 ) {
-  if (isUnmatchedCreditCardSettlement(transaction)) {
+  if (isUnmatchedCreditCardSettlementTransaction(transaction)) {
     return {
       categoryCode: "__credit_card_payments",
       label: "Credit Card Payments",
@@ -179,9 +152,7 @@ function resolveSpendingCategoryBucket(
     return {
       categoryCode: transaction.categoryCode,
       label:
-        dataset.categories.find(
-          (category) => category.code === transaction.categoryCode,
-        )?.displayName ??
+        categoryByCode.get(transaction.categoryCode)?.displayName ??
         transaction.categoryCode,
       categorized: !transaction.categoryCode.startsWith("uncategorized"),
     };
@@ -227,7 +198,7 @@ function resolveSpendingCategoryBucket(
 }
 
 function resolveSpendingCounterpartyLabel(transaction: Transaction) {
-  if (isUnmatchedCreditCardSettlement(transaction)) {
+  if (isUnmatchedCreditCardSettlementTransaction(transaction)) {
     return "Credit Card Settlement";
   }
 
@@ -847,6 +818,9 @@ export function buildDashboardSummary(
   const referenceDate = input.referenceDate ?? todayIso();
   const period =
     input.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
+  const categoryByCode = new Map(
+    dataset.categories.map((category) => [category.code, category]),
+  );
   const metrics = [
     "net_worth_current",
     "cash_total_current",
@@ -885,7 +859,7 @@ export function buildDashboardSummary(
           return totals;
         }
 
-        const bucket = resolveSpendingCategoryBucket(dataset, transaction);
+        const bucket = resolveSpendingCategoryBucket(categoryByCode, transaction);
         const current = totals.get(bucket.categoryCode) ?? {
           categoryCode: bucket.categoryCode,
           label: bucket.label,
@@ -1145,20 +1119,19 @@ export function buildSpendingReadModel(
   },
 ) {
   const summary = buildDashboardSummary(dataset, input);
-  const scopedPeriodTransactions = filterTransactionsByPeriod(
-    filterTransactionsByScope(dataset, input.scope),
-    summary.period,
-  );
+  const context = buildAnalyticsReadModelContext(dataset, input, summary);
   const excludedCreditCardSettlementRows = sortTransactionsNewestFirst(
-    scopedPeriodTransactions.filter((transaction) =>
+    context.scopedPeriodTransactions.filter((transaction) =>
       needsCreditCardStatementUpload(transaction),
     ),
   );
   const transactions = sortTransactionsNewestFirst(
-    scopedPeriodTransactions.filter((transaction) => isSpendingLike(transaction)),
+    context.scopedPeriodTransactions.filter((transaction) =>
+      isSpendingLike(transaction),
+    ),
   );
-  const resolvedTransactions = transactions.filter((transaction) =>
-    isTransactionResolvedForAnalytics(transaction),
+  const resolvedTransactions = transactions.filter(
+    isTransactionResolvedForAnalytics,
   );
   const spendMetric = findMetric(summary, "spending_mtd_total");
   const merchantRows = aggregateAmountRows(
@@ -1173,7 +1146,10 @@ export function buildSpendingReadModel(
         return sum;
       }
 
-      const bucket = resolveSpendingCategoryBucket(dataset, transaction);
+      const bucket = resolveSpendingCategoryBucket(
+        context.categoryByCode,
+        transaction,
+      );
       return bucket.categorized ? sum : sum.plus(contribution);
     }, new Decimal(0))
     .toFixed(2);
@@ -1227,15 +1203,14 @@ export function buildIncomeReadModel(
   },
 ) {
   const summary = buildDashboardSummary(dataset, input);
-  const referenceDate = input.referenceDate ?? todayIso();
-  const transactions = scopedTransactions(
-    dataset,
-    input.scope,
-    summary.period,
-    ["income", "dividend", "interest"],
+  const context = buildAnalyticsReadModelContext(dataset, input, summary);
+  const transactions = sortTransactionsNewestFirst(
+    context.scopedPeriodTransactions.filter((transaction) =>
+      ["income", "dividend", "interest"].includes(transaction.transactionClass),
+    ),
   );
-  const resolvedTransactions = transactions.filter((transaction) =>
-    isTransactionResolvedForAnalytics(transaction),
+  const resolvedTransactions = transactions.filter(
+    isTransactionResolvedForAnalytics,
   );
   const incomeMetric = findMetric(summary, "income_mtd_total");
   const sourceRows = aggregateAmountRows(
@@ -1265,7 +1240,7 @@ export function buildIncomeReadModel(
   );
   const ytdPeriod = resolvePeriodSelection({
     preset: "ytd",
-    referenceDate,
+    referenceDate: context.referenceDate,
   });
   const incomeCompletenessPercent =
     transactions.length === 0
@@ -1285,7 +1260,7 @@ export function buildIncomeReadModel(
     monthlyIncomeComposition: buildTrailingMonthlyIncomeComposition(
       dataset,
       input.scope,
-      referenceDate,
+      context.referenceDate,
       6,
     ),
     topSourceShare,
@@ -1311,9 +1286,13 @@ export function buildInvestmentsReadModel(
     referenceDate?: string;
   },
 ) {
-  const referenceDate = input.referenceDate ?? todayIso();
   const summary = buildDashboardSummary(dataset, input);
-  const holdings = buildHoldingsSnapshot(dataset, input.scope, referenceDate);
+  const context = buildAnalyticsReadModelContext(dataset, input, summary);
+  const holdings = buildHoldingsSnapshot(
+    dataset,
+    input.scope,
+    context.referenceDate,
+  );
   const investmentRows = scopedTransactions(
     dataset,
     input.scope,
@@ -1325,37 +1304,29 @@ export function buildInvestmentsReadModel(
     input.scope,
     summary.period,
     ["dividend", "interest", "transfer_internal"],
-  ).filter((transaction) => isTransactionResolvedForAnalytics(transaction));
+  ).filter(isTransactionResolvedForAnalytics);
   const accountAllocation = aggregateAmountRows(
     [...holdings.holdings, ...holdings.cryptoBalances],
     (row) =>
-      dataset.accounts.find((account) => account.id === row.accountId)
-        ?.displayName ?? row.accountId,
+      context.accountById.get(row.accountId)?.displayName ?? row.accountId,
     (row) => new Decimal(row.currentValueEur ?? 0),
   );
   const unresolved = sortTransactionsNewestFirst(
-    filterTransactionsByScope(dataset, input.scope).filter((transaction) => {
-      const account = dataset.accounts.find(
-        (candidate) => candidate.id === transaction.accountId,
-      );
+    context.scopedTransactions.filter((transaction) => {
+      const account = context.accountById.get(transaction.accountId);
       return (
         account?.assetDomain === "investment" &&
-        transaction.transactionDate <= referenceDate &&
+        transaction.transactionDate <= context.referenceDate &&
         transaction.needsReview
       );
     }),
   );
   const processedRows = sortTransactionsNewestFirst(
-    filterTransactionsByPeriod(
-      filterTransactionsByScope(dataset, input.scope),
-      summary.period,
-    ).filter((transaction) => {
-      const account = dataset.accounts.find(
-        (candidate) => candidate.id === transaction.accountId,
-      );
+    context.scopedPeriodTransactions.filter((transaction) => {
+      const account = context.accountById.get(transaction.accountId);
       return (
         account?.assetDomain === "investment" &&
-        transaction.transactionDate <= referenceDate &&
+        transaction.transactionDate <= context.referenceDate &&
         !transaction.needsReview &&
         processedInvestmentLedgerClasses.includes(transaction.transactionClass)
       );
@@ -1372,14 +1343,14 @@ export function buildInvestmentsReadModel(
         input.scope,
         input.displayCurrency,
         "portfolio_market_value_current",
-        { referenceDate, period: summary.period },
+        { referenceDate: context.referenceDate, period: summary.period },
       ),
       unrealized: buildMetricResult(
         dataset,
         input.scope,
         input.displayCurrency,
         "portfolio_unrealized_pnl_current",
-        { referenceDate, period: summary.period },
+        { referenceDate: context.referenceDate, period: summary.period },
       ),
     },
     dividendsPeriod: sumTransactionAmounts(

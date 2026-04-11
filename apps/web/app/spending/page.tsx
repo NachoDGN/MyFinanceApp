@@ -1,12 +1,9 @@
 import { AppShell } from "../../components/app-shell";
 import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
-import {
-  formatCurrency,
-  formatDate,
-  getSpendingModel,
-} from "../../lib/queries";
 import { convertBaseEurToDisplayAmount } from "../../lib/currency";
+import { formatCurrency, formatDate } from "../../lib/formatters";
+import { getSpendingModel } from "../../lib/queries";
 
 function formatDisplayAmount(
   amountBaseEur: string | null | undefined,

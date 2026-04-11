@@ -1,17 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { Decimal } from "decimal.js";
-import postgres from "postgres";
 
 import {
   enrichImportedTransaction,
   getReviewPropagationEmbeddingModel,
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
-  normalizeInvestmentMatchingText,
   rankReviewPropagationTransactions,
   type TransactionEnrichmentDecision,
   type TransactionEnrichmentOptions,
@@ -29,7 +24,9 @@ import {
   getImportTemplateInferenceConfig,
   getRuleParserConfig,
   isCreditCardSettlementTransaction,
+  normalizeInvestmentMatchingText,
   normalizeImportExecutionInput,
+  normalizeDescription,
   rebuildInvestmentState,
   resolveFxRate,
   runDeterministicImport,
@@ -88,6 +85,26 @@ import {
   type InvestmentRebuildProgress,
 } from "./investment-rebuild";
 import {
+  createSqlClient,
+  getDbRuntimeConfig,
+  withSeededUserContext,
+  withSeededUserSession,
+  type DbRuntimeConfig,
+  type SqlClient,
+} from "./sql-runtime";
+import {
+  camelizeValue,
+  mapFromSql,
+  parseJsonColumn,
+  readOptionalNumberAsString,
+  readOptionalRecord,
+  readOptionalString,
+  readRawOutputField,
+  readRawOutputNumberAsString,
+  readRawOutputString,
+  serializeJson,
+} from "./sql-json";
+import {
   buildRevolutAuthorizationUrl,
   buildRevolutProviderContext,
   createSignedRevolutState,
@@ -107,83 +124,6 @@ import {
   type RevolutExpense,
   type RevolutTransaction,
 } from "./revolut";
-
-const DEFAULT_APP_USER_ID = "00000000-0000-0000-0000-000000000001";
-const DEFAULT_LOCAL_DATABASE_URL =
-  "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
-const dbPackageDirectory = dirname(fileURLToPath(import.meta.url));
-const workspaceRoot = resolve(dbPackageDirectory, "../../..");
-
-let envFilesLoaded = false;
-
-function loadRootEnvFile(filename: string) {
-  const filePath = resolve(workspaceRoot, filename);
-  if (!existsSync(filePath)) return;
-
-  const contents = readFileSync(filePath, "utf8");
-  for (const line of contents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-
-    const separatorIndex = trimmed.indexOf("=");
-    if (separatorIndex <= 0) continue;
-
-    const key = trimmed.slice(0, separatorIndex).trim();
-    if (!key || process.env[key]) continue;
-
-    let value = trimmed.slice(separatorIndex + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
-  }
-}
-
-function ensureRuntimeEnvLoaded() {
-  if (envFilesLoaded) return;
-  loadRootEnvFile(".env.local");
-  loadRootEnvFile(".env");
-  envFilesLoaded = true;
-}
-
-export interface DbRuntimeConfig {
-  databaseUrl?: string;
-  seededUserId: string;
-}
-
-export function getDbRuntimeConfig(): DbRuntimeConfig {
-  ensureRuntimeEnvLoaded();
-  const databaseUrl =
-    process.env.DATABASE_URL?.trim() ||
-    (process.env.NODE_ENV === "production"
-      ? undefined
-      : DEFAULT_LOCAL_DATABASE_URL);
-  return {
-    databaseUrl,
-    seededUserId: process.env.APP_SEEDED_USER_ID ?? DEFAULT_APP_USER_ID,
-  };
-}
-
-export function createSqlClient() {
-  const { databaseUrl } = getDbRuntimeConfig();
-  if (!databaseUrl) {
-    throw new Error(
-      "DATABASE_URL is required in production. In local development the app defaults to the local Supabase Postgres URL.",
-    );
-  }
-  return postgres(databaseUrl, {
-    max: 1,
-    prepare: false,
-    transform: {
-      undefined: null,
-    },
-  });
-}
-
-type SqlClient = ReturnType<typeof createSqlClient>;
 
 export const TRANSACTION_SELECT_COLUMN_NAMES = [
   "id",
@@ -926,140 +866,6 @@ export async function updatePromptProfile(input: {
       (profile) => profile.id === input.promptId,
     );
   });
-}
-
-async function withSeededUserContext<T>(
-  runner: (sql: SqlClient) => Promise<T>,
-): Promise<T> {
-  const sql = createSqlClient();
-  const { seededUserId } = getDbRuntimeConfig();
-  try {
-    const beginTransaction = sql.begin as unknown as (
-      callback: (transactionSql: SqlClient) => Promise<T>,
-    ) => Promise<T>;
-    return await beginTransaction(async (transactionSql) => {
-      await transactionSql`select set_config('app.current_user_id', ${seededUserId}, true)`;
-      return runner(transactionSql);
-    });
-  } finally {
-    await sql.end({ timeout: 1 });
-  }
-}
-
-async function withSeededUserSession<T>(
-  runner: (sql: SqlClient) => Promise<T>,
-): Promise<T> {
-  const sql = createSqlClient();
-  const { seededUserId } = getDbRuntimeConfig();
-  try {
-    await sql`select set_config('app.current_user_id', ${seededUserId}, false)`;
-    return await runner(sql);
-  } finally {
-    await sql.end({ timeout: 1 });
-  }
-}
-
-function camelizeKey(value: string) {
-  return value.replace(/_([a-z])/g, (_, character: string) =>
-    character.toUpperCase(),
-  );
-}
-
-const DATE_ONLY_KEYS = new Set([
-  "openingBalanceDate",
-  "transactionDate",
-  "postedDate",
-  "asOfDate",
-  "priceDate",
-  "effectiveDate",
-  "lastTradeDate",
-  "snapshotDate",
-  "month",
-]);
-
-function camelizeValue<T>(value: T, key?: string): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => camelizeValue(item, key)) as T;
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value instanceof Date) {
-    const iso = value.toISOString();
-    return (key && DATE_ONLY_KEYS.has(key) ? iso.slice(0, 10) : iso) as T;
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(
-        ([rawKey, nested]) => {
-          const nextKey = camelizeKey(rawKey);
-          return [nextKey, camelizeValue(nested, nextKey)];
-        },
-      ),
-    ) as T;
-  }
-  return value;
-}
-
-function mapFromSql<T>(value: unknown): T {
-  return camelizeValue(value as T);
-}
-
-function serializeJson(sql: SqlClient, value: unknown) {
-  return sql.json((value ?? {}) as Parameters<SqlClient["json"]>[0]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function readOptionalRecord(value: unknown) {
-  return isRecord(value) ? value : null;
-}
-
-function readOptionalString(value: unknown) {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
-}
-
-function readOptionalNumberAsString(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? String(value)
-    : null;
-}
-
-function readRawOutputField(
-  rawOutput: Record<string, unknown> | null,
-  key: string,
-) {
-  if (!rawOutput) {
-    return null;
-  }
-
-  if (key in rawOutput) {
-    return rawOutput[key];
-  }
-
-  const camelizedKey = camelizeKey(key);
-  if (camelizedKey in rawOutput) {
-    return rawOutput[camelizedKey];
-  }
-
-  return null;
-}
-
-function readRawOutputString(
-  rawOutput: Record<string, unknown> | null,
-  key: string,
-) {
-  return readOptionalString(readRawOutputField(rawOutput, key));
-}
-
-function readRawOutputNumberAsString(
-  rawOutput: Record<string, unknown> | null,
-  key: string,
-) {
-  const value = readRawOutputField(rawOutput, key);
-  return readOptionalNumberAsString(value) ?? readOptionalString(value);
 }
 
 function readUnknownArray(value: unknown) {
@@ -2441,17 +2247,6 @@ async function processReviewPropagationJob(
   });
 }
 
-function parseJsonColumn<T>(value: unknown): T {
-  if (typeof value === "string") {
-    try {
-      return JSON.parse(value) as T;
-    } catch {
-      return value as T;
-    }
-  }
-  return value as T;
-}
-
 function createAuditEvent(
   sourceChannel: AuditEvent["sourceChannel"],
   actorName: string,
@@ -3215,11 +3010,7 @@ async function commitSyntheticImportBatch(
 }
 
 function normalizeDescriptionForSourceImport(value: string) {
-  return value
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(/\bSEPA\b/gi, "")
-    .trim();
+  return normalizeDescription(value).clean;
 }
 
 function humanizeRevolutType(value: string) {
@@ -7926,3 +7717,4 @@ export function createFinanceRepository(): FinanceRepository {
 }
 
 export { getRevolutRuntimeStatus };
+export { createSqlClient, getDbRuntimeConfig } from "./sql-runtime";

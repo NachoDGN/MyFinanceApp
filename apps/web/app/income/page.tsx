@@ -2,7 +2,8 @@ import { AppShell } from "../../components/app-shell";
 import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { convertBaseEurToDisplayAmount } from "../../lib/currency";
-import { formatCurrency, getIncomeModel } from "../../lib/queries";
+import { formatCurrency } from "../../lib/formatters";
+import { getIncomeModel } from "../../lib/queries";
 
 function formatMonthLabel(value: string) {
   return new Intl.DateTimeFormat("en-US", {

@@ -8,4 +8,4 @@ export {
   needsCreditCardStatementUpload,
   needsTransactionManualReview,
   type TransactionReviewState,
-} from "./finance";
+} from "./transaction-review";

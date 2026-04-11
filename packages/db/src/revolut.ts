@@ -8,56 +8,14 @@ import {
   randomBytes,
 } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 import { z } from "zod";
 
-const dbPackageDirectory = dirname(fileURLToPath(import.meta.url));
-const workspaceRoot = resolve(dbPackageDirectory, "../../..");
-
-let envFilesLoaded = false;
-
-function loadRootEnvFile(filename: string) {
-  const filePath = resolve(workspaceRoot, filename);
-  if (!existsSync(filePath)) return;
-
-  const contents = readFileSync(filePath, "utf8");
-  for (const line of contents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-
-    const separatorIndex = trimmed.indexOf("=");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-
-    const key = trimmed.slice(0, separatorIndex).trim();
-    if (!key || process.env[key]) {
-      continue;
-    }
-
-    let value = trimmed.slice(separatorIndex + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
-  }
-}
-
-function ensureRuntimeEnvLoaded() {
-  if (envFilesLoaded) {
-    return;
-  }
-  loadRootEnvFile(".env.local");
-  loadRootEnvFile(".env");
-  envFilesLoaded = true;
-}
+import {
+  ensureWorkspaceRuntimeEnvLoaded,
+  workspaceRoot,
+} from "./runtime-env";
 
 const revolutAccountSchema = z.object({
   id: z.string().min(1),
@@ -187,7 +145,7 @@ export interface RevolutRuntimeConfig {
 }
 
 function getConfiguredRevolutPrivateKeyPem() {
-  ensureRuntimeEnvLoaded();
+  ensureWorkspaceRuntimeEnvLoaded();
 
   const inlineValue = process.env.REVOLUT_PRIVATE_KEY_PEM?.trim() ?? "";
   if (inlineValue) {
@@ -210,7 +168,7 @@ function getConfiguredRevolutPrivateKeyPem() {
 }
 
 export function getRevolutRuntimeStatus() {
-  ensureRuntimeEnvLoaded();
+  ensureWorkspaceRuntimeEnvLoaded();
   const missingEnvKeys: string[] = [];
   if (!(process.env.REVOLUT_CLIENT_ID?.trim() ?? "")) {
     missingEnvKeys.push("REVOLUT_CLIENT_ID");

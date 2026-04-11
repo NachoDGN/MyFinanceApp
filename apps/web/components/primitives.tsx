@@ -3,32 +3,11 @@ import {
   getTransactionReviewState,
 } from "@myfinance/domain/client";
 import type { ReactNode } from "react";
-
-function formatCurrency(amount: string | null | undefined, currency: string) {
-  if (amount === null || amount === undefined) return "N/A";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2,
-  }).format(Number(amount));
-}
-
-function formatPercent(value: string | null | undefined) {
-  if (value === null || value === undefined) return "N/A";
-  return `${Number(value).toFixed(2)}%`;
-}
-
-function formatDate(value: string) {
-  const normalized =
-    value.length <= 10 ? `${value.slice(0, 10)}T00:00:00Z` : value;
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(date);
-}
+import {
+  formatCurrency,
+  formatDate,
+  formatPercent,
+} from "../lib/formatters";
 
 function buildSparkBars(chartValues: number[], targetBars = 5) {
   const absoluteValues = chartValues
@@ -411,7 +390,7 @@ export function TimelinePanel({
         {transactions.map((transaction, index) => (
           <div className="timeline-item" key={transaction.id}>
             <span className="timeline-date">
-              {formatDate(transaction.transactionDate)}
+              {formatDate(transaction.transactionDate, { lenient: true })}
             </span>
             <div className="timeline-content">
               <div

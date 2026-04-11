@@ -4,10 +4,9 @@ import { AppShell } from "../../../../components/app-shell";
 import { ReviewEditorCell } from "../../../../components/review-editor-cell";
 import {
   buildHref,
-  formatCurrency,
-  formatDate,
   getCreditCardStatementModel,
 } from "../../../../lib/queries";
+import { formatCurrency, formatDate } from "../../../../lib/formatters";
 import { convertBaseEurToDisplayAmount } from "../../../../lib/currency";
 
 function formatDisplayAmount(
