@@ -4,6 +4,7 @@ import { resolveFxRate } from "@myfinance/domain";
 
 import { AppShell } from "../../components/app-shell";
 import { InvestmentPriceRefreshButton } from "../../components/investment-price-refresh-button";
+import { ManualInvestmentWorkbench } from "../../components/manual-investment-workbench";
 import {
   DistributionList,
   InvestmentAllocationCard,
@@ -45,6 +46,21 @@ function readOptionalRecord(value: unknown): Record<string, unknown> | null {
 
 function readOptionalString(value: unknown) {
   return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function humanizeHoldingFreshness(
+  freshness: "fresh" | "delayed" | "stale" | "missing",
+) {
+  switch (freshness) {
+    case "fresh":
+      return "Fresh";
+    case "delayed":
+      return "Needs refresh soon";
+    case "stale":
+      return "Stale";
+    default:
+      return "Missing";
+  }
 }
 
 function holdingLooksLikeFund(
@@ -245,6 +261,33 @@ export default async function InvestmentsPage({
   const securityById = new Map(
     model.dataset.securities.map((security) => [security.id, security]),
   );
+  const accountById = new Map(
+    model.dataset.accounts.map((account) => [account.id, account]),
+  );
+  const entityById = new Map(
+    model.dataset.entities.map((entity) => [entity.id, entity]),
+  );
+  const latestManualValuationByInvestmentId = new Map<
+    string,
+    (typeof model.dataset.manualInvestmentValuations)[number]
+  >();
+  for (const valuation of [...model.dataset.manualInvestmentValuations].sort(
+    (left, right) =>
+      right.snapshotDate.localeCompare(left.snapshotDate) ||
+      right.updatedAt.localeCompare(left.updatedAt) ||
+      right.createdAt.localeCompare(left.createdAt),
+  )) {
+    if (
+      !latestManualValuationByInvestmentId.has(valuation.manualInvestmentId)
+    ) {
+      latestManualValuationByInvestmentId.set(
+        valuation.manualInvestmentId,
+        valuation,
+      );
+    }
+  }
+  const isManualHolding = (holding: (typeof model.holdings.holdings)[number]) =>
+    holding.holdingSource === "manual_valuation";
   const sortedHoldings = [...model.holdings.holdings].sort((left, right) => {
     const rightValue = Number(right.currentValueEur ?? -1);
     const leftValue = Number(left.currentValueEur ?? -1);
@@ -267,12 +310,64 @@ export default async function InvestmentsPage({
       unrealizedDisplay: null,
       unrealizedDisplayPercent: null,
     };
-  const fundHoldings = sortedHoldings.filter((holding) =>
-    holdingLooksLikeFund(securityById.get(holding.securityId)),
+  const fundHoldings = sortedHoldings.filter(
+    (holding) =>
+      isManualHolding(holding) ||
+      holdingLooksLikeFund(securityById.get(holding.securityId)),
   );
   const stockHoldings = sortedHoldings.filter(
-    (holding) => !holdingLooksLikeFund(securityById.get(holding.securityId)),
+    (holding) =>
+      !isManualHolding(holding) &&
+      !holdingLooksLikeFund(securityById.get(holding.securityId)),
   );
+  const manualInvestmentSummaries = fundHoldings
+    .filter(isManualHolding)
+    .map((holding) => {
+      const investment = model.dataset.manualInvestments.find(
+        (row) => row.id === holding.securityId,
+      );
+      if (!investment) {
+        return null;
+      }
+
+      const latestValuation = latestManualValuationByInvestmentId.get(
+        investment.id,
+      );
+      const displayMetric = getHoldingDisplayMetric(holding);
+
+      return {
+        id: investment.id,
+        entityId: investment.entityId,
+        entityName:
+          entityById.get(investment.entityId)?.displayName ??
+          investment.entityId,
+        fundingAccountId: investment.fundingAccountId,
+        fundingAccountName:
+          accountById.get(investment.fundingAccountId)?.displayName ??
+          investment.fundingAccountId,
+        label: investment.label,
+        matcherText: investment.matcherText,
+        note: investment.note ?? null,
+        latestSnapshotDate: latestValuation?.snapshotDate ?? null,
+        latestValueOriginal: latestValuation?.currentValueOriginal ?? null,
+        latestValueCurrency: latestValuation?.currentValueCurrency ?? null,
+        currentValueDisplay: formatCurrency(
+          displayMetric.currentValueDisplay,
+          model.currency,
+        ),
+        investedAmountDisplay: formatCurrency(
+          displayMetric.openCostBasisDisplay,
+          model.currency,
+        ),
+        unrealizedDisplay: formatCurrency(
+          displayMetric.unrealizedDisplay,
+          model.currency,
+        ),
+        unrealizedPercent: displayMetric.unrealizedDisplayPercent,
+        freshnessLabel: humanizeHoldingFreshness(holding.quoteFreshness),
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null);
   const pricedPortfolioValueEur = model.holdings.holdings.reduce(
     (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
     new Decimal(0),
@@ -368,9 +463,10 @@ export default async function InvestmentsPage({
           <div>
             <h1 className="page-title">Investments</h1>
             <p className="page-subtitle">
-              Holdings are rebuilt live from resolved investment rows plus
-              explicit opening adjustments. Cash remains cash; only priced
-              securities contribute to market value.
+              Holdings are rebuilt live from resolved investment rows, explicit
+              opening adjustments, and manual company fund valuations. Cash
+              remains cash; manual fund values feed the same KPI layer as broker
+              positions.
             </p>
           </div>
           <InvestmentPriceRefreshButton />
@@ -523,6 +619,26 @@ export default async function InvestmentsPage({
           </div>
         </SectionCard>
 
+        <ManualInvestmentWorkbench
+          entities={model.dataset.entities
+            .filter((entity) => entity.active)
+            .map((entity) => ({
+              id: entity.id,
+              label: entity.displayName,
+            }))}
+          cashAccounts={model.dataset.accounts
+            .filter(
+              (account) => account.isActive && account.assetDomain === "cash",
+            )
+            .map((account) => ({
+              id: account.id,
+              entityId: account.entityId,
+              label: `${account.displayName} (${account.defaultCurrency})`,
+            }))}
+          manualInvestments={manualInvestmentSummaries}
+          referenceDate={model.referenceDate}
+        />
+
         <SectionCard
           title="Funds"
           subtitle="Current value, unrealized EUR, and return %"
@@ -535,6 +651,15 @@ export default async function InvestmentsPage({
                 Number(displayMetric.unrealizedDisplay ?? "0") >= 0
                   ? "positive"
                   : "negative";
+              const manualInvestment = isManualHolding(holding)
+                ? model.dataset.manualInvestments.find(
+                    (row) => row.id === holding.securityId,
+                  )
+                : null;
+              const manualSnapshotDate = manualInvestment
+                ? latestManualValuationByInvestmentId.get(manualInvestment.id)
+                    ?.snapshotDate
+                : null;
 
               return (
                 <article
@@ -547,8 +672,9 @@ export default async function InvestmentsPage({
                         {holding.securityName}
                       </h3>
                       <p className="investment-position-symbol">
-                        {holding.symbol} · {formatQuantity(holding.quantity)}{" "}
-                        units
+                        {manualInvestment
+                          ? `${accountById.get(holding.accountId)?.displayName ?? holding.accountId} · ${manualSnapshotDate ? `snapshot ${formatDate(manualSnapshotDate)}` : "manual valuation"}`
+                          : `${holding.symbol} · ${formatQuantity(holding.quantity)} units`}
                       </p>
                     </div>
                     <div className="investment-position-values">
@@ -673,31 +799,53 @@ export default async function InvestmentsPage({
               holding.currentPriceCurrency,
             );
             const displayMetric = getHoldingDisplayMetric(holding);
+            const manualHolding = isManualHolding(holding);
 
             return [
               holding.securityName,
-              holding.symbol,
-              model.dataset.accounts.find(
-                (account) => account.id === holding.accountId,
-              )?.displayName ?? holding.accountId,
-              formatQuantity(holding.quantity),
+              manualHolding ? "MANUAL" : holding.symbol,
+              accountById.get(holding.accountId)?.displayName ??
+                holding.accountId,
+              manualHolding ? "—" : formatQuantity(holding.quantity),
               formatCurrency(displayMetric.avgCostDisplay, model.currency),
-              <div style={{ display: "grid", gap: 4 }}>
-                <span>{currentPrice.primary}</span>
-                {currentPrice.secondary ? (
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {currentPrice.secondary} native
+              manualHolding ? (
+                <div style={{ display: "grid", gap: 4 }}>
+                  <span>
+                    {holding.currentPrice && holding.currentPriceCurrency
+                      ? formatCurrency(
+                          holding.currentPrice,
+                          holding.currentPriceCurrency,
+                        )
+                      : "N/A"}
                   </span>
-                ) : null}
-                {holding.quoteTimestamp ? (
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    Last quote {formatDate(holding.quoteTimestamp.slice(0, 10))}
-                  </span>
-                ) : null}
-              </div>,
+                  {holding.quoteTimestamp ? (
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      Manual snapshot{" "}
+                      {formatDate(holding.quoteTimestamp.slice(0, 10))}
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 4 }}>
+                  <span>{currentPrice.primary}</span>
+                  {currentPrice.secondary ? (
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {currentPrice.secondary} native
+                    </span>
+                  ) : null}
+                  {holding.quoteTimestamp ? (
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      Last quote{" "}
+                      {formatDate(holding.quoteTimestamp.slice(0, 10))}
+                    </span>
+                  ) : null}
+                </div>
+              ),
               formatCurrency(displayMetric.currentValueDisplay, model.currency),
               `${formatCurrency(displayMetric.unrealizedDisplay, model.currency)} (${formatPercent(displayMetric.unrealizedDisplayPercent)})`,
-              holding.quoteFreshness.toUpperCase(),
+              manualHolding
+                ? `MANUAL · ${holding.quoteFreshness.toUpperCase()}`
+                : holding.quoteFreshness.toUpperCase(),
             ];
           })}
         />

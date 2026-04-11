@@ -615,9 +615,8 @@ test("revolut exchange rows deterministically resolve to fx conversions before L
     assert.equal(decision.transactionClass, "fx_conversion");
     assert.equal(decision.needsReview, false);
     assert.equal(
-      (
-        decision.llmPayload.providerContext as { provider?: string } | undefined
-      )?.provider,
+      (decision.llmPayload.providerContext as { provider?: string } | undefined)
+        ?.provider,
       "revolut_business",
     );
   } finally {
@@ -1434,7 +1433,8 @@ test("review propagation candidate selection drops embedding matches that fail t
     llmPayload: {
       llm: {
         rawOutput: {
-          resolved_instrument_name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+          resolved_instrument_name:
+            "Vanguard U.S. 500 Stock Index Fund EUR Acc",
           resolved_instrument_isin: "IE0032126645",
           current_price_type: "NAV",
         },
@@ -5975,7 +5975,8 @@ test("spending read model excludes unmatched card settlements from period spend 
         categoryCode: null,
         merchantNormalized: null,
         counterpartyName: null,
-        descriptionRaw: "Liquidacion de las tarjetas de credito del contrato 123",
+        descriptionRaw:
+          "Liquidacion de las tarjetas de credito del contrato 123",
         descriptionClean:
           "LIQUIDACION DE LAS TARJETAS DE CREDITO DEL CONTRATO 123",
       }),
@@ -6176,6 +6177,163 @@ test("holding valuation is computed from positions, quotes, and FX instead of ha
   assert.equal(holding?.currentValueEur, "20.00");
   assert.equal(holding?.unrealizedPnlEur, "5.00");
   assert.equal(holding?.unrealizedPnlPercent, "33.33");
+});
+
+test("manual investment valuations contribute to portfolio KPIs using matched cash transfers", () => {
+  const cashAccount = createAccount({
+    id: "revolut-company-eur",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    institutionName: "Revolut Business",
+    displayName: "Revolut Business EUR",
+    defaultCurrency: "EUR",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount],
+    transactions: [
+      createTransaction({
+        id: "revolut-fund-buy",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-04-01",
+        postedDate: "2026-04-01",
+        amountOriginal: "-1000.00",
+        currencyOriginal: "EUR",
+        amountBaseEur: "-1000.00",
+        descriptionRaw: "Transfer to low-risk fund",
+        descriptionClean: "TRANSFER TO LOW-RISK FUND",
+        transactionClass: "transfer_internal",
+      }),
+    ],
+    manualInvestments: [
+      {
+        id: "manual-revolut-fund",
+        userId: cashAccount.userId,
+        entityId: cashAccount.entityId,
+        fundingAccountId: cashAccount.id,
+        label: "Revolut Treasury Fund",
+        matcherText: "low-risk fund",
+        note: null,
+        createdAt: "2026-04-02T09:00:00Z",
+        updatedAt: "2026-04-02T09:00:00Z",
+      },
+    ],
+    manualInvestmentValuations: [
+      {
+        id: "manual-revolut-fund-valuation",
+        userId: cashAccount.userId,
+        manualInvestmentId: "manual-revolut-fund",
+        snapshotDate: "2026-04-03",
+        currentValueOriginal: "1012.50",
+        currentValueCurrency: "EUR",
+        note: "Manual mark-to-market",
+        createdAt: "2026-04-03T10:00:00Z",
+        updatedAt: "2026-04-03T10:00:00Z",
+      },
+    ],
+  });
+
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    referenceDate: "2026-04-03",
+  });
+  const [holding] = model.holdings.holdings;
+
+  assert.equal(holding?.holdingSource, "manual_valuation");
+  assert.equal(holding?.currentValueEur, "1012.50");
+  assert.equal(holding?.unrealizedPnlEur, "12.50");
+  assert.equal(model.metrics.portfolioValue.valueBaseEur, "1012.50");
+  assert.equal(model.metrics.unrealized.valueBaseEur, "12.50");
+});
+
+test("manual investment comparisons use the latest valuation snapshot available before the comparison date", () => {
+  const cashAccount = createAccount({
+    id: "revolut-company-usd",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    institutionName: "Revolut Business",
+    displayName: "Revolut Business USD",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount],
+    transactions: [
+      createTransaction({
+        id: "revolut-fund-provider-context-buy",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-01-15",
+        postedDate: "2026-01-15",
+        amountOriginal: "-500.00",
+        currencyOriginal: "EUR",
+        amountBaseEur: "-500.00",
+        descriptionRaw: "Internal transfer",
+        descriptionClean: "INTERNAL TRANSFER",
+        transactionClass: "transfer_internal",
+        rawPayload: {
+          providerContext: {
+            transaction: {
+              reference: "Low-risk funds cash transfer",
+            },
+          },
+        },
+      }),
+    ],
+    manualInvestments: [
+      {
+        id: "manual-revolut-fund-historical",
+        userId: cashAccount.userId,
+        entityId: cashAccount.entityId,
+        fundingAccountId: cashAccount.id,
+        label: "Revolut Low-Risk Funds",
+        matcherText: "low-risk funds",
+        note: null,
+        createdAt: "2026-01-20T09:00:00Z",
+        updatedAt: "2026-01-20T09:00:00Z",
+      },
+    ],
+    manualInvestmentValuations: [
+      {
+        id: "manual-fund-valuation-feb",
+        userId: cashAccount.userId,
+        manualInvestmentId: "manual-revolut-fund-historical",
+        snapshotDate: "2026-02-01",
+        currentValueOriginal: "510.00",
+        currentValueCurrency: "EUR",
+        note: null,
+        createdAt: "2026-02-01T10:00:00Z",
+        updatedAt: "2026-02-01T10:00:00Z",
+      },
+      {
+        id: "manual-fund-valuation-mar",
+        userId: cashAccount.userId,
+        manualInvestmentId: "manual-revolut-fund-historical",
+        snapshotDate: "2026-03-05",
+        currentValueOriginal: "520.00",
+        currentValueCurrency: "EUR",
+        note: null,
+        createdAt: "2026-03-05T10:00:00Z",
+        updatedAt: "2026-03-05T10:00:00Z",
+      },
+    ],
+  });
+
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-03-05",
+    }),
+    referenceDate: "2026-03-05",
+  });
+
+  assert.equal(model.metrics.portfolioValue.valueBaseEur, "520.00");
+  assert.equal(model.metrics.portfolioValue.comparisonValueBaseEur, "510.00");
+  assert.equal(model.metrics.portfolioValue.deltaDisplay, "10.00");
 });
 
 test("holding valuation uses as-of FX even when the latest quote is older than the FX series", () => {

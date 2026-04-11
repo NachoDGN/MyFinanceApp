@@ -53,7 +53,9 @@ export function createAccount(overrides: Partial<Account> = {}): Account {
   };
 }
 
-export function createTransaction(overrides: Partial<Transaction> = {}): Transaction {
+export function createTransaction(
+  overrides: Partial<Transaction> = {},
+): Transaction {
   const id = overrides.id ?? "tx-1";
   return {
     id,
@@ -107,7 +109,9 @@ export function createTransaction(overrides: Partial<Transaction> = {}): Transac
   };
 }
 
-export function createRule(overrides: Partial<ClassificationRule> = {}): ClassificationRule {
+export function createRule(
+  overrides: Partial<ClassificationRule> = {},
+): ClassificationRule {
   return {
     id: "rule-1",
     userId: profile.id,
@@ -130,7 +134,9 @@ export function createRule(overrides: Partial<ClassificationRule> = {}): Classif
   };
 }
 
-export function createDataset(overrides: Partial<DomainDataset> = {}): DomainDataset {
+export function createDataset(
+  overrides: Partial<DomainDataset> = {},
+): DomainDataset {
   return {
     schemaVersion: "v1",
     profile,
@@ -192,6 +198,8 @@ export function createDataset(overrides: Partial<DomainDataset> = {}): DomainDat
     securityPrices: [],
     fxRates: [],
     holdingAdjustments: [],
+    manualInvestments: [],
+    manualInvestmentValuations: [],
     investmentPositions: [],
     dailyPortfolioSnapshots: [],
     monthlyCashFlowRollups: [],

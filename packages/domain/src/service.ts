@@ -1,17 +1,21 @@
 import type {
   AccountListResponse,
+  AddOpeningPositionInput,
   ApplyRuleDraftInput,
-  CreateEntityInput,
   CreateAccountInput,
+  CreateEntityInput,
+  CreateManualInvestmentInput,
   CreateRuleInput,
   CreateTemplateInput,
   DeleteAccountInput,
   DeleteEntityInput,
   DeleteHoldingAdjustmentInput,
+  DeleteManualInvestmentInput,
   DeleteTemplateInput,
   HoldingsResponse,
   Job,
   QueueRuleDraftInput,
+  RecordManualInvestmentValuationInput,
   ResetWorkspaceInput,
   RuleDraft,
   RuleDraftListResponse,
@@ -23,7 +27,6 @@ import type {
   UpdateEntityInput,
   UpdateWorkspaceProfileInput,
   UpdateTransactionInput,
-  AddOpeningPositionInput,
 } from "./types";
 import type { FinanceRepository } from "./repository";
 import {
@@ -323,6 +326,18 @@ export class FinanceDomainService {
 
   deleteHoldingAdjustment(input: DeleteHoldingAdjustmentInput) {
     return this.repository.deleteHoldingAdjustment(input);
+  }
+
+  createManualInvestment(input: CreateManualInvestmentInput) {
+    return this.repository.createManualInvestment(input);
+  }
+
+  recordManualInvestmentValuation(input: RecordManualInvestmentValuationInput) {
+    return this.repository.recordManualInvestmentValuation(input);
+  }
+
+  deleteManualInvestment(input: DeleteManualInvestmentInput) {
+    return this.repository.deleteManualInvestment(input);
   }
 
   runPendingJobs(apply: boolean) {

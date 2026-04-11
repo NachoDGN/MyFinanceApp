@@ -22,13 +22,25 @@ export default async function SettingsPage({
     const holdingCount = model.dataset.holdingAdjustments.filter(
       (adjustment) => adjustment.entityId === entity.id,
     ).length;
+    const manualInvestmentIds = new Set(
+      model.dataset.manualInvestments
+        .filter((investment) => investment.entityId === entity.id)
+        .map((investment) => investment.id),
+    );
+    const manualInvestmentCount = manualInvestmentIds.size;
+    const manualValuationCount =
+      model.dataset.manualInvestmentValuations.filter((valuation) =>
+        manualInvestmentIds.has(valuation.manualInvestmentId),
+      ).length;
     const snapshotCount =
       model.dataset.investmentPositions.filter(
         (position) => position.entityId === entity.id,
       ).length +
       model.dataset.dailyPortfolioSnapshots.filter(
         (snapshot) => snapshot.entityId === entity.id,
-      ).length;
+      ).length +
+      manualInvestmentCount +
+      manualValuationCount;
     const canDelete =
       entity.entityKind === "company" &&
       accountCount === 0 &&

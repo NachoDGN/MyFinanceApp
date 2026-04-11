@@ -43,11 +43,13 @@ import {
   type CreditCardStatementImportResult,
   type CreateEntityInput,
   type CreateAccountInput,
+  type CreateManualInvestmentInput,
   type CreateRuleInput,
   type CreateTemplateInput,
   type DeleteAccountInput,
   type DeleteEntityInput,
   type DeleteHoldingAdjustmentInput,
+  type DeleteManualInvestmentInput,
   type DeleteTemplateInput,
   type DomainDataset,
   type FinanceRepository,
@@ -56,6 +58,7 @@ import {
   type ImportPreviewResult,
   type JobRunResult,
   type QueueRuleDraftInput,
+  type RecordManualInvestmentValuationInput,
   type ResetWorkspaceInput,
   type ResetWorkspaceResult,
   type Security,
@@ -2523,6 +2526,22 @@ async function selectHoldingAdjustmentRowById(
   return rows[0] ?? null;
 }
 
+async function selectManualInvestmentRowById(
+  sql: SqlClient,
+  userId: string,
+  manualInvestmentId: string,
+) {
+  const rows = await sql`
+    select *
+    from public.manual_investments
+    where id = ${manualInvestmentId}
+      and user_id = ${userId}
+    limit 1
+  `;
+
+  return rows[0] ?? null;
+}
+
 async function resolveOrCreateLinkedCreditCardAccount(
   sql: SqlClient,
   input: {
@@ -2574,8 +2593,7 @@ async function resolveOrCreateLinkedCreditCardAccount(
             candidate.accountSuffix === contractSuffix ||
             candidate.matchingAliases.includes(contractSuffix),
         )
-      : null) ??
-    (candidateAccounts.length === 1 ? candidateAccounts[0] : null);
+      : null) ?? (candidateAccounts.length === 1 ? candidateAccounts[0] : null);
 
   if (linkedAccount) {
     return linkedAccount;
@@ -2822,12 +2840,10 @@ async function commitPreparedImportBatch(
           transactionIds: [],
           jobsQueued: [...DEFAULT_IMPORT_JOBS_QUEUED],
         } satisfies ImportCommitResult);
-  const jobsQueued =
-    input.options?.jobsQueued ??
+  const jobsQueued = input.options?.jobsQueued ??
     ((commitResult as ImportCommitResult | null)?.jobsQueued as
       | ImportCommitResult["jobsQueued"]
-      | undefined) ??
-    [...DEFAULT_IMPORT_JOBS_QUEUED];
+      | undefined) ?? [...DEFAULT_IMPORT_JOBS_QUEUED];
 
   await sql`
     insert into public.import_batches ${sql({
@@ -2890,14 +2906,17 @@ async function commitPreparedImportBatch(
 
   const commitDuplicates =
     (preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates) +
-    ((preparedTransactions?.inserted.length ?? 0) - insertedTransactions.length);
+    ((preparedTransactions?.inserted.length ?? 0) -
+      insertedTransactions.length);
   await sql`
     update public.import_batches
     set row_count_inserted = ${insertedTransactions.length || (preparedTransactions ? 0 : preview.rowCountParsed)},
         row_count_duplicates = ${preparedTransactions ? commitDuplicates : preview.rowCountDuplicates},
         commit_summary_json = ${serializeJson(sql, {
           jobsQueued,
-          transactionIds: insertedTransactions.map((transaction) => transaction.id),
+          transactionIds: insertedTransactions.map(
+            (transaction) => transaction.id,
+          ),
         })}::jsonb
     where id = ${importBatchId}
       and user_id = ${input.userId}
@@ -2984,11 +3003,16 @@ async function commitSyntheticImportBatch(
     } as Record<string, unknown>)}
   `;
 
-  const preparedTransactions = input.preparedTransactions.map((transaction) => ({
-    ...transaction,
-    importBatchId,
-  }));
-  const insertedTransactions = await insertTransactions(sql, preparedTransactions);
+  const preparedTransactions = input.preparedTransactions.map(
+    (transaction) => ({
+      ...transaction,
+      importBatchId,
+    }),
+  );
+  const insertedTransactions = await insertTransactions(
+    sql,
+    preparedTransactions,
+  );
 
   for (const jobType of jobsQueued) {
     await queueJob(
@@ -3022,7 +3046,9 @@ async function commitSyntheticImportBatch(
           jobsQueued,
           sourceKind: input.sourceKind,
           providerName: input.providerName,
-          transactionIds: insertedTransactions.map((transaction) => transaction.id),
+          transactionIds: insertedTransactions.map(
+            (transaction) => transaction.id,
+          ),
         })}::jsonb
     where id = ${importBatchId}
       and user_id = ${input.userId}
@@ -3035,15 +3061,15 @@ async function commitSyntheticImportBatch(
 }
 
 function normalizeDescriptionForSourceImport(value: string) {
-  return value.trim().replace(/\s+/g, " ").replace(/\bSEPA\b/gi, "").trim();
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\bSEPA\b/gi, "")
+    .trim();
 }
 
 function humanizeRevolutType(value: string) {
-  return value
-    .replace(/_/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
+  return value.replace(/_/g, " ").replace(/\s+/g, " ").trim().toUpperCase();
 }
 
 function getRevolutAccountDisplayName(account: RevolutAccount) {
@@ -3065,7 +3091,10 @@ function buildRevolutProviderRecordId(
   return `${transaction.id}:${legId}`;
 }
 
-function buildRevolutSourceFingerprint(accountId: string, providerRecordId: string) {
+function buildRevolutSourceFingerprint(
+  accountId: string,
+  providerRecordId: string,
+) {
   return `${REVOLUT_PROVIDER_NAME}:${accountId}:${providerRecordId}`;
 }
 
@@ -3133,10 +3162,9 @@ async function createRevolutManagedAccount(
   const accountId = randomUUID();
   const now = new Date().toISOString();
   const displayName = getRevolutAccountDisplayName(input.revolutAccount);
-  const matchingAliases = [
-    input.revolutAccount.currency,
-    displayName,
-  ].filter((value, index, values) => values.indexOf(value) === index);
+  const matchingAliases = [input.revolutAccount.currency, displayName].filter(
+    (value, index, values) => values.indexOf(value) === index,
+  );
   const account = {
     id: accountId,
     userId: input.userId,
@@ -3221,7 +3249,8 @@ async function resolveOrCreateRevolutAccountLinks(
   for (const revolutAccount of input.revolutAccounts.filter(
     (account) => account.state === "active",
   )) {
-    const revolutAccountDisplayName = getRevolutAccountDisplayName(revolutAccount);
+    const revolutAccountDisplayName =
+      getRevolutAccountDisplayName(revolutAccount);
     const isAccountReservedForDifferentExternalAccount = (accountId: string) =>
       nextLinks.some(
         (link) =>
@@ -3236,8 +3265,10 @@ async function resolveOrCreateRevolutAccountLinks(
             link.connectionId === input.connectionId &&
             link.externalAccountId === revolutAccount.id,
         )
-        .map((link) =>
-          nextAccounts.find((account) => account.id === link.accountId) ?? null,
+        .map(
+          (link) =>
+            nextAccounts.find((account) => account.id === link.accountId) ??
+            null,
         )
         .find((account): account is Account => Boolean(account)) ?? null;
 
@@ -3255,8 +3286,7 @@ async function resolveOrCreateRevolutAccountLinks(
       linkedAccount =
         candidates.find(
           (account) => account.displayName === revolutAccountDisplayName,
-        ) ??
-        (candidates.length === 1 ? candidates[0] : null);
+        ) ?? (candidates.length === 1 ? candidates[0] : null);
     }
 
     if (!linkedAccount) {
@@ -3578,7 +3608,10 @@ async function processRevolutSyncJob(
         config.masterKey,
         encryptedRefreshToken,
       );
-      const tokenResponse = await refreshRevolutAccessToken(config, refreshToken);
+      const tokenResponse = await refreshRevolutAccessToken(
+        config,
+        refreshToken,
+      );
       const nextEncryptedRefreshToken = tokenResponse.refresh_token
         ? encryptBankSecret(config.masterKey, tokenResponse.refresh_token)
         : encryptedRefreshToken;
@@ -3616,7 +3649,12 @@ async function processRevolutSyncJob(
         const balanceOriginal = new Decimal(revolutAccount.balance).toFixed(8);
         const balanceBaseEur = new Decimal(balanceOriginal)
           .times(
-            resolveFxRate(dataset, revolutAccount.currency, "EUR", snapshotAsOfDate),
+            resolveFxRate(
+              dataset,
+              revolutAccount.currency,
+              "EUR",
+              snapshotAsOfDate,
+            ),
           )
           .toFixed(8);
         await upsertAccountBalanceSnapshot(sql, {
@@ -3703,7 +3741,9 @@ async function processRevolutSyncJob(
         );
       }
 
-      const linkedAccountIds = linked.bankAccountLinks.map((link) => link.accountId);
+      const linkedAccountIds = linked.bankAccountLinks.map(
+        (link) => link.accountId,
+      );
       const existingRows =
         linkedAccountIds.length > 0
           ? await sql`
@@ -3718,7 +3758,10 @@ async function processRevolutSyncJob(
         existingRows
           .map((row) => mapFromSql<Transaction>(row))
           .filter((transaction) => transaction.providerRecordId)
-          .map((transaction) => [transaction.providerRecordId as string, transaction]),
+          .map((transaction) => [
+            transaction.providerRecordId as string,
+            transaction,
+          ]),
       );
 
       const newTransactionsByAccount = new Map<string, Transaction[]>();
@@ -3726,14 +3769,18 @@ async function processRevolutSyncJob(
       let latestSeenCursor = lastCursorCreatedAt;
       let mutatedExistingRows = 0;
 
-      const chronologicalTransactions = [...fetchedTransactions].sort((left, right) =>
-        left.created_at.localeCompare(right.created_at),
+      const chronologicalTransactions = [...fetchedTransactions].sort(
+        (left, right) => left.created_at.localeCompare(right.created_at),
       );
       for (const revolutTransaction of chronologicalTransactions) {
-        if (!latestSeenCursor || revolutTransaction.created_at > latestSeenCursor) {
+        if (
+          !latestSeenCursor ||
+          revolutTransaction.created_at > latestSeenCursor
+        ) {
           latestSeenCursor = revolutTransaction.created_at;
         }
-        const expense = expenseByTransactionId.get(revolutTransaction.id) ?? null;
+        const expense =
+          expenseByTransactionId.get(revolutTransaction.id) ?? null;
         for (const leg of revolutTransaction.legs) {
           const link = linksByExternalAccountId.get(leg.account_id);
           if (!link) {
@@ -3757,7 +3804,8 @@ async function processRevolutSyncJob(
             importBatchId: null,
           });
           const existingTransaction =
-            existingTransactionsByProviderRecordId.get(providerRecordId) ?? null;
+            existingTransactionsByProviderRecordId.get(providerRecordId) ??
+            null;
 
           if (revolutTransaction.state === "completed") {
             if (existingTransaction) {
@@ -3811,7 +3859,10 @@ async function processRevolutSyncJob(
       }
 
       let insertedTransactions = 0;
-      for (const [accountId, preparedTransactions] of newTransactionsByAccount) {
+      for (const [
+        accountId,
+        preparedTransactions,
+      ] of newTransactionsByAccount) {
         if (preparedTransactions.length === 0) {
           continue;
         }
@@ -3819,7 +3870,9 @@ async function processRevolutSyncJob(
         if (!account) {
           continue;
         }
-        const dates = preparedTransactions.map((transaction) => transaction.transactionDate);
+        const dates = preparedTransactions.map(
+          (transaction) => transaction.transactionDate,
+        );
         const committed = await commitSyntheticImportBatch(sql, {
           userId,
           accountId,
@@ -3879,11 +3932,12 @@ async function processRevolutSyncJob(
       };
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : "Unknown Revolut sync failure.";
-      const nextStatus =
-        /invalid_grant|unauthorized|401/i.test(errorMessage)
-          ? "reauthorization_required"
-          : "error";
+        error instanceof Error
+          ? error.message
+          : "Unknown Revolut sync failure.";
+      const nextStatus = /invalid_grant|unauthorized|401/i.test(errorMessage)
+        ? "reauthorization_required"
+        : "error";
       await sql`
         update public.bank_connections
         set status = ${nextStatus},
@@ -3920,6 +3974,8 @@ async function loadDatasetForUser(
     securityPrices,
     fxRates,
     holdingAdjustments,
+    manualInvestments,
+    manualInvestmentValuations,
     investmentPositions,
     dailyPortfolioSnapshots,
     monthlyCashFlowRollups,
@@ -3973,6 +4029,13 @@ async function loadDatasetForUser(
     sql`select * from public.security_prices order by price_date desc, quote_timestamp desc`,
     sql`select * from public.fx_rates order by as_of_date desc`,
     sql`select * from public.holding_adjustments where user_id = ${userId} order by effective_date desc`,
+    sql`select * from public.manual_investments where user_id = ${userId} order by created_at desc`,
+    sql`
+      select *
+      from public.manual_investment_valuations
+      where user_id = ${userId}
+      order by snapshot_date desc, updated_at desc
+    `,
     sql`select * from public.investment_positions where user_id = ${userId}`,
     sql`select * from public.daily_portfolio_snapshots where user_id = ${userId} order by snapshot_date desc`,
     sql`
@@ -4033,6 +4096,11 @@ async function loadDatasetForUser(
     fxRates: mapFromSql<DomainDataset["fxRates"]>(fxRates),
     holdingAdjustments:
       mapFromSql<DomainDataset["holdingAdjustments"]>(holdingAdjustments),
+    manualInvestments:
+      mapFromSql<DomainDataset["manualInvestments"]>(manualInvestments),
+    manualInvestmentValuations: mapFromSql<
+      DomainDataset["manualInvestmentValuations"]
+    >(manualInvestmentValuations),
     investmentPositions:
       mapFromSql<DomainDataset["investmentPositions"]>(investmentPositions),
     dailyPortfolioSnapshots: mapFromSql<
@@ -5462,6 +5530,18 @@ class SqlFinanceRepository implements FinanceRepository {
           ) as holding_adjustments,
           (
             select count(*)::int
+            from public.manual_investments
+            where entity_id = target.entity_id
+          ) as manual_investments,
+          (
+            select count(*)::int
+            from public.manual_investment_valuations
+            where manual_investment_id in (
+              select id from public.manual_investments where entity_id = target.entity_id
+            )
+          ) as manual_investment_valuations,
+          (
+            select count(*)::int
             from public.investment_positions
             where entity_id = target.entity_id
           ) as investment_positions,
@@ -5688,10 +5768,11 @@ class SqlFinanceRepository implements FinanceRepository {
         }
       }
 
-      const hasOpeningBalanceOriginalPatch = Object.prototype.hasOwnProperty.call(
-        input.patch,
-        "openingBalanceOriginal",
-      );
+      const hasOpeningBalanceOriginalPatch =
+        Object.prototype.hasOwnProperty.call(
+          input.patch,
+          "openingBalanceOriginal",
+        );
       const hasOpeningBalanceDatePatch = Object.prototype.hasOwnProperty.call(
         input.patch,
         "openingBalanceDate",
@@ -5700,10 +5781,11 @@ class SqlFinanceRepository implements FinanceRepository {
         input.patch,
         "matchingAliases",
       );
-      const hasIncludeInConsolidationPatch = Object.prototype.hasOwnProperty.call(
-        input.patch,
-        "includeInConsolidation",
-      );
+      const hasIncludeInConsolidationPatch =
+        Object.prototype.hasOwnProperty.call(
+          input.patch,
+          "includeInConsolidation",
+        );
       const hasAccountSuffixPatch = Object.prototype.hasOwnProperty.call(
         input.patch,
         "accountSuffix",
@@ -5740,9 +5822,8 @@ class SqlFinanceRepository implements FinanceRepository {
         ? (input.patch.staleAfterDays ?? null)
         : beforeRow.stale_after_days;
 
-      const beforeAccount = mapFromSql<DomainDataset["accounts"][number]>(
-        beforeRow,
-      );
+      const beforeAccount =
+        mapFromSql<DomainDataset["accounts"][number]>(beforeRow);
       const afterJson = {
         ...beforeAccount,
         institutionName: nextInstitutionName,
@@ -5842,6 +5923,7 @@ class SqlFinanceRepository implements FinanceRepository {
           ) as transactions,
           (select count(*)::int from public.account_balance_snapshots where account_id = target.account_id) as balance_snapshots,
           (select count(*)::int from public.holding_adjustments where account_id = target.account_id) as holding_adjustments,
+          (select count(*)::int from public.manual_investments where funding_account_id = target.account_id) as manual_investments,
           (select count(*)::int from public.investment_positions where account_id = target.account_id) as investment_positions,
           (select count(*)::int from public.daily_portfolio_snapshots where account_id = target.account_id) as portfolio_snapshots
         from target
@@ -5905,6 +5987,8 @@ class SqlFinanceRepository implements FinanceRepository {
         portfolioSnapshots,
         investmentPositions,
         holdingAdjustments,
+        manualInvestmentValuations,
+        manualInvestments,
         balanceSnapshots,
       ] = await Promise.all([
         sql`
@@ -5919,6 +6003,16 @@ class SqlFinanceRepository implements FinanceRepository {
           `,
         sql`
             delete from public.holding_adjustments
+            where user_id = ${this.userId}
+            returning id
+          `,
+        sql`
+            delete from public.manual_investment_valuations
+            where user_id = ${this.userId}
+            returning id
+          `,
+        sql`
+            delete from public.manual_investments
             where user_id = ${this.userId}
             returning id
           `,
@@ -5978,6 +6072,8 @@ class SqlFinanceRepository implements FinanceRepository {
         transactions: transactions.length,
         balanceSnapshots: balanceSnapshots.length,
         holdingAdjustments: holdingAdjustments.length,
+        manualInvestments: manualInvestments.length,
+        manualInvestmentValuations: manualInvestmentValuations.length,
         investmentPositions: investmentPositions.length,
         portfolioSnapshots: portfolioSnapshots.length,
         rules: rules.length,
@@ -6047,8 +6143,9 @@ class SqlFinanceRepository implements FinanceRepository {
         ? await loadDatasetForUser(sql, this.userId)
         : null;
       const account =
-        dataset?.accounts.find((candidate) => candidate.id === beforeRow.account_id) ??
-        null;
+        dataset?.accounts.find(
+          (candidate) => candidate.id === beforeRow.account_id,
+        ) ?? null;
       if (requiresClassificationValidation && !account) {
         throw new Error(
           `Account ${beforeRow.account_id} was not found for transaction ${input.transactionId}.`,
@@ -6062,7 +6159,12 @@ class SqlFinanceRepository implements FinanceRepository {
           "Manual transaction class",
         );
       }
-      if (dataset && account && patch.categoryCode !== undefined && patch.categoryCode) {
+      if (
+        dataset &&
+        account &&
+        patch.categoryCode !== undefined &&
+        patch.categoryCode
+      ) {
         assertCategoryCodeAllowedForAccount(
           dataset,
           account,
@@ -6526,6 +6628,215 @@ class SqlFinanceRepository implements FinanceRepository {
     return result;
   }
 
+  async createManualInvestment(input: CreateManualInvestmentInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const accountRows = await sql`
+        select *
+        from public.accounts
+        where id = ${input.fundingAccountId}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const fundingAccount = accountRows[0];
+      if (!fundingAccount) {
+        throw new Error(
+          `Funding account ${input.fundingAccountId} was not found.`,
+        );
+      }
+      if (fundingAccount.entity_id !== input.entityId) {
+        throw new Error(
+          "The funding account must belong to the same entity as the tracked investment.",
+        );
+      }
+      if (fundingAccount.asset_domain !== "cash") {
+        throw new Error(
+          "Manual company investments must be linked to a cash account so cost basis can be derived from cash transfers.",
+        );
+      }
+
+      const manualInvestmentId = randomUUID();
+      const valuationId = randomUUID();
+      const nowIso = new Date().toISOString();
+      const definitionRow = {
+        id: manualInvestmentId,
+        user_id: this.userId,
+        entity_id: input.entityId,
+        funding_account_id: input.fundingAccountId,
+        label: input.label,
+        matcher_text: input.matcherText,
+        note: input.note ?? null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+      const valuationRow = {
+        id: valuationId,
+        user_id: this.userId,
+        manual_investment_id: manualInvestmentId,
+        snapshot_date: input.snapshotDate,
+        current_value_original: input.currentValueOriginal,
+        current_value_currency: input.currentValueCurrency,
+        note: input.valuationNote ?? null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      if (input.apply) {
+        await sql`
+          insert into public.manual_investments ${sql(definitionRow as Record<string, unknown>)}
+        `;
+        await sql`
+          insert into public.manual_investment_valuations ${sql(valuationRow as Record<string, unknown>)}
+        `;
+        await insertAuditEventRecord(
+          sql,
+          createAuditEvent(
+            input.sourceChannel,
+            input.actorName,
+            "manual_investments.create",
+            "manual_investment",
+            manualInvestmentId,
+            null,
+            {
+              definition: definitionRow,
+              valuation: valuationRow,
+            },
+          ),
+        );
+      }
+
+      return { applied: input.apply, manualInvestmentId, valuationId };
+    });
+
+    return result;
+  }
+
+  async recordManualInvestmentValuation(
+    input: RecordManualInvestmentValuationInput,
+  ) {
+    const result = await withSeededUserContext(async (sql) => {
+      const manualInvestment = await selectManualInvestmentRowById(
+        sql,
+        this.userId,
+        input.manualInvestmentId,
+      );
+      if (!manualInvestment) {
+        throw new Error(
+          `Tracked investment ${input.manualInvestmentId} was not found.`,
+        );
+      }
+
+      const beforeRows = await sql`
+        select *
+        from public.manual_investment_valuations
+        where manual_investment_id = ${input.manualInvestmentId}
+          and snapshot_date = ${input.snapshotDate}
+          and user_id = ${this.userId}
+        limit 1
+      `;
+      const beforeRow = beforeRows[0] ?? null;
+      const valuationId = beforeRow?.id ?? randomUUID();
+      const nowIso = new Date().toISOString();
+      const nextRow = {
+        id: valuationId,
+        user_id: this.userId,
+        manual_investment_id: input.manualInvestmentId,
+        snapshot_date: input.snapshotDate,
+        current_value_original: input.currentValueOriginal,
+        current_value_currency: input.currentValueCurrency,
+        note: input.note ?? null,
+        created_at: beforeRow?.created_at ?? nowIso,
+        updated_at: nowIso,
+      };
+
+      if (input.apply) {
+        await sql`
+          insert into public.manual_investment_valuations ${sql(nextRow as Record<string, unknown>)}
+          on conflict (manual_investment_id, snapshot_date)
+          do update set
+            current_value_original = excluded.current_value_original,
+            current_value_currency = excluded.current_value_currency,
+            note = excluded.note,
+            updated_at = excluded.updated_at
+        `;
+        await insertAuditEventRecord(
+          sql,
+          createAuditEvent(
+            input.sourceChannel,
+            input.actorName,
+            beforeRow
+              ? "manual_investments.valuation.update"
+              : "manual_investments.valuation.create",
+            "manual_investment_valuation",
+            valuationId,
+            beforeRow,
+            nextRow,
+          ),
+        );
+      }
+
+      return {
+        applied: input.apply,
+        manualInvestmentId: input.manualInvestmentId,
+        valuationId,
+      };
+    });
+
+    return result;
+  }
+
+  async deleteManualInvestment(input: DeleteManualInvestmentInput) {
+    const result = await withSeededUserContext(async (sql) => {
+      const beforeRow = await selectManualInvestmentRowById(
+        sql,
+        this.userId,
+        input.manualInvestmentId,
+      );
+      if (!beforeRow) {
+        throw new Error(
+          `Tracked investment ${input.manualInvestmentId} was not found.`,
+        );
+      }
+
+      const valuationRows = await sql`
+        select count(*)::int as valuation_count
+        from public.manual_investment_valuations
+        where manual_investment_id = ${input.manualInvestmentId}
+          and user_id = ${this.userId}
+      `;
+      const beforeJson = {
+        ...beforeRow,
+        valuation_count: valuationRows[0]?.valuation_count ?? 0,
+      };
+
+      if (input.apply) {
+        await sql`
+          delete from public.manual_investments
+          where id = ${input.manualInvestmentId}
+            and user_id = ${this.userId}
+        `;
+        await insertAuditEventRecord(
+          sql,
+          createAuditEvent(
+            input.sourceChannel,
+            input.actorName,
+            "manual_investments.delete",
+            "manual_investment",
+            input.manualInvestmentId,
+            beforeJson,
+            null,
+          ),
+        );
+      }
+
+      return {
+        applied: input.apply,
+        manualInvestmentId: input.manualInvestmentId,
+      };
+    });
+
+    return result;
+  }
+
   async queueRuleDraft(input: QueueRuleDraftInput) {
     const result = await withSeededUserContext(async (sql) => {
       const jobId = randomUUID();
@@ -6680,7 +6991,9 @@ class SqlFinanceRepository implements FinanceRepository {
     input: CreditCardStatementImportInput,
   ): Promise<CreditCardStatementImportResult> {
     if (!input.filePath) {
-      throw new Error("A file path is required to upload a credit-card statement.");
+      throw new Error(
+        "A file path is required to upload a credit-card statement.",
+      );
     }
 
     const result = await withSeededUserContext(async (sql) => {
@@ -6713,9 +7026,8 @@ class SqlFinanceRepository implements FinanceRepository {
         );
       }
 
-      const linkedCreditCardAccount = await resolveOrCreateLinkedCreditCardAccount(
-        sql,
-        {
+      const linkedCreditCardAccount =
+        await resolveOrCreateLinkedCreditCardAccount(sql, {
           userId: this.userId,
           dataset,
           settlementTransaction,
@@ -6723,8 +7035,7 @@ class SqlFinanceRepository implements FinanceRepository {
           templateId: input.templateId,
           actorName: "web-credit-card-statement",
           sourceChannel: "web",
-        },
-      );
+        });
       const datasetWithLinkedAccount = dataset.accounts.some(
         (candidate) => candidate.id === linkedCreditCardAccount.id,
       )
@@ -6814,7 +7125,8 @@ class SqlFinanceRepository implements FinanceRepository {
         duplicateKey: `credit-card-settlement-mirror:${settlementTransaction.id}`,
         transactionDate: settlementTransaction.transactionDate,
         postedDate:
-          settlementTransaction.postedDate ?? settlementTransaction.transactionDate,
+          settlementTransaction.postedDate ??
+          settlementTransaction.transactionDate,
         amountOriginal: new Decimal(settlementTransaction.amountOriginal)
           .abs()
           .toFixed(8),
@@ -6849,7 +7161,8 @@ class SqlFinanceRepository implements FinanceRepository {
         manualNotes: null,
         llmPayload: {
           analysisStatus: "skipped",
-          explanation: "Synthetic settlement mirror for a linked credit-card statement import.",
+          explanation:
+            "Synthetic settlement mirror for a linked credit-card statement import.",
           model: null,
           error: null,
         },
@@ -6902,7 +7215,8 @@ class SqlFinanceRepository implements FinanceRepository {
           needs_review: mirrorTransaction.needsReview,
           review_reason: mirrorTransaction.reviewReason,
           exclude_from_analytics: mirrorTransaction.excludeFromAnalytics,
-          correction_of_transaction_id: mirrorTransaction.correctionOfTransactionId,
+          correction_of_transaction_id:
+            mirrorTransaction.correctionOfTransactionId,
           voided_at: mirrorTransaction.voidedAt,
           manual_notes: mirrorTransaction.manualNotes,
           llm_payload: mirrorTransaction.llmPayload,
@@ -6910,8 +7224,10 @@ class SqlFinanceRepository implements FinanceRepository {
           security_id: mirrorTransaction.securityId,
           quantity: mirrorTransaction.quantity,
           unit_price_original: mirrorTransaction.unitPriceOriginal,
-          credit_card_statement_status: mirrorTransaction.creditCardStatementStatus,
-          linked_credit_card_account_id: mirrorTransaction.linkedCreditCardAccountId,
+          credit_card_statement_status:
+            mirrorTransaction.creditCardStatementStatus,
+          linked_credit_card_account_id:
+            mirrorTransaction.linkedCreditCardAccountId,
           created_at: mirrorTransaction.createdAt,
           updated_at: mirrorTransaction.updatedAt,
         } as Record<string, unknown>)}

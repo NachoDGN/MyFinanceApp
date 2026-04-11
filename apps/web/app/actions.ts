@@ -89,6 +89,35 @@ const nullableDayCountSchema = z.preprocess((value) => {
   return value;
 }, z.coerce.number().int().min(1).max(365).nullable());
 
+const isoDateSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
+
+const currencyCodeSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(3)
+  .transform((value) => value.toUpperCase());
+
+const nonNegativeAmountStringSchema = z.preprocess(
+  (value) => {
+    if (typeof value === "number") {
+      return value.toString();
+    }
+    return value;
+  },
+  z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (value) => Number.isFinite(Number(value)) && Number(value) >= 0,
+      "Enter a valid non-negative amount.",
+    ),
+);
+
 const accountFieldsSchema = z.object({
   institutionName: z.string().trim().min(1),
   displayName: z.string().trim().min(1),
@@ -198,6 +227,47 @@ const entityUpdateSchema = entitySchema
   .extend({
     entityId: z.string().uuid(),
   });
+
+const manualInvestmentMatcherSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .refine(
+    (value) => value.split(/[\n,]+/).some((term) => term.trim().length > 0),
+    "Provide at least one matcher term.",
+  );
+
+const createManualInvestmentSchema = z.object({
+  entityId: z.string().uuid(),
+  fundingAccountId: z.string().uuid(),
+  label: z.string().trim().min(1),
+  matcherText: manualInvestmentMatcherSchema,
+  note: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+  snapshotDate: isoDateSchema,
+  currentValueOriginal: nonNegativeAmountStringSchema,
+  currentValueCurrency: currencyCodeSchema,
+  valuationNote: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+});
+
+const manualInvestmentValuationSchema = z.object({
+  manualInvestmentId: z.string().uuid(),
+  snapshotDate: isoDateSchema,
+  currentValueOriginal: nonNegativeAmountStringSchema,
+  currentValueCurrency: currencyCodeSchema,
+  note: z
+    .string()
+    .trim()
+    .optional()
+    .transform((value) => value || null),
+});
 
 function toAssetDomain(
   accountType: z.infer<typeof accountSchema>["accountType"],
@@ -858,6 +928,46 @@ export async function deleteEntityAction(entityId: string) {
   const parsed = z.string().uuid().parse(entityId);
   const result = await domain.deleteEntity({
     entityId: parsed,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function createManualInvestmentAction(
+  input: z.input<typeof createManualInvestmentSchema>,
+) {
+  const trackedInvestment = createManualInvestmentSchema.parse(input);
+  const result = await domain.createManualInvestment({
+    ...trackedInvestment,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function recordManualInvestmentValuationAction(
+  input: z.input<typeof manualInvestmentValuationSchema>,
+) {
+  const valuation = manualInvestmentValuationSchema.parse(input);
+  const result = await domain.recordManualInvestmentValuation({
+    ...valuation,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function deleteManualInvestmentAction(manualInvestmentId: string) {
+  const parsed = z.string().uuid().parse(manualInvestmentId);
+  const result = await domain.deleteManualInvestment({
+    manualInvestmentId: parsed,
     actorName: "web-action",
     sourceChannel: "web",
     apply: true,

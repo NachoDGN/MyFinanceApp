@@ -60,10 +60,7 @@ function isPlaceholderSecurityPrice(price: SecurityPrice) {
   );
 }
 
-function readPriceRawString(
-  rawJson: unknown,
-  key: string,
-): string | null {
+function readPriceRawString(rawJson: unknown, key: string): string | null {
   if (
     !rawJson ||
     typeof rawJson !== "object" ||
@@ -85,7 +82,11 @@ function scoreSecurityPriceCandidate(price: SecurityPrice) {
   if (price.sourceName === "manual_nav_import") {
     score += 50;
   }
-  if (String(price.marketState ?? "").toUpperCase().includes("NAV")) {
+  if (
+    String(price.marketState ?? "")
+      .toUpperCase()
+      .includes("NAV")
+  ) {
     score += 20;
   }
   if (
@@ -495,7 +496,10 @@ export function filterTransactionsByScope(
 export function isTransactionResolvedForAnalytics(
   transaction: Pick<
     Transaction,
-    "needsReview" | "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+    | "needsReview"
+    | "creditCardStatementStatus"
+    | "descriptionRaw"
+    | "descriptionClean"
   > & {
     excludeFromAnalytics?: boolean;
     voidedAt?: string | null;
@@ -510,9 +514,9 @@ export function isTransactionResolvedForAnalytics(
   );
 }
 
-export function getTransactionAnalysisStatus(
-  transaction: { llmPayload?: unknown },
-): "pending" | "done" | "failed" | "skipped" | null {
+export function getTransactionAnalysisStatus(transaction: {
+  llmPayload?: unknown;
+}): "pending" | "done" | "failed" | "skipped" | null {
   if (
     !transaction.llmPayload ||
     typeof transaction.llmPayload !== "object" ||
@@ -521,8 +525,9 @@ export function getTransactionAnalysisStatus(
     return null;
   }
 
-  const analysisStatus = (transaction.llmPayload as { analysisStatus?: unknown })
-    .analysisStatus;
+  const analysisStatus = (
+    transaction.llmPayload as { analysisStatus?: unknown }
+  ).analysisStatus;
   return typeof analysisStatus === "string" &&
     TRANSACTION_ANALYSIS_STATUSES.includes(
       analysisStatus as (typeof TRANSACTION_ANALYSIS_STATUSES)[number],
@@ -531,9 +536,9 @@ export function getTransactionAnalysisStatus(
     : null;
 }
 
-export function isTransactionPendingEnrichment(
-  transaction: { llmPayload?: unknown },
-) {
+export function isTransactionPendingEnrichment(transaction: {
+  llmPayload?: unknown;
+}) {
   return getTransactionAnalysisStatus(transaction) === "pending";
 }
 
@@ -590,7 +595,10 @@ export function getTransactionReviewReason(
 export function needsTransactionManualReview(
   transaction: Pick<
     Transaction,
-    "needsReview" | "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+    | "needsReview"
+    | "creditCardStatementStatus"
+    | "descriptionRaw"
+    | "descriptionClean"
   > & { llmPayload?: unknown },
 ) {
   return (
@@ -603,7 +611,10 @@ export function needsTransactionManualReview(
 export function getTransactionReviewState(
   transaction: Pick<
     Transaction,
-    "needsReview" | "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
+    | "needsReview"
+    | "creditCardStatementStatus"
+    | "descriptionRaw"
+    | "descriptionClean"
   > & { llmPayload?: unknown },
 ): TransactionReviewState {
   if (isTransactionPendingEnrichment(transaction)) {
@@ -826,7 +837,8 @@ function findLatestImportedBalanceTransaction(
         return postedDateOrder;
       }
 
-      const sourceRowOrder = readImportedSourceRow(right) - readImportedSourceRow(left);
+      const sourceRowOrder =
+        readImportedSourceRow(right) - readImportedSourceRow(left);
       if (sourceRowOrder !== 0) {
         return sourceRowOrder;
       }
@@ -872,7 +884,12 @@ export function getLatestAccountBalances(
 
       const balanceBaseEur = new Decimal(parsedBalance.balanceOriginal)
         .mul(
-          resolveFxRate(dataset, parsedBalance.balanceCurrency, "EUR", asOfDate),
+          resolveFxRate(
+            dataset,
+            parsedBalance.balanceCurrency,
+            "EUR",
+            asOfDate,
+          ),
         )
         .toFixed(8);
 
@@ -909,7 +926,8 @@ export function getLatestInvestmentCashBalances(
     dataset.accounts.map((account) => [account.id, account]),
   );
   return getLatestAccountBalances(dataset, asOfDate).filter(
-    (snapshot) => accountsById.get(snapshot.accountId)?.assetDomain === "investment",
+    (snapshot) =>
+      accountsById.get(snapshot.accountId)?.assetDomain === "investment",
   );
 }
 
@@ -943,6 +961,183 @@ function latestSecurityPrice(
   );
 }
 
+function normalizeMatcherText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+}
+
+function parseManualInvestmentMatcherTerms(matcherText: string) {
+  return [
+    ...new Set(
+      matcherText
+        .split(/[\n,]+/)
+        .map((term) => normalizeMatcherText(term.trim()))
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function serializeMatchPayload(value: unknown) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function buildManualInvestmentMatchHaystack(transaction: Transaction) {
+  const rawPayload =
+    transaction.rawPayload && typeof transaction.rawPayload === "object"
+      ? transaction.rawPayload
+      : {};
+
+  return normalizeMatcherText(
+    [
+      transaction.descriptionRaw,
+      transaction.descriptionClean,
+      transaction.merchantNormalized,
+      transaction.counterpartyName,
+      serializeMatchPayload(
+        (rawPayload as Record<string, unknown>).providerContext,
+      ),
+      serializeMatchPayload(
+        (rawPayload as Record<string, unknown>).providerRaw,
+      ),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+function resolveManualHoldingFreshness(snapshotDate: string, asOfDate: string) {
+  const ageDays = dayDistance(snapshotDate, asOfDate);
+  if (ageDays <= 1) {
+    return "fresh" as const;
+  }
+  if (ageDays <= 7) {
+    return "delayed" as const;
+  }
+  return "stale" as const;
+}
+
+function buildManualInvestmentHoldingRows(
+  dataset: DomainDataset,
+  scope: Scope,
+  asOfDate: string,
+  entityIds: Set<string>,
+): HoldingRow[] {
+  const latestValuationByInvestment = new Map<
+    string,
+    DomainDataset["manualInvestmentValuations"][number]
+  >();
+
+  for (const valuation of [...dataset.manualInvestmentValuations].sort(
+    (left, right) =>
+      right.snapshotDate.localeCompare(left.snapshotDate) ||
+      right.updatedAt.localeCompare(left.updatedAt) ||
+      right.createdAt.localeCompare(left.createdAt),
+  )) {
+    if (valuation.snapshotDate > asOfDate) {
+      continue;
+    }
+    if (!latestValuationByInvestment.has(valuation.manualInvestmentId)) {
+      latestValuationByInvestment.set(valuation.manualInvestmentId, valuation);
+    }
+  }
+
+  const rows: HoldingRow[] = [];
+
+  for (const investment of dataset.manualInvestments) {
+    if (!entityIds.has(investment.entityId)) {
+      continue;
+    }
+    if (
+      scope.kind === "account" &&
+      investment.fundingAccountId !== scope.accountId
+    ) {
+      continue;
+    }
+
+    const latestValuation = latestValuationByInvestment.get(investment.id);
+    if (!latestValuation) {
+      continue;
+    }
+
+    const matcherTerms = parseManualInvestmentMatcherTerms(
+      investment.matcherText,
+    );
+    const costBasisEur = dataset.transactions
+      .filter(
+        (transaction) =>
+          transaction.accountId === investment.fundingAccountId &&
+          transaction.economicEntityId === investment.entityId &&
+          transaction.transactionDate <= latestValuation.snapshotDate &&
+          transaction.voidedAt === null,
+      )
+      .filter((transaction) => {
+        if (matcherTerms.length === 0) {
+          return false;
+        }
+
+        const haystack = buildManualInvestmentMatchHaystack(transaction);
+        return matcherTerms.some((term) => haystack.includes(term));
+      })
+      .reduce(
+        (sum, transaction) => sum.minus(transaction.amountBaseEur),
+        new Decimal(0),
+      )
+      .toFixed(2);
+    const currentValueEur = new Decimal(latestValuation.currentValueOriginal)
+      .mul(
+        resolveFxRate(
+          dataset,
+          latestValuation.currentValueCurrency,
+          "EUR",
+          latestValuation.snapshotDate,
+        ),
+      )
+      .toFixed(2);
+
+    rows.push({
+      securityId: investment.id,
+      accountId: investment.fundingAccountId,
+      entityId: investment.entityId,
+      holdingSource: "manual_valuation",
+      symbol: investment.label,
+      securityName: investment.label,
+      quantity: "1.00000000",
+      avgCostEur: costBasisEur,
+      currentPrice: latestValuation.currentValueOriginal,
+      currentPriceCurrency: latestValuation.currentValueCurrency,
+      currentValueEur,
+      unrealizedPnlEur: new Decimal(currentValueEur)
+        .minus(costBasisEur)
+        .toFixed(2),
+      unrealizedPnlPercent: safeDividePercent(
+        new Decimal(currentValueEur).minus(costBasisEur),
+        new Decimal(costBasisEur),
+      ),
+      quoteFreshness: resolveManualHoldingFreshness(
+        latestValuation.snapshotDate,
+        asOfDate,
+      ),
+      quoteTimestamp: latestValuation.createdAt,
+      unrealizedComplete: true,
+    });
+  }
+
+  return rows;
+}
+
 export function buildHoldingRows(
   dataset: DomainDataset,
   scope: Scope,
@@ -950,7 +1145,7 @@ export function buildHoldingRows(
 ): HoldingRow[] {
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
 
-  return dataset.investmentPositions
+  const pricedSecurityHoldings: HoldingRow[] = dataset.investmentPositions
     .filter(
       (position) =>
         entityIds.has(position.entityId) &&
@@ -993,6 +1188,7 @@ export function buildHoldingRows(
         securityId: position.securityId,
         accountId: position.accountId,
         entityId: position.entityId,
+        holdingSource: "priced_security" as const,
         symbol: security?.displaySymbol ?? position.securityId,
         securityName: security?.name ?? position.securityId,
         quantity: position.openQuantity,
@@ -1018,6 +1214,11 @@ export function buildHoldingRows(
         unrealizedComplete: position.unrealizedComplete,
       };
     });
+
+  return [
+    ...pricedSecurityHoldings,
+    ...buildManualInvestmentHoldingRows(dataset, scope, asOfDate, entityIds),
+  ];
 }
 
 function buildLiveInvestmentPositions(

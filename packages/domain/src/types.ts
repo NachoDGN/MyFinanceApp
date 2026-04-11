@@ -448,6 +448,30 @@ export interface HoldingAdjustment {
   createdAt: string;
 }
 
+export interface ManualInvestment {
+  id: string;
+  userId: string;
+  entityId: string;
+  fundingAccountId: string;
+  label: string;
+  matcherText: string;
+  note?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManualInvestmentValuation {
+  id: string;
+  userId: string;
+  manualInvestmentId: string;
+  snapshotDate: string;
+  currentValueOriginal: string;
+  currentValueCurrency: CurrencyCode;
+  note?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface InvestmentPosition {
   userId: string;
   entityId: string;
@@ -562,6 +586,7 @@ export interface HoldingRow {
   securityId: string;
   accountId: string;
   entityId: string;
+  holdingSource: "priced_security" | "manual_valuation";
   symbol: string;
   securityName: string;
   quantity: string;
@@ -596,6 +621,8 @@ export interface DomainDataset {
   securityPrices: SecurityPrice[];
   fxRates: FxRate[];
   holdingAdjustments: HoldingAdjustment[];
+  manualInvestments: ManualInvestment[];
+  manualInvestmentValuations: ManualInvestmentValuation[];
   investmentPositions: InvestmentPosition[];
   dailyPortfolioSnapshots: DailyPortfolioSnapshot[];
   monthlyCashFlowRollups: MonthlyCashFlowRollup[];
@@ -811,6 +838,8 @@ export interface ResetWorkspaceResult {
     transactions: number;
     balanceSnapshots: number;
     holdingAdjustments: number;
+    manualInvestments: number;
+    manualInvestmentValuations: number;
     investmentPositions: number;
     portfolioSnapshots: number;
     rules: number;
@@ -914,6 +943,39 @@ export interface AddOpeningPositionInput {
 
 export interface DeleteHoldingAdjustmentInput {
   adjustmentId: string;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface CreateManualInvestmentInput {
+  entityId: string;
+  fundingAccountId: string;
+  label: string;
+  matcherText: string;
+  note?: string | null;
+  snapshotDate: string;
+  currentValueOriginal: string;
+  currentValueCurrency: CurrencyCode;
+  valuationNote?: string | null;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface RecordManualInvestmentValuationInput {
+  manualInvestmentId: string;
+  snapshotDate: string;
+  currentValueOriginal: string;
+  currentValueCurrency: CurrencyCode;
+  note?: string | null;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface DeleteManualInvestmentInput {
+  manualInvestmentId: string;
   actorName: string;
   sourceChannel: AuditSourceChannel;
   apply: boolean;

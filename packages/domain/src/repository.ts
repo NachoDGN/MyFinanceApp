@@ -11,15 +11,17 @@ import type {
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
   AuditEvent,
-  CreateEntityInput,
   CreateAccountInput,
+  CreateEntityInput,
+  CreateManualInvestmentInput,
   CreditCardStatementImportInput,
   CreditCardStatementImportResult,
   CreateRuleInput,
   CreateTemplateInput,
+  DeleteAccountInput,
   DeleteEntityInput,
   DeleteHoldingAdjustmentInput,
-  DeleteAccountInput,
+  DeleteManualInvestmentInput,
   DeleteTemplateInput,
   DomainDataset,
   ImportCommitResult,
@@ -27,6 +29,7 @@ import type {
   ImportPreviewResult,
   JobRunResult,
   QueueRuleDraftInput,
+  RecordManualInvestmentValuationInput,
   ResetWorkspaceInput,
   ResetWorkspaceResult,
   Transaction,
@@ -55,10 +58,7 @@ function normalizeRunnerError(error: unknown) {
       .map((line) => line.trim())
       .filter(Boolean)
       .at(-1);
-    const message = (lastLine ?? stderr).replace(
-      /^[A-Za-z_][\w.]*:\s*/,
-      "",
-    );
+    const message = (lastLine ?? stderr).replace(/^[A-Za-z_][\w.]*:\s*/, "");
     return new Error(message || "The spreadsheet import runner failed.");
   }
 
@@ -159,6 +159,21 @@ export interface FinanceRepository {
   deleteHoldingAdjustment(
     input: DeleteHoldingAdjustmentInput,
   ): Promise<{ applied: boolean; adjustmentId: string }>;
+  createManualInvestment(input: CreateManualInvestmentInput): Promise<{
+    applied: boolean;
+    manualInvestmentId: string;
+    valuationId: string;
+  }>;
+  recordManualInvestmentValuation(
+    input: RecordManualInvestmentValuationInput,
+  ): Promise<{
+    applied: boolean;
+    manualInvestmentId: string;
+    valuationId: string;
+  }>;
+  deleteManualInvestment(
+    input: DeleteManualInvestmentInput,
+  ): Promise<{ applied: boolean; manualInvestmentId: string }>;
   queueRuleDraft(
     input: QueueRuleDraftInput,
   ): Promise<{ applied: boolean; jobId: string }>;
@@ -527,7 +542,10 @@ function isRoundedInvestmentDuplicate(
   }
 
   return (
-    matchesRoundedWholeValue(candidate.amountOriginal, existing.amountOriginal) ||
+    matchesRoundedWholeValue(
+      candidate.amountOriginal,
+      existing.amountOriginal,
+    ) ||
     (candidate.unitPriceOriginal !== null &&
       existing.unitPriceOriginal !== null &&
       matchesRoundedWholeValue(
@@ -606,7 +624,10 @@ export function buildImportedTransactions(
   }
 
   const accountsById = new Map(
-    dataset.accounts.map((datasetAccount) => [datasetAccount.id, datasetAccount]),
+    dataset.accounts.map((datasetAccount) => [
+      datasetAccount.id,
+      datasetAccount,
+    ]),
   );
   const existingFingerprints = new Set(
     dataset.transactions.map((transaction) => transaction.sourceFingerprint),
