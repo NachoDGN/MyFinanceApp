@@ -3222,6 +3222,13 @@ async function resolveOrCreateRevolutAccountLinks(
     (account) => account.state === "active",
   )) {
     const revolutAccountDisplayName = getRevolutAccountDisplayName(revolutAccount);
+    const isAccountReservedForDifferentExternalAccount = (accountId: string) =>
+      nextLinks.some(
+        (link) =>
+          link.provider === REVOLUT_PROVIDER_NAME &&
+          link.accountId === accountId &&
+          link.externalAccountId !== revolutAccount.id,
+      );
     let linkedAccount =
       nextLinks
         .filter(
@@ -3242,7 +3249,8 @@ async function resolveOrCreateRevolutAccountLinks(
           account.assetDomain === "cash" &&
           account.isActive &&
           account.institutionName === REVOLUT_CONNECTION_LABEL &&
-          account.defaultCurrency === revolutAccount.currency,
+          account.defaultCurrency === revolutAccount.currency &&
+          !isAccountReservedForDifferentExternalAccount(account.id),
       );
       linkedAccount =
         candidates.find(
