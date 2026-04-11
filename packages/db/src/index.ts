@@ -18,8 +18,6 @@ import {
   parseRuleDraftRequest,
   buildImportedTransactions,
   getDatasetLatestDate,
-  getImportTemplateInferenceConfig,
-  getRuleParserConfig,
   isCreditCardSettlementTransaction,
   normalizeImportExecutionInput,
   resolveFxRate,
@@ -60,14 +58,7 @@ import {
   type UpdateWorkspaceProfileInput,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
-import {
-  buildPromptProfilePreview,
-  listPromptProfileDefinitions,
-  resolvePromptProfileSections,
-  sanitizePromptProfileSectionOverrides,
-  type PromptProfileId,
-  type PromptProfileOverrides,
-} from "@myfinance/llm";
+import { type PromptProfileOverrides } from "@myfinance/llm";
 import {
   prepareInvestmentRebuild,
   type InvestmentRebuildProgress,
@@ -90,6 +81,28 @@ import {
   supportsJobType,
   updateRunningJobPayload,
 } from "./job-state";
+import { loadPromptOverrides } from "./prompt-profiles";
+export {
+  getPromptOverrides,
+  listPromptProfiles,
+  updatePromptProfile,
+  type PromptProfileModel,
+} from "./prompt-profiles";
+import {
+  type ReviewReanalysisFollowUpJobRef,
+  type ReviewReanalysisMode,
+  type ReviewReanalysisProgress,
+} from "./review-reanalysis";
+export {
+  getReviewReanalysisJobStatus,
+  queueTransactionReviewReanalysis,
+  type QueueTransactionReviewReanalysisInput,
+  type ReviewReanalysisFollowUpJobRef,
+  type ReviewReanalysisFollowUpJobStatus,
+  type ReviewReanalysisJobStatus,
+  type ReviewReanalysisMode,
+  type ReviewReanalysisProgress,
+} from "./review-reanalysis";
 import {
   createSqlClient,
   getDbRuntimeConfig,
@@ -206,8 +219,6 @@ const DEFAULT_IMPORT_JOBS_QUEUED = [
   "metric_refresh",
 ] as const satisfies ImportCommitResult["jobsQueued"];
 
-type ReviewReanalysisMode = "manual_review_update" | "manual_resolved_review";
-
 type CommitPreparedImportBatchOptions = {
   importBatchId?: string;
   importedByActor?: string;
@@ -252,157 +263,6 @@ function buildLinkedCreditCardAccountDisplayName(
   return contractSuffix
     ? `${account.institutionName} Credit Card ${contractSuffix}`
     : `${account.institutionName} Credit Card`;
-}
-
-export interface PromptProfileModel {
-  id: PromptProfileId;
-  title: string;
-  description: string;
-  modelName: string;
-  editableSections: ReturnType<typeof resolvePromptProfileSections>;
-  preview: ReturnType<typeof buildPromptProfilePreview>;
-}
-
-function normalizePromptOverrides(value: unknown): PromptProfileOverrides {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).filter(
-      ([, promptOverrides]) =>
-        Boolean(promptOverrides) &&
-        typeof promptOverrides === "object" &&
-        !Array.isArray(promptOverrides),
-    ),
-  ) as PromptProfileOverrides;
-}
-
-async function loadPromptOverrides(sql: SqlClient, userId: string) {
-  const rows = await sql`
-    select prompt_overrides_json
-    from public.profiles
-    where id = ${userId}
-    limit 1
-  `;
-
-  return normalizePromptOverrides(rows[0]?.prompt_overrides_json);
-}
-
-function resolvePromptModelName(promptId: PromptProfileId) {
-  switch (promptId) {
-    case "cash_transaction_analyzer":
-      return getTransactionClassifierConfig().model;
-    case "investment_transaction_analyzer":
-      return getInvestmentTransactionClassifierConfig().model;
-    case "spreadsheet_table_start":
-    case "spreadsheet_layout":
-      return getImportTemplateInferenceConfig().model;
-    case "rule_draft_parser":
-      return getRuleParserConfig().model;
-  }
-}
-
-function buildPromptProfileModels(promptOverrides: PromptProfileOverrides) {
-  return listPromptProfileDefinitions().map((definition) => ({
-    id: definition.id,
-    title: definition.title,
-    description: definition.description,
-    modelName: resolvePromptModelName(definition.id),
-    editableSections: resolvePromptProfileSections(
-      definition.id,
-      promptOverrides[definition.id],
-    ),
-    preview: buildPromptProfilePreview(
-      definition.id,
-      promptOverrides[definition.id],
-    ),
-  })) satisfies PromptProfileModel[];
-}
-
-export async function getPromptOverrides() {
-  const userId = getDbRuntimeConfig().seededUserId;
-  return withSeededUserContext((sql) => loadPromptOverrides(sql, userId));
-}
-
-export async function listPromptProfiles() {
-  const userId = getDbRuntimeConfig().seededUserId;
-  return withSeededUserContext(async (sql) => {
-    const promptOverrides = await loadPromptOverrides(sql, userId);
-    return buildPromptProfileModels(promptOverrides);
-  });
-}
-
-export async function updatePromptProfile(input: {
-  promptId: PromptProfileId;
-  sections: Record<string, unknown>;
-  actorName: string;
-  sourceChannel: AuditEvent["sourceChannel"];
-}) {
-  const userId = getDbRuntimeConfig().seededUserId;
-
-  return withSeededUserContext(async (sql) => {
-    const profileRows = await sql`
-      select prompt_overrides_json
-      from public.profiles
-      where id = ${userId}
-      limit 1
-    `;
-    if (!profileRows[0]) {
-      throw new Error(`Profile ${userId} was not found.`);
-    }
-
-    const beforeOverrides = normalizePromptOverrides(
-      profileRows[0].prompt_overrides_json,
-    );
-    const nextSections = sanitizePromptProfileSectionOverrides(
-      input.promptId,
-      input.sections,
-    );
-    const afterOverrides: PromptProfileOverrides = {
-      ...beforeOverrides,
-      [input.promptId]: nextSections,
-    };
-
-    await sql`
-      update public.profiles
-      set prompt_overrides_json = ${serializeJson(sql, afterOverrides)}::jsonb
-      where id = ${userId}
-    `;
-
-    const auditEvent = createAuditEvent(
-      input.sourceChannel,
-      input.actorName,
-      "prompts.update",
-      "profile",
-      userId,
-      { promptOverridesJson: beforeOverrides, promptId: input.promptId },
-      { promptOverridesJson: afterOverrides, promptId: input.promptId },
-    );
-    await sql`
-      insert into public.audit_events ${sql({
-        actor_type: auditEvent.actorType,
-        actor_id: auditEvent.actorId,
-        actor_name: auditEvent.actorName,
-        source_channel: auditEvent.sourceChannel,
-        command_name: auditEvent.commandName,
-        object_type: auditEvent.objectType,
-        object_id: auditEvent.objectId,
-        before_json: auditEvent.beforeJson,
-        after_json: auditEvent.afterJson,
-        created_at: auditEvent.createdAt,
-        notes: `Updated prompt template overrides for ${input.promptId}.`,
-      } as Record<string, unknown>)}
-    `;
-
-    return buildPromptProfileModels(afterOverrides).find(
-      (profile) => profile.id === input.promptId,
-    );
-  });
-}
-
-function readUnknownArray(value: unknown) {
-  return Array.isArray(value) ? value : null;
 }
 
 type ReviewPropagationMode =
@@ -2105,19 +1965,6 @@ export interface ReanalyzeTransactionReviewInput {
   onProgress?: (progress: ReviewReanalysisProgress) => Promise<void> | void;
 }
 
-export interface ReviewReanalysisProgress {
-  stage:
-    | "load_context"
-    | "llm_reanalysis"
-    | "apply_transaction_update"
-    | "investment_rebuild"
-    | "historical_price_lookup"
-    | "metric_refresh"
-    | "review_propagation";
-  message: string;
-  updatedAt?: string;
-}
-
 const REVIEW_REANALYZE_COMPARISON_FIELDS = [
   "transactionClass",
   "categoryCode",
@@ -2454,271 +2301,6 @@ export async function reanalyzeTransactionReview(
       auditEvent,
       followUpJobs,
     };
-  });
-}
-
-export interface QueueTransactionReviewReanalysisInput {
-  transactionId: string;
-  reviewContext: string;
-  actorName: string;
-  sourceChannel: "web" | "cli" | "worker" | "system";
-}
-
-export interface ReviewReanalysisFollowUpJobRef {
-  id: string;
-  jobType: "metric_refresh" | "review_propagation";
-}
-
-export interface ReviewReanalysisFollowUpJobStatus extends ReviewReanalysisFollowUpJobRef {
-  status: "queued" | "running" | "completed" | "failed";
-  createdAt: string;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-  lastError?: string | null;
-}
-
-export interface ReviewReanalysisJobStatus {
-  id: string;
-  jobType: string;
-  status: "queued" | "running" | "completed" | "failed";
-  createdAt: string;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-  lastError?: string | null;
-  payloadJson: Record<string, unknown>;
-  followUpJobs: ReviewReanalysisFollowUpJobStatus[];
-}
-
-function normalizeJobProgress(value: unknown): ReviewReanalysisProgress | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  const stage = typeof record.stage === "string" ? record.stage : null;
-  const message = typeof record.message === "string" ? record.message : null;
-  if (!stage || !message) {
-    return null;
-  }
-
-  return {
-    stage: stage as ReviewReanalysisProgress["stage"],
-    message,
-    updatedAt:
-      typeof record.updatedAt === "string" ? record.updatedAt : undefined,
-  };
-}
-
-function normalizeReviewReanalysisFollowUpJobRef(
-  value: unknown,
-): ReviewReanalysisFollowUpJobRef | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  const id = typeof record.id === "string" ? record.id : null;
-  const jobType =
-    record.jobType === "metric_refresh" ||
-    record.jobType === "review_propagation"
-      ? record.jobType
-      : null;
-  if (!id || !jobType) {
-    return null;
-  }
-
-  return {
-    id,
-    jobType,
-  };
-}
-
-function normalizeReviewReanalysisFollowUpJobs(
-  value: unknown,
-): ReviewReanalysisFollowUpJobRef[] {
-  return (readUnknownArray(value) ?? [])
-    .map((entry) => normalizeReviewReanalysisFollowUpJobRef(entry))
-    .filter((entry): entry is ReviewReanalysisFollowUpJobRef => Boolean(entry));
-}
-
-async function readJobById(sql: SqlClient, jobId: string) {
-  const rows = await sql`
-    select *
-    from public.jobs
-    where id = ${jobId}
-    limit 1
-  `;
-  return rows[0] ? mapFromSql<DomainDataset["jobs"]>(rows)[0] : null;
-}
-
-async function readReviewReanalysisFollowUpJobStatuses(
-  sql: SqlClient,
-  refs: ReviewReanalysisFollowUpJobRef[],
-): Promise<ReviewReanalysisFollowUpJobStatus[]> {
-  const jobs: ReviewReanalysisFollowUpJobStatus[] = [];
-
-  for (const ref of refs) {
-    const job = await readJobById(sql, ref.id);
-    if (!job) {
-      continue;
-    }
-
-    jobs.push({
-      id: job.id,
-      jobType: ref.jobType,
-      status: job.status,
-      createdAt: job.createdAt,
-      startedAt: job.startedAt ?? null,
-      finishedAt: job.finishedAt ?? null,
-      lastError: job.lastError ?? null,
-    });
-  }
-
-  return jobs;
-}
-
-async function acquireReviewReanalysisQueueLock(
-  sql: SqlClient,
-  transactionId: string,
-) {
-  await sql`
-    select pg_advisory_xact_lock(
-      hashtext(${"review_reanalyze"}),
-      hashtext(${transactionId})
-    )
-  `;
-}
-
-export async function queueTransactionReviewReanalysis(
-  input: QueueTransactionReviewReanalysisInput,
-) {
-  const userId = getDbRuntimeConfig().seededUserId;
-
-  return withSeededUserContext(async (sql) => {
-    const transactionRows = await sql`
-      select id, account_id, needs_review
-      from public.transactions
-      where id = ${input.transactionId}
-        and user_id = ${userId}
-      limit 1
-    `;
-    const transactionRow = transactionRows[0];
-    if (!transactionRow) {
-      throw new Error(`Transaction ${input.transactionId} not found.`);
-    }
-    const reviewMode: ReviewReanalysisMode =
-      transactionRow.needs_review === true
-        ? "manual_review_update"
-        : "manual_resolved_review";
-
-    const normalizedReviewContext = input.reviewContext.trim();
-    if (!normalizedReviewContext) {
-      throw new Error("Review context cannot be empty.");
-    }
-
-    await acquireReviewReanalysisQueueLock(sql, input.transactionId);
-
-    const existingRows = await sql`
-      select *
-      from public.jobs
-      where job_type = ${"review_reanalyze"}
-        and status in (${"queued"}, ${"running"})
-        and payload_json->>'transactionId' = ${input.transactionId}
-      order by created_at desc
-      limit 1
-    `;
-    const existingJob = existingRows[0]
-      ? mapFromSql<DomainDataset["jobs"]>(existingRows)[0]
-      : null;
-    if (existingJob) {
-      return {
-        queued: false,
-        jobId: existingJob.id,
-        status: existingJob.status,
-      };
-    }
-
-    const jobId = randomUUID();
-    await sql`
-      insert into public.jobs (
-        id,
-        job_type,
-        payload_json,
-        status,
-        attempts,
-        available_at
-      ) values (
-        ${jobId},
-        ${"review_reanalyze"},
-        ${serializeJson(sql, {
-          transactionId: input.transactionId,
-          reviewContext: normalizedReviewContext,
-          reviewMode,
-          actorName: input.actorName,
-          sourceChannel: input.sourceChannel,
-        })}::jsonb,
-        ${"queued"},
-        0,
-        ${new Date().toISOString()}
-      )
-    `;
-
-    return {
-      queued: true,
-      jobId,
-      status: "queued" as const,
-    };
-  });
-}
-
-export async function getReviewReanalysisJobStatus(jobId: string) {
-  const userId = getDbRuntimeConfig().seededUserId;
-
-  return withSeededUserContext(async (sql) => {
-    const rows = await sql`
-      select *
-      from public.jobs
-      where id = ${jobId}
-        and job_type = ${"review_reanalyze"}
-      limit 1
-    `;
-    const job = rows[0] ? mapFromSql<DomainDataset["jobs"]>(rows)[0] : null;
-    if (!job) {
-      throw new Error(`Review job ${jobId} not found.`);
-    }
-
-    const transactionId =
-      typeof job.payloadJson.transactionId === "string"
-        ? job.payloadJson.transactionId
-        : null;
-    if (!transactionId) {
-      throw new Error(`Review job ${jobId} is missing transaction context.`);
-    }
-
-    const transactionRows = await sql`
-      select id
-      from public.transactions
-      where id = ${transactionId}
-        and user_id = ${userId}
-      limit 1
-    `;
-    if (!transactionRows[0]) {
-      throw new Error(`Review job ${jobId} is not available for this user.`);
-    }
-
-    const followUpJobs = await readReviewReanalysisFollowUpJobStatuses(
-      sql,
-      normalizeReviewReanalysisFollowUpJobs(job.payloadJson.followUpJobs),
-    );
-
-    return {
-      ...job,
-      payloadJson: {
-        ...job.payloadJson,
-        progress: normalizeJobProgress(job.payloadJson.progress),
-      },
-      followUpJobs,
-    } satisfies ReviewReanalysisJobStatus;
   });
 }
 
