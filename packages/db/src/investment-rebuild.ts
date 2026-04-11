@@ -4,6 +4,9 @@ import { Decimal } from "decimal.js";
 
 import { parseInvestmentEvent } from "@myfinance/classification";
 import {
+  extractIsinFromText,
+  normalizeSecurityIdentifier,
+  normalizeSecurityText,
   rebuildInvestmentState,
   resolveFxRate,
   type DomainDataset,
@@ -12,6 +15,14 @@ import {
   type SecurityPrice,
   type Transaction,
 } from "@myfinance/domain";
+
+import {
+  readOptionalNumberAsString,
+  readOptionalRecord,
+  readOptionalString,
+  readRawOutputNumberAsString,
+  readRawOutputString,
+} from "./sql-json";
 
 type SearchCandidate = {
   providerSymbol: string;
@@ -56,13 +67,6 @@ export interface InvestmentRebuildProgress {
   message: string;
 }
 
-function normalizeSecurityText(value: string | null | undefined) {
-  return String(value ?? "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toUpperCase();
-}
-
 function hasNonEmptyPayload(value: unknown): value is Record<string, unknown> {
   return (
     Boolean(value) &&
@@ -70,63 +74,6 @@ function hasNonEmptyPayload(value: unknown): value is Record<string, unknown> {
     !Array.isArray(value) &&
     Object.keys(value as Record<string, unknown>).length > 0
   );
-}
-
-function readOptionalRecord(
-  value: unknown,
-): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readOptionalString(value: unknown) {
-  return typeof value === "string" && value.trim() !== "" ? value : null;
-}
-
-function readOptionalNumberAsString(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : null;
-}
-
-function camelizeJsonKey(value: string) {
-  return value.replace(/_([a-z])/g, (_, character: string) =>
-    character.toUpperCase(),
-  );
-}
-
-function readRawOutputField(
-  rawOutput: Record<string, unknown> | null,
-  key: string,
-) {
-  if (!rawOutput) {
-    return null;
-  }
-
-  if (key in rawOutput) {
-    return rawOutput[key];
-  }
-
-  const camelizedKey = camelizeJsonKey(key);
-  if (camelizedKey in rawOutput) {
-    return rawOutput[camelizedKey];
-  }
-
-  return null;
-}
-
-function readRawOutputString(
-  rawOutput: Record<string, unknown> | null,
-  key: string,
-) {
-  return readOptionalString(readRawOutputField(rawOutput, key));
-}
-
-function readRawOutputNumberAsString(
-  rawOutput: Record<string, unknown> | null,
-  key: string,
-) {
-  const value = readRawOutputField(rawOutput, key);
-  return readOptionalNumberAsString(value) ?? readOptionalString(value);
 }
 
 function buildHistoricalPriceEvidence(price: SecurityPrice | null) {
@@ -222,30 +169,12 @@ type SecurityResolutionContext = {
   prefersEtf: boolean;
 };
 
-function normalizeSecurityIdentifier(value: string | null | undefined) {
-  return String(value ?? "")
-    .trim()
-    .replace(/\s+/g, "")
-    .toUpperCase();
-}
-
 function normalizeReviewTrigger(value: unknown) {
   return value === "import_classification" ||
     value === "manual_review_update" ||
     value === "review_propagation"
     ? value
     : null;
-}
-
-function extractIsinFromText(...values: Array<string | null | undefined>) {
-  const isinPattern = /\b[A-Z]{2}[A-Z0-9]{9}\d\b/i;
-  for (const value of values) {
-    const match = String(value ?? "").toUpperCase().match(isinPattern);
-    if (match?.[0]) {
-      return normalizeSecurityIdentifier(match[0]);
-    }
-  }
-  return null;
 }
 
 function normalizedSecurityNameMatches(

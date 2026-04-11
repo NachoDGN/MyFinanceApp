@@ -7,7 +7,7 @@ import {
   isTransactionPendingEnrichment,
   isTransactionResolvedForAnalytics,
   needsTransactionManualReview,
-} from "../packages/domain/src/finance.ts";
+} from "../packages/domain/src/transaction-review.ts";
 
 test("queued enrichment is not treated as manual review", () => {
   const transaction = {

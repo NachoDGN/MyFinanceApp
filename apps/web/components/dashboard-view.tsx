@@ -1,5 +1,6 @@
 import type { DashboardModel } from "../lib/queries";
-import { buildHref, formatCurrency } from "../lib/queries";
+import { formatCurrency } from "../lib/formatters";
+import { buildHref } from "../lib/queries";
 import { convertBaseEurToDisplayAmount } from "../lib/currency";
 import { AppShell } from "./app-shell";
 import {

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { Decimal } from "decimal.js";
 
 import { todayIso } from "./finance";
+import { normalizeUppercaseText } from "./text";
 import type {
   AddOpeningPositionInput,
   ApplyRuleDraftInput,
@@ -404,13 +405,11 @@ export function sanitizeImportResult(result: DeterministicImportResult) {
 }
 
 function normalizeDescriptionForImport(value: string) {
-  return value.trim().replace(/\s+/g, " ").toUpperCase();
+  return normalizeUppercaseText(value.trim().replace(/\s+/g, " "));
 }
 
 function isCreditCardSettlementLikeDescription(value: string) {
-  const normalized = normalizeDescriptionForImport(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+  const normalized = normalizeUppercaseText(normalizeDescriptionForImport(value));
   return (
     normalized.includes("LIQUIDACION") &&
     normalized.includes("TARJETAS DE CREDITO")

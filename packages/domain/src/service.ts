@@ -38,14 +38,16 @@ import {
   getLatestAccountBalances,
   getLatestInvestmentCashBalances,
   getDatasetLatestDate,
-  isTransactionPendingEnrichment,
-  needsTransactionManualReview,
-  resolveAccountStaleThresholdDays,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   todayIso,
 } from "./finance";
 import { isRuleParserConfigured } from "./rule-drafts";
+import {
+  isTransactionPendingEnrichment,
+  needsTransactionManualReview,
+} from "./transaction-review";
+import { resolveAccountStaleThresholdDays } from "./workspace-settings";
 
 function toIsoTimestamp(value: string | Date | null | undefined) {
   if (!value) return "";

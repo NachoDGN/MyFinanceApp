@@ -7,4 +7,7 @@ export * from "./repository";
 export * from "./rule-drafts";
 export * from "./service";
 export * from "./template-config";
+export * from "./text";
+export * from "./transaction-review";
 export * from "./types";
+export * from "./workspace-settings";

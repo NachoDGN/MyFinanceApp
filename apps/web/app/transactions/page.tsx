@@ -2,8 +2,9 @@ import { AppShell } from "../../components/app-shell";
 import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
-import { formatCurrency, getTransactionsModel } from "../../lib/queries";
 import { convertBaseEurToDisplayAmount } from "../../lib/currency";
+import { formatCurrency } from "../../lib/formatters";
+import { getTransactionsModel } from "../../lib/queries";
 
 export default async function TransactionsPage({
   searchParams,

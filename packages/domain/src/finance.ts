@@ -1,7 +1,6 @@
 import { Decimal } from "decimal.js";
 
 import type {
-  AssetDomain,
   AccountBalanceSnapshot,
   CryptoBalanceRow,
   DailyPortfolioSnapshot,
@@ -12,40 +11,16 @@ import type {
   Scope,
   Transaction,
 } from "./types";
+import { isTransactionResolvedForAnalytics } from "./transaction-review";
+import { normalizeMatcherText } from "./text";
 
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
-export type WorkspaceSettings = {
-  defaultDisplayCurrency: "EUR" | "USD";
-  defaultPeriodPreset: "mtd" | "ytd";
-  defaultCashStaleAfterDays: number;
-  defaultInvestmentStaleAfterDays: number;
-};
-export const DEFAULT_WORKSPACE_SETTINGS: WorkspaceSettings = {
-  defaultDisplayCurrency: "EUR",
-  defaultPeriodPreset: "mtd",
-  defaultCashStaleAfterDays: 7,
-  defaultInvestmentStaleAfterDays: 3,
-};
 const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
 >();
 const CRYPTO_CURRENCY_CODES = new Set(["BTC", "ETH"]);
-const TRANSACTION_ANALYSIS_STATUSES = [
-  "pending",
-  "done",
-  "failed",
-  "skipped",
-] as const;
-
-export type TransactionReviewState =
-  | "pending_enrichment"
-  | "needs_review"
-  | "resolved";
-
-const CREDIT_CARD_STATEMENT_REVIEW_REASON =
-  "Upload the matching credit-card statement to resolve category KPIs.";
 
 function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
   return (
@@ -110,79 +85,6 @@ function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10);
 }
 
-function readWorkspaceNumber(
-  settings: Record<string, unknown> | null,
-  key: keyof WorkspaceSettings,
-  fallback: number,
-) {
-  const value = settings?.[key];
-  return typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 1 &&
-    value <= 365
-    ? Math.round(value)
-    : fallback;
-}
-
-export function resolveWorkspaceSettings(
-  profile: Pick<DomainDataset["profile"], "defaultBaseCurrency"> & {
-    workspaceSettingsJson?: Record<string, unknown> | null;
-  },
-): WorkspaceSettings {
-  const settings =
-    profile.workspaceSettingsJson &&
-    typeof profile.workspaceSettingsJson === "object" &&
-    !Array.isArray(profile.workspaceSettingsJson)
-      ? profile.workspaceSettingsJson
-      : null;
-
-  return {
-    defaultDisplayCurrency:
-      settings?.defaultDisplayCurrency === "USD"
-        ? "USD"
-        : settings?.defaultDisplayCurrency === "EUR"
-          ? "EUR"
-          : profile.defaultBaseCurrency === "USD"
-            ? "USD"
-            : DEFAULT_WORKSPACE_SETTINGS.defaultDisplayCurrency,
-    defaultPeriodPreset:
-      settings?.defaultPeriodPreset === "ytd"
-        ? "ytd"
-        : DEFAULT_WORKSPACE_SETTINGS.defaultPeriodPreset,
-    defaultCashStaleAfterDays: readWorkspaceNumber(
-      settings,
-      "defaultCashStaleAfterDays",
-      DEFAULT_WORKSPACE_SETTINGS.defaultCashStaleAfterDays,
-    ),
-    defaultInvestmentStaleAfterDays: readWorkspaceNumber(
-      settings,
-      "defaultInvestmentStaleAfterDays",
-      DEFAULT_WORKSPACE_SETTINGS.defaultInvestmentStaleAfterDays,
-    ),
-  };
-}
-
-export function resolveAccountStaleThresholdDays(
-  profile: Pick<DomainDataset["profile"], "defaultBaseCurrency"> & {
-    workspaceSettingsJson?: Record<string, unknown> | null;
-  },
-  assetDomain: AssetDomain,
-  accountStaleAfterDays?: number | null,
-) {
-  if (
-    typeof accountStaleAfterDays === "number" &&
-    Number.isFinite(accountStaleAfterDays) &&
-    accountStaleAfterDays >= 1
-  ) {
-    return Math.round(accountStaleAfterDays);
-  }
-
-  const settings = resolveWorkspaceSettings(profile);
-  return assetDomain === "investment"
-    ? settings.defaultInvestmentStaleAfterDays
-    : settings.defaultCashStaleAfterDays;
-}
-
 function safeDividePercent(numerator: Decimal, denominator: Decimal) {
   if (denominator.eq(0)) return null;
   return numerator.div(denominator).mul(100).toFixed(2);
@@ -220,13 +122,6 @@ export function startOfTrailingMonthsIso(value: string, monthCount: number) {
 
 function isIsoDate(value: string | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
-}
-
-function normalizeMatchingText(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
 }
 
 function dayCountInclusive(start: string, end: string) {
@@ -493,139 +388,6 @@ export function filterTransactionsByScope(
   }
 
   return dataset.transactions;
-}
-
-export function isTransactionResolvedForAnalytics(
-  transaction: Pick<
-    Transaction,
-    | "needsReview"
-    | "creditCardStatementStatus"
-    | "descriptionRaw"
-    | "descriptionClean"
-  > & {
-    excludeFromAnalytics?: boolean;
-    voidedAt?: string | null;
-    llmPayload?: unknown;
-  },
-) {
-  return (
-    !isTransactionPendingEnrichment(transaction) &&
-    !needsTransactionManualReview(transaction) &&
-    transaction.excludeFromAnalytics !== true &&
-    !transaction.voidedAt
-  );
-}
-
-export function getTransactionAnalysisStatus(transaction: {
-  llmPayload?: unknown;
-}): "pending" | "done" | "failed" | "skipped" | null {
-  if (
-    !transaction.llmPayload ||
-    typeof transaction.llmPayload !== "object" ||
-    Array.isArray(transaction.llmPayload)
-  ) {
-    return null;
-  }
-
-  const analysisStatus = (
-    transaction.llmPayload as { analysisStatus?: unknown }
-  ).analysisStatus;
-  return typeof analysisStatus === "string" &&
-    TRANSACTION_ANALYSIS_STATUSES.includes(
-      analysisStatus as (typeof TRANSACTION_ANALYSIS_STATUSES)[number],
-    )
-    ? (analysisStatus as "pending" | "done" | "failed" | "skipped")
-    : null;
-}
-
-export function isTransactionPendingEnrichment(transaction: {
-  llmPayload?: unknown;
-}) {
-  return getTransactionAnalysisStatus(transaction) === "pending";
-}
-
-export function isCreditCardSettlementTransaction(
-  transaction: Pick<
-    Transaction,
-    "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
-  >,
-) {
-  if (
-    transaction.creditCardStatementStatus === "upload_required" ||
-    transaction.creditCardStatementStatus === "uploaded"
-  ) {
-    return true;
-  }
-
-  const normalizedText = normalizeMatchingText(
-    `${transaction.descriptionRaw} ${transaction.descriptionClean}`,
-  );
-  return (
-    normalizedText.includes("LIQUIDACION") &&
-    normalizedText.includes("TARJETAS DE CREDITO")
-  );
-}
-
-export function needsCreditCardStatementUpload(
-  transaction: Pick<
-    Transaction,
-    "creditCardStatementStatus" | "descriptionRaw" | "descriptionClean"
-  >,
-) {
-  return (
-    transaction.creditCardStatementStatus === "upload_required" ||
-    (transaction.creditCardStatementStatus === "not_applicable" &&
-      isCreditCardSettlementTransaction(transaction))
-  );
-}
-
-export function getTransactionReviewReason(
-  transaction: Pick<
-    Transaction,
-    | "reviewReason"
-    | "creditCardStatementStatus"
-    | "descriptionRaw"
-    | "descriptionClean"
-  >,
-) {
-  if (needsCreditCardStatementUpload(transaction)) {
-    return CREDIT_CARD_STATEMENT_REVIEW_REASON;
-  }
-  return transaction.reviewReason ?? null;
-}
-
-export function needsTransactionManualReview(
-  transaction: Pick<
-    Transaction,
-    | "needsReview"
-    | "creditCardStatementStatus"
-    | "descriptionRaw"
-    | "descriptionClean"
-  > & { llmPayload?: unknown },
-) {
-  return (
-    !isTransactionPendingEnrichment(transaction) &&
-    (transaction.needsReview === true ||
-      needsCreditCardStatementUpload(transaction))
-  );
-}
-
-export function getTransactionReviewState(
-  transaction: Pick<
-    Transaction,
-    | "needsReview"
-    | "creditCardStatementStatus"
-    | "descriptionRaw"
-    | "descriptionClean"
-  > & { llmPayload?: unknown },
-): TransactionReviewState {
-  if (isTransactionPendingEnrichment(transaction)) {
-    return "pending_enrichment";
-  }
-  if (needsTransactionManualReview(transaction)) {
-    return "needs_review";
-  }
-  return "resolved";
 }
 
 export function filterTransactionsByPeriod(
@@ -1126,13 +888,6 @@ function latestSecurityPrice(
     candidates[0] ??
     null
   );
-}
-
-export function normalizeMatcherText(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
 }
 
 export function parseManualInvestmentMatcherTerms(matcherText: string) {
