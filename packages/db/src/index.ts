@@ -3046,6 +3046,18 @@ function humanizeRevolutType(value: string) {
     .toUpperCase();
 }
 
+function getRevolutAccountDisplayName(account: RevolutAccount) {
+  const normalizedName =
+    typeof account.name === "string" && account.name.trim()
+      ? account.name.trim()
+      : null;
+  if (normalizedName) {
+    return normalizedName;
+  }
+
+  return `Revolut ${account.currency} ${account.id.slice(0, 8)}`;
+}
+
 function buildRevolutProviderRecordId(
   transaction: RevolutTransaction,
   legId: string,
@@ -3120,16 +3132,17 @@ async function createRevolutManagedAccount(
 ): Promise<Account> {
   const accountId = randomUUID();
   const now = new Date().toISOString();
+  const displayName = getRevolutAccountDisplayName(input.revolutAccount);
   const matchingAliases = [
     input.revolutAccount.currency,
-    input.revolutAccount.name,
+    displayName,
   ].filter((value, index, values) => values.indexOf(value) === index);
   const account = {
     id: accountId,
     userId: input.userId,
     entityId: input.entityId,
     institutionName: REVOLUT_CONNECTION_LABEL,
-    displayName: input.revolutAccount.name,
+    displayName,
     accountType: "company_bank",
     assetDomain: "cash",
     defaultCurrency: input.revolutAccount.currency,
@@ -3208,6 +3221,7 @@ async function resolveOrCreateRevolutAccountLinks(
   for (const revolutAccount of input.revolutAccounts.filter(
     (account) => account.state === "active",
   )) {
+    const revolutAccountDisplayName = getRevolutAccountDisplayName(revolutAccount);
     let linkedAccount =
       nextLinks
         .filter(
@@ -3232,7 +3246,7 @@ async function resolveOrCreateRevolutAccountLinks(
       );
       linkedAccount =
         candidates.find(
-          (account) => account.displayName === revolutAccount.name,
+          (account) => account.displayName === revolutAccountDisplayName,
         ) ??
         (candidates.length === 1 ? candidates[0] : null);
     }
@@ -3263,7 +3277,7 @@ async function resolveOrCreateRevolutAccountLinks(
         account_id: linkedAccount.id,
         provider: REVOLUT_PROVIDER_NAME,
         external_account_id: revolutAccount.id,
-        external_account_name: revolutAccount.name,
+        external_account_name: revolutAccountDisplayName,
         external_currency: revolutAccount.currency,
         last_seen_at: now,
         created_at: now,
@@ -3285,7 +3299,7 @@ async function resolveOrCreateRevolutAccountLinks(
       accountId: linkedAccount.id,
       provider: REVOLUT_PROVIDER_NAME,
       externalAccountId: revolutAccount.id,
-      externalAccountName: revolutAccount.name,
+      externalAccountName: revolutAccountDisplayName,
       externalCurrency: revolutAccount.currency,
       lastSeenAt: now,
       createdAt: now,

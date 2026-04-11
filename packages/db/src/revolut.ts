@@ -61,7 +61,7 @@ function ensureRuntimeEnvLoaded() {
 
 const revolutAccountSchema = z.object({
   id: z.string().min(1),
-  name: z.string().min(1),
+  name: z.string().min(1).optional().nullable(),
   balance: z.number(),
   currency: z.string().min(3),
   state: z.string().min(1),
