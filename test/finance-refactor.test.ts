@@ -5955,16 +5955,14 @@ test("manual investment comparisons use the latest valuation snapshot available 
 });
 
 test("holding valuation uses as-of FX even when the latest quote is older than the FX series", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-1",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "USD",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     securities: [
-      {
+      createSecurity({
         id: "security-1",
         providerName: "twelve_data",
         providerSymbol: "AMD",
@@ -5972,47 +5970,30 @@ test("holding valuation uses as-of FX even when the latest quote is older than t
         displaySymbol: "AMD",
         name: "Advanced Micro Devices Inc",
         exchangeName: "NASDAQ",
-        exchangeMic: "XNAS",
-        securityType: "stock",
+        micCode: "XNAS",
         quoteCurrency: "USD",
-        countryCode: "US",
-        isin: null,
-        cusip: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-      },
+        country: "US",
+      }),
     ],
     securityPrices: [
-      {
+      createSecurityPrice({
         securityId: "security-1",
         priceDate: "2026-04-01",
         quoteTimestamp: "2026-04-01T15:00:00Z",
         price: "100.00",
-        currency: "USD",
         sourceName: "twelve_data",
-        isRealtime: false,
-        isDelayed: true,
-        marketState: "closed",
-        rawJson: {},
-        createdAt: "2026-04-01T15:00:00Z",
-      },
+      }),
     ],
     fxRates: [
-      {
-        baseCurrency: "USD",
-        quoteCurrency: "EUR",
+      createFxRate({
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-        rawJson: {},
-      },
+      }),
     ],
     investmentPositions: [
-      {
-        userId: "user-1",
-        entityId: "entity-1",
+      createInvestmentPosition({
         accountId: "brokerage-1",
         securityId: "security-1",
         openQuantity: "10.00",
@@ -6024,9 +6005,8 @@ test("holding valuation uses as-of FX even when the latest quote is older than t
         feesEur: "0.00",
         lastTradeDate: "2026-04-01",
         lastRebuiltAt: "2026-04-04T16:00:00Z",
-        provenanceJson: {},
         unrealizedComplete: true,
-      },
+      }),
     ],
   });
 
@@ -6042,16 +6022,14 @@ test("holding valuation uses as-of FX even when the latest quote is older than t
 });
 
 test("holding rows ignore placeholder seed quotes when a real market-data row exists", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-placeholder",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "USD",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     securities: [
-      {
+      createSecurity({
         id: "security-placeholder",
         providerName: "twelve_data",
         providerSymbol: "AMD",
@@ -6059,64 +6037,44 @@ test("holding rows ignore placeholder seed quotes when a real market-data row ex
         displaySymbol: "AMD",
         name: "Advanced Micro Devices Inc",
         exchangeName: "NASDAQ",
-        exchangeMic: "XNAS",
-        securityType: "stock",
+        micCode: "XNAS",
         quoteCurrency: "USD",
-        countryCode: "US",
-        isin: null,
-        cusip: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-      },
+        country: "US",
+      }),
     ],
     securityPrices: [
-      {
+      createSecurityPrice({
         securityId: "security-placeholder",
         priceDate: "2026-04-03",
         quoteTimestamp: "2026-04-03T08:20:00Z",
         price: "152.40",
-        currency: "USD",
         sourceName: "twelve_data",
-        isRealtime: false,
-        isDelayed: true,
-        marketState: "closed",
-        rawJson: {},
         createdAt: "2026-04-03T12:37:43Z",
-      },
-      {
+      }),
+      createSecurityPrice({
         securityId: "security-placeholder",
         priceDate: "2026-04-02",
         quoteTimestamp: "2026-04-02T19:59:00Z",
         price: "217.50",
-        currency: "USD",
         sourceName: "twelve_data",
-        isRealtime: false,
-        isDelayed: true,
-        marketState: "closed",
         rawJson: {
           symbol: "AMD",
           close: "217.5",
           datetime: "2026-04-02",
         },
         createdAt: "2026-04-03T20:08:02Z",
-      },
+      }),
     ],
     fxRates: [
-      {
-        baseCurrency: "USD",
-        quoteCurrency: "EUR",
+      createFxRate({
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-        rawJson: {},
-      },
+      }),
     ],
     investmentPositions: [
-      {
-        userId: "user-1",
-        entityId: "entity-1",
+      createInvestmentPosition({
         accountId: "brokerage-placeholder",
         securityId: "security-placeholder",
         openQuantity: "1.00",
@@ -6128,9 +6086,8 @@ test("holding rows ignore placeholder seed quotes when a real market-data row ex
         feesEur: "0.00",
         lastTradeDate: "2026-03-24",
         lastRebuiltAt: "2026-04-04T16:00:00Z",
-        provenanceJson: {},
         unrealizedComplete: true,
-      },
+      }),
     ],
   });
 
@@ -6146,16 +6103,14 @@ test("holding rows ignore placeholder seed quotes when a real market-data row ex
 });
 
 test("holding rows prefer official fund NAVs over later lower-quality web quotes on the same day", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-fund-nav-priority",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "EUR",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     securities: [
-      {
+      createSecurity({
         id: "security-vanguard-us500",
         providerName: "manual_fund_nav",
         providerSymbol: "IE0032126645",
@@ -6163,54 +6118,44 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
         displaySymbol: "VANUIEI",
         name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
         exchangeName: "VANGUARD",
-        exchangeMic: null,
-        securityType: "other",
+        micCode: null,
+        assetType: "other",
         quoteCurrency: "EUR",
-        countryCode: "IE",
+        country: "IE",
         isin: "IE0032126645",
-        cusip: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-      },
+      }),
     ],
     securityPrices: [
-      {
+      createSecurityPrice({
         securityId: "security-vanguard-us500",
         priceDate: "2026-04-02",
         quoteTimestamp: "2026-04-02T19:59:00Z",
         price: "217.50",
         currency: "USD",
         sourceName: "llm_web_search",
-        isRealtime: false,
-        isDelayed: true,
         marketState: "delayed",
         rawJson: {
           source: "portfolio_snapshot_delayed_quote",
           priceType: "delayed",
         },
         createdAt: "2026-04-05T19:09:47Z",
-      },
-      {
+      }),
+      createSecurityPrice({
         securityId: "security-vanguard-us500",
         priceDate: "2026-04-02",
         quoteTimestamp: "2026-04-02T16:00:00Z",
         price: "69.39",
         currency: "EUR",
         sourceName: "manual_nav_import",
-        isRealtime: false,
-        isDelayed: true,
         marketState: "official_nav",
         rawJson: {
           priceType: "nav",
         },
         createdAt: "2026-04-05T16:20:43Z",
-      },
+      }),
     ],
     investmentPositions: [
-      {
-        userId: "user-1",
-        entityId: "entity-1",
+      createInvestmentPosition({
         accountId: "brokerage-fund-nav-priority",
         securityId: "security-vanguard-us500",
         openQuantity: "10.00",
@@ -6222,9 +6167,8 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
         feesEur: "0.00",
         lastTradeDate: "2026-04-02",
         lastRebuiltAt: "2026-04-05T19:20:00Z",
-        provenanceJson: {},
         unrealizedComplete: true,
-      },
+      }),
     ],
   });
 
@@ -6241,16 +6185,14 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
 });
 
 test("holding freshness is stale when the latest delayed quote is older than five days", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-1",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "USD",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     securities: [
-      {
+      createSecurity({
         id: "security-1",
         providerName: "twelve_data",
         providerSymbol: "INTC",
@@ -6258,47 +6200,30 @@ test("holding freshness is stale when the latest delayed quote is older than fiv
         displaySymbol: "INTC",
         name: "Intel Corporation",
         exchangeName: "NASDAQ",
-        exchangeMic: "XNAS",
-        securityType: "stock",
+        micCode: "XNAS",
         quoteCurrency: "USD",
-        countryCode: "US",
-        isin: null,
-        cusip: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-      },
+        country: "US",
+      }),
     ],
     securityPrices: [
-      {
+      createSecurityPrice({
         securityId: "security-1",
         priceDate: "2026-03-20",
         quoteTimestamp: "2026-03-20T15:00:00Z",
         price: "50.00",
-        currency: "USD",
         sourceName: "twelve_data",
-        isRealtime: false,
-        isDelayed: true,
-        marketState: "closed",
-        rawJson: {},
-        createdAt: "2026-03-20T15:00:00Z",
-      },
+      }),
     ],
     fxRates: [
-      {
-        baseCurrency: "USD",
-        quoteCurrency: "EUR",
+      createFxRate({
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-        rawJson: {},
-      },
+      }),
     ],
     investmentPositions: [
-      {
-        userId: "user-1",
-        entityId: "entity-1",
+      createInvestmentPosition({
         accountId: "brokerage-1",
         securityId: "security-1",
         openQuantity: "15.00",
@@ -6310,9 +6235,8 @@ test("holding freshness is stale when the latest delayed quote is older than fiv
         feesEur: "0.00",
         lastTradeDate: "2026-03-20",
         lastRebuiltAt: "2026-04-04T16:00:00Z",
-        provenanceJson: {},
         unrealizedComplete: true,
-      },
+      }),
     ],
   });
 
@@ -6327,16 +6251,14 @@ test("holding freshness is stale when the latest delayed quote is older than fiv
 });
 
 test("holding rows do not expose current pricing when the last quote is more than thirty days old", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-old-quote",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "USD",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     securities: [
-      {
+      createSecurity({
         id: "security-old-quote",
         providerName: "twelve_data",
         providerSymbol: "INTC",
@@ -6344,47 +6266,30 @@ test("holding rows do not expose current pricing when the last quote is more tha
         displaySymbol: "INTC",
         name: "Intel Corporation",
         exchangeName: "NASDAQ",
-        exchangeMic: "XNGS",
-        securityType: "stock",
+        micCode: "XNGS",
         quoteCurrency: "USD",
-        countryCode: "US",
-        isin: null,
-        cusip: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-      },
+        country: "US",
+      }),
     ],
     securityPrices: [
-      {
+      createSecurityPrice({
         securityId: "security-old-quote",
         priceDate: "2026-01-15",
         quoteTimestamp: "2026-01-15T15:00:00Z",
         price: "24.90",
-        currency: "USD",
         sourceName: "twelve_data",
-        isRealtime: false,
-        isDelayed: true,
-        marketState: "closed",
-        rawJson: {},
-        createdAt: "2026-01-15T15:00:00Z",
-      },
+      }),
     ],
     fxRates: [
-      {
-        baseCurrency: "USD",
-        quoteCurrency: "EUR",
+      createFxRate({
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-        rawJson: {},
-      },
+      }),
     ],
     investmentPositions: [
-      {
-        userId: "user-1",
-        entityId: "entity-1",
+      createInvestmentPosition({
         accountId: "brokerage-old-quote",
         securityId: "security-old-quote",
         openQuantity: "15.00",
@@ -6396,9 +6301,8 @@ test("holding rows do not expose current pricing when the last quote is more tha
         feesEur: "0.00",
         lastTradeDate: "2026-01-15",
         lastRebuiltAt: "2026-04-04T16:00:00Z",
-        provenanceJson: {},
         unrealizedComplete: true,
-      },
+      }),
     ],
   });
 
@@ -6989,19 +6893,14 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
 });
 
 test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-2",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     transactions: [
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "broker-transfer",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-04-02",
         postedDate: "2026-04-02",
         amountOriginal: "500.00",
@@ -7030,19 +6929,14 @@ test("investments read model keeps resolved broker transfers visible in the inve
 });
 
 test("investments read model uses the selected period for income and contribution totals", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-period-totals",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     transactions: [
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "dividend-march",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-03-15",
         postedDate: "2026-03-15",
         amountOriginal: "10.00",
@@ -7053,11 +6947,8 @@ test("investments read model uses the selected period for income and contributio
         categoryCode: "dividend_income",
         needsReview: false,
       }),
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "dividend-april",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-04-02",
         postedDate: "2026-04-02",
         amountOriginal: "20.00",
@@ -7068,11 +6959,8 @@ test("investments read model uses the selected period for income and contributio
         categoryCode: "dividend_income",
         needsReview: false,
       }),
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "interest-april",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-04-03",
         postedDate: "2026-04-03",
         amountOriginal: "5.00",
@@ -7083,11 +6971,8 @@ test("investments read model uses the selected period for income and contributio
         categoryCode: "interest_income",
         needsReview: false,
       }),
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "transfer-april",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-04-01",
         postedDate: "2026-04-01",
         amountOriginal: "100.00",
@@ -7132,19 +7017,14 @@ test("investments read model uses the selected period for income and contributio
 });
 
 test("investments read model exposes unresolved investment items outside the selected period", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-3",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     transactions: [
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "older-review",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-03-24",
         postedDate: "2026-03-24",
         amountOriginal: "-99.58",
@@ -7178,19 +7058,14 @@ test("investments read model exposes unresolved investment items outside the sel
 });
 
 test("investments read model filters processed rows to the selected period", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-processed",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     transactions: [
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "processed-buy",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2026-03-24",
         postedDate: "2026-03-24",
         amountOriginal: "-99.58",
