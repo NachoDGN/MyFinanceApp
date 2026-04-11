@@ -7236,6 +7236,151 @@ test("cash metric excludes credit-card liabilities from the cash position KPI", 
   assert.equal(cashMetric.valueBaseEur, "6911.24");
 });
 
+test("latest balance snapshots are revalued with the latest available FX rate", () => {
+  const usdAccount = createAccount({
+    id: "usd-cash-account",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [usdAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: usdAccount.id,
+        asOfDate: "2026-04-11",
+        balanceOriginal: "100.00",
+        balanceCurrency: "USD",
+        balanceBaseEur: "92.00",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T16:00:00Z",
+        rate: "0.92000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-11",
+        asOfTimestamp: "2026-04-11T16:00:00Z",
+        rate: "0.85000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+  });
+
+  const balances = getLatestAccountBalances(dataset, "2026-04-11");
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-11" },
+  );
+
+  assert.equal(balances[0]?.balanceBaseEur, "85.00000000");
+  assert.equal(cashMetric.valueBaseEur, "85.00");
+});
+
+test("cash KPI excludes crypto cash balances while portfolio value includes them", () => {
+  const eurAccount = createAccount({
+    id: "eur-company-cash",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "EUR",
+  });
+  const btcAccount = createAccount({
+    id: "btc-company-cash",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "BTC",
+    displayName: "Treasury BTC",
+  });
+  const dataset = createDataset({
+    accounts: [eurAccount, btcAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: eurAccount.id,
+        asOfDate: "2026-04-11",
+        balanceOriginal: "1000.00",
+        balanceCurrency: "EUR",
+        balanceBaseEur: "1000.00",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+      {
+        accountId: btcAccount.id,
+        asOfDate: "2026-04-11",
+        balanceOriginal: "0.01000000",
+        balanceCurrency: "BTC",
+        balanceBaseEur: "0.01000000",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "BTC",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-11",
+        asOfTimestamp: "2026-04-11T16:00:00Z",
+        rate: "80000.00000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+  });
+
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-11" },
+  );
+  const portfolioMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "portfolio_market_value_current",
+    { referenceDate: "2026-04-11" },
+  );
+  const netWorthMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "net_worth_current",
+    { referenceDate: "2026-04-11" },
+  );
+  const investmentsModel = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "mtd",
+      referenceDate: "2026-04-11",
+    }),
+    referenceDate: "2026-04-11",
+  });
+
+  assert.equal(cashMetric.valueBaseEur, "1000.00");
+  assert.equal(portfolioMetric.valueBaseEur, "800.00");
+  assert.equal(netWorthMetric.valueBaseEur, "1800.00");
+  assert.equal(investmentsModel.holdings.cryptoBalances.length, 1);
+  assert.equal(
+    investmentsModel.holdings.cryptoBalances[0]?.currentValueEur,
+    "800.00000000",
+  );
+});
+
 test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {
   const investmentAccount = createAccount({
     id: "brokerage-2",

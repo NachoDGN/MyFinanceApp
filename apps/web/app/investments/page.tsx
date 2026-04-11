@@ -320,6 +320,10 @@ export default async function InvestmentsPage({
       !isManualHolding(holding) &&
       !holdingLooksLikeFund(securityById.get(holding.securityId)),
   );
+  const cryptoBalances = [...model.holdings.cryptoBalances].sort(
+    (left, right) =>
+      Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
+  );
   const manualInvestmentSummaries = fundHoldings
     .filter(isManualHolding)
     .map((holding) => {
@@ -372,8 +376,14 @@ export default async function InvestmentsPage({
     (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
     new Decimal(0),
   );
+  const cryptoPortfolioValueEur = cryptoBalances.reduce(
+    (sum, balance) => sum.plus(balance.currentValueEur ?? 0),
+    new Decimal(0),
+  );
   const cashValueEur = new Decimal(model.holdings.brokerageCashEur);
-  const totalPortfolioValueEur = pricedPortfolioValueEur.plus(cashValueEur);
+  const totalPortfolioValueEur = pricedPortfolioValueEur
+    .plus(cryptoPortfolioValueEur)
+    .plus(cashValueEur);
   const totalPortfolioValueDisplay = new Decimal(
     toDisplayAmount(totalPortfolioValueEur.toFixed(2)) ?? 0,
   );
@@ -428,6 +438,10 @@ export default async function InvestmentsPage({
     stockHoldings,
     "Stocks & ETF",
   );
+  const cryptoAllocationPercent = safePercent(
+    cryptoPortfolioValueEur,
+    totalPortfolioValueEur,
+  );
   const cashAllocationPercent = safePercent(
     cashValueEur,
     totalPortfolioValueEur,
@@ -464,9 +478,10 @@ export default async function InvestmentsPage({
             <h1 className="page-title">Investments</h1>
             <p className="page-subtitle">
               Holdings are rebuilt live from resolved investment rows, explicit
-              opening adjustments, and manual company fund valuations. Cash
-              remains cash; manual fund values feed the same KPI layer as broker
-              positions.
+              opening adjustments, manual fund valuations, and crypto treasury
+              balances held in BTC and ETH business accounts. Global totals stay
+              consolidated by default and can then be filtered by entity using
+              the buttons above.
             </p>
           </div>
           <InvestmentPriceRefreshButton />
@@ -487,9 +502,14 @@ export default async function InvestmentsPage({
                   : "neutral"
               }
               subtitle={`${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs ${comparisonLabel}`}
-              chartValues={model.holdings.holdings.map((holding) =>
-                Number(holding.currentValueEur ?? 0),
-              )}
+              chartValues={[
+                ...model.holdings.holdings.map((holding) =>
+                  Number(holding.currentValueEur ?? 0),
+                ),
+                ...cryptoBalances.map((balance) =>
+                  Number(balance.currentValueEur ?? 0),
+                ),
+              ]}
             />
             <InvestmentMetricCard
               label="Unrealized Gain"
@@ -528,10 +548,16 @@ export default async function InvestmentsPage({
             />
           </div>
           <InvestmentAllocationCard
-            rows={model.holdings.holdings.map((holding) => ({
-              label: holding.symbol,
-              amountEur: toDisplayAmount(holding.currentValueEur) ?? "0.00",
-            }))}
+            rows={[
+              ...model.holdings.holdings.map((holding) => ({
+                label: holding.symbol,
+                amountEur: toDisplayAmount(holding.currentValueEur) ?? "0.00",
+              })),
+              ...cryptoBalances.map((balance) => ({
+                label: balance.currency,
+                amountEur: toDisplayAmount(balance.currentValueEur) ?? "0.00",
+              })),
+            ]}
             currency={model.currency}
           />
         </div>
@@ -561,6 +587,33 @@ export default async function InvestmentsPage({
                 <span>Current broker cash balance</span>
                 <span className="muted">
                   No unrealized P/L applies to cash.
+                </span>
+              </div>
+            </article>
+
+            <article className="investment-summary-card">
+              <div className="investment-summary-head">
+                <div>
+                  <span className="label-sm">Crypto</span>
+                  <h3 className="investment-summary-title">
+                    {cryptoBalances.length} crypto balance
+                    {cryptoBalances.length === 1 ? "" : "s"}
+                  </h3>
+                </div>
+                <span className="pill">
+                  {cryptoAllocationPercent
+                    ? formatPercent(cryptoAllocationPercent)
+                    : "N/A"}
+                </span>
+              </div>
+              <div className="investment-summary-value">
+                {formatDisplayAmount(cryptoPortfolioValueEur.toFixed(2))}
+              </div>
+              <div className="investment-summary-meta">
+                <span>BTC and ETH treasury balances now roll into portfolio.</span>
+                <span className="muted">
+                  Cost basis is not tracked yet, so unrealized P/L stays
+                  outside this bucket.
                 </span>
               </div>
             </article>
@@ -638,11 +691,18 @@ export default async function InvestmentsPage({
           manualInvestments={manualInvestmentSummaries}
           referenceDate={model.referenceDate}
         />
+        {manualInvestmentSummaries.length === 0 ? (
+          <div className="status-note" style={{ marginTop: -8 }}>
+            No manual fund valuations are configured right now. The fund values
+            you do see on this page are coming from your broker-imported fund
+            holdings, not from separate manual company fund inputs.
+          </div>
+        ) : null}
 
         <SectionCard
           title="Funds"
           subtitle="Current value, unrealized EUR, and return %"
-          span="span-6"
+          span="span-4"
         >
           <div className="investment-position-list">
             {fundHoldings.map((holding) => {
@@ -709,7 +769,7 @@ export default async function InvestmentsPage({
         <SectionCard
           title="Stocks & ETF"
           subtitle="Current value, unrealized EUR, and return %"
-          span="span-6"
+          span="span-4"
         >
           <div className="investment-position-list">
             {stockHoldings.map((holding) => {
@@ -767,8 +827,52 @@ export default async function InvestmentsPage({
         </SectionCard>
 
         <SectionCard
+          title="Crypto Treasury"
+          subtitle="Current EUR value of BTC and ETH balances"
+          span="span-4"
+        >
+          <div className="investment-position-list">
+            {cryptoBalances.length === 0 ? (
+              <div className="table-empty-state">
+                No crypto treasury balances are available for this scope.
+              </div>
+            ) : (
+              cryptoBalances.map((balance) => (
+                <article
+                  className="investment-position-card"
+                  key={`${balance.accountId}:${balance.currency}`}
+                >
+                  <div className="investment-position-head">
+                    <div className="investment-position-copy">
+                      <h3 className="investment-position-name">
+                        {balance.currency}
+                      </h3>
+                      <p className="investment-position-symbol">
+                        {accountById.get(balance.accountId)?.displayName ??
+                          balance.accountId}{" "}
+                        · {formatQuantity(balance.balanceOriginal)} units
+                      </p>
+                    </div>
+                    <div className="investment-position-values">
+                      <strong>
+                        {formatDisplayAmount(balance.currentValueEur)}
+                      </strong>
+                      <span className="muted">
+                        {balance.currentPriceEur
+                          ? `${formatCurrency(balance.currentPriceEur, "EUR")} per ${balance.currency}`
+                          : "Current quote unavailable"}
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard
           title="Allocation by Account"
-          subtitle="Broker split"
+          subtitle="Broker, treasury, and crypto split"
           span="span-12"
         >
           <DistributionList

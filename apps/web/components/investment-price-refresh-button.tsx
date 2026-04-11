@@ -9,6 +9,17 @@ function formatPlural(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+function buildRefreshSummary(result: Awaited<ReturnType<typeof refreshOwnedStockPricesAction>>) {
+  const pieces: string[] = [];
+  if (result.refreshedCount > 0) {
+    pieces.push(formatPlural(result.refreshedCount, "holding"));
+  }
+  if (result.refreshedFxPairs.length > 0) {
+    pieces.push(formatPlural(result.refreshedFxPairs.length, "FX pair"));
+  }
+  return pieces.join(" and ");
+}
+
 export function InvestmentPriceRefreshButton() {
   const pathname = usePathname();
   const router = useRouter();
@@ -22,36 +33,41 @@ export function InvestmentPriceRefreshButton() {
       try {
         const result = await refreshOwnedStockPricesAction();
 
-        if (result.totalTrackedStocks === 0) {
+        if (result.totalTrackedStocks === 0 && result.totalTrackedFxPairs === 0) {
           setFeedback(
-            "No open stock or ETF positions are available to refresh.",
+            "No tracked holdings or FX pairs are available to refresh.",
           );
           router.refresh();
           return;
         }
 
-        if (result.refreshedCount === 0) {
+        if (
+          result.refreshedCount === 0 &&
+          result.refreshedFxPairs.length === 0
+        ) {
           const skippedLabel =
-            result.skippedDetails.length > 0
+            [...result.skippedDetails, ...result.skippedFxPairs].length > 0
               ? ` ${result.skippedDetails
+                  .concat(result.skippedFxPairs)
                   .map((item) => `${item.symbol}: ${item.reason}`)
                   .join(" ")}`
               : "";
           setFeedback(
-            `No fresh quotes were returned for ${formatPlural(result.totalTrackedStocks, "holding")}.${skippedLabel}`,
+            `No fresh market data was returned.${skippedLabel}`,
           );
           router.refresh();
           return;
         }
 
         const skippedNote =
-          result.skippedCount > 0
+          result.skippedCount > 0 || result.skippedFxPairs.length > 0
             ? ` ${result.skippedDetails
+                .concat(result.skippedFxPairs)
                 .map((item) => `${item.symbol}: ${item.reason}`)
                 .join(" ")}`
             : "";
         setFeedback(
-          `Updated current prices for ${formatPlural(result.refreshedCount, "holding")}.${skippedNote}`,
+          `Updated market data for ${buildRefreshSummary(result)}.${skippedNote}`,
         );
 
         const currentAsOf = searchParams.get("asOf");
@@ -84,7 +100,7 @@ export function InvestmentPriceRefreshButton() {
         disabled={isPending}
         onClick={handleRefresh}
       >
-        {isPending ? "Updating current prices..." : "Update current prices"}
+        {isPending ? "Updating market data..." : "Update market data"}
       </button>
       {feedback ? <div className="status-note">{feedback}</div> : null}
     </div>

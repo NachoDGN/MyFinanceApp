@@ -3,6 +3,7 @@ import { Decimal } from "decimal.js";
 import type {
   AssetDomain,
   AccountBalanceSnapshot,
+  CryptoBalanceRow,
   DailyPortfolioSnapshot,
   DomainDataset,
   HoldingRow,
@@ -30,6 +31,7 @@ const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
 >();
+const CRYPTO_CURRENCY_CODES = new Set(["BTC", "ETH"]);
 const TRANSACTION_ANALYSIS_STATUSES = [
   "pending",
   "done",
@@ -642,7 +644,23 @@ export function resolveFxRate(
   to: string,
   asOfDate = todayIso(),
 ) {
-  if (from === to) return new Decimal(1);
+  return tryResolveFxRate(dataset, from, to, asOfDate) ?? new Decimal(1);
+}
+
+function findLatestFxRateRecord(
+  dataset: DomainDataset,
+  from: string,
+  to: string,
+  asOfDate = todayIso(),
+) {
+  if (from === to) {
+    return {
+      rate: new Decimal(1),
+      asOfDate,
+      asOfTimestamp: `${asOfDate}T00:00:00Z`,
+      sourceName: "identity",
+    };
+  }
 
   const direct = [...dataset.fxRates]
     .filter(
@@ -652,7 +670,14 @@ export function resolveFxRate(
         row.asOfDate <= asOfDate,
     )
     .sort((left, right) => right.asOfDate.localeCompare(left.asOfDate))[0];
-  if (direct) return new Decimal(direct.rate);
+  if (direct) {
+    return {
+      rate: new Decimal(direct.rate),
+      asOfDate: direct.asOfDate,
+      asOfTimestamp: direct.asOfTimestamp,
+      sourceName: direct.sourceName,
+    };
+  }
 
   const reverse = [...dataset.fxRates]
     .filter(
@@ -662,9 +687,30 @@ export function resolveFxRate(
         row.asOfDate <= asOfDate,
     )
     .sort((left, right) => right.asOfDate.localeCompare(left.asOfDate))[0];
-  if (reverse) return new Decimal(1).div(reverse.rate);
+  if (reverse) {
+    return {
+      rate: new Decimal(1).div(reverse.rate),
+      asOfDate: reverse.asOfDate,
+      asOfTimestamp: reverse.asOfTimestamp,
+      sourceName: reverse.sourceName,
+    };
+  }
 
-  return new Decimal(1);
+  return null;
+}
+
+export function tryResolveFxRate(
+  dataset: DomainDataset,
+  from: string,
+  to: string,
+  asOfDate = todayIso(),
+) {
+  if (from === to) return new Decimal(1);
+  return findLatestFxRateRecord(dataset, from, to, asOfDate)?.rate ?? null;
+}
+
+export function isCryptoCurrency(currency: string | null | undefined) {
+  return typeof currency === "string" && CRYPTO_CURRENCY_CODES.has(currency);
 }
 
 export function getLatestBalanceSnapshots(
@@ -682,6 +728,24 @@ export function getLatestBalanceSnapshots(
   }
 
   return [...byAccount.values()];
+}
+
+function revalueBalanceSnapshot(
+  dataset: DomainDataset,
+  snapshot: AccountBalanceSnapshot,
+  asOfDate: string,
+) {
+  const fxRate = tryResolveFxRate(
+    dataset,
+    snapshot.balanceCurrency,
+    "EUR",
+    asOfDate,
+  );
+  if (!fxRate) {
+    return snapshot.balanceBaseEur;
+  }
+
+  return new Decimal(snapshot.balanceOriginal).mul(fxRate).toFixed(8);
 }
 
 function parseImportedBalance(
@@ -859,7 +923,13 @@ export function getLatestAccountBalances(
     asOfDate,
   );
   const snapshotsByAccount = new Map(
-    seededSnapshots.map((snapshot) => [snapshot.accountId, snapshot]),
+    seededSnapshots.map((snapshot) => [
+      snapshot.accountId,
+      {
+        ...snapshot,
+        balanceBaseEur: revalueBalanceSnapshot(dataset, snapshot, asOfDate),
+      },
+    ]),
   );
 
   for (const account of dataset.accounts) {
@@ -929,6 +999,87 @@ export function getLatestInvestmentCashBalances(
     (snapshot) =>
       accountsById.get(snapshot.accountId)?.assetDomain === "investment",
   );
+}
+
+function resolveCryptoBalanceFreshness(
+  dataset: DomainDataset,
+  currency: string,
+  asOfDate: string,
+) {
+  const latestFx = findLatestFxRateRecord(dataset, currency, "EUR", asOfDate);
+  if (!latestFx) {
+    return {
+      currentPriceEur: null,
+      quoteFreshness: "missing" as const,
+      quoteTimestamp: null,
+    };
+  }
+
+  const ageDays = dayDistance(latestFx.asOfDate, asOfDate);
+  return {
+    currentPriceEur: latestFx.rate.toFixed(8),
+    quoteFreshness:
+      ageDays <= 1
+        ? ("fresh" as const)
+        : ageDays <= 3
+          ? ("delayed" as const)
+          : ("stale" as const),
+    quoteTimestamp: latestFx.asOfTimestamp,
+  };
+}
+
+export function buildCryptoBalanceRows(
+  dataset: DomainDataset,
+  scope: Scope,
+  asOfDate = todayIso(),
+): CryptoBalanceRow[] {
+  const accountsById = new Map(
+    dataset.accounts.map((account) => [account.id, account]),
+  );
+  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
+
+  return getLatestAccountBalances(dataset, asOfDate)
+    .filter((snapshot) => {
+      const account = accountsById.get(snapshot.accountId);
+      if (!account) {
+        return false;
+      }
+      if (account.assetDomain !== "cash" || account.accountType === "credit_card") {
+        return false;
+      }
+      if (!entityIds.has(account.entityId)) {
+        return false;
+      }
+      if (scope.kind === "account" && account.id !== scope.accountId) {
+        return false;
+      }
+
+      return isCryptoCurrency(snapshot.balanceCurrency ?? account.defaultCurrency);
+    })
+    .map((snapshot) => {
+      const account = accountsById.get(snapshot.accountId)!;
+      const currency = snapshot.balanceCurrency ?? account.defaultCurrency;
+      const quote = resolveCryptoBalanceFreshness(dataset, currency, asOfDate);
+
+      return {
+        accountId: account.id,
+        entityId: account.entityId,
+        currency,
+        balanceOriginal: snapshot.balanceOriginal,
+        currentPriceEur: quote.currentPriceEur,
+        currentValueEur: quote.currentPriceEur
+          ? new Decimal(snapshot.balanceOriginal)
+              .mul(quote.currentPriceEur)
+              .toFixed(8)
+          : null,
+        quoteFreshness: quote.quoteFreshness,
+        quoteTimestamp: quote.quoteTimestamp,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
+    );
 }
 
 function latestSecurityPrice(

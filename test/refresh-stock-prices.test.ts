@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { selectOwnedStockPriceRefreshSecurities } from "../packages/db/src/index.ts";
+import {
+  selectOwnedStockPriceRefreshSecurities,
+  selectTrackedEurFxPairs,
+} from "../packages/db/src/index.ts";
 
 import {
   createAccount,
@@ -162,5 +165,92 @@ test("owned stock price refresh selection includes only open stock and ETF posit
   assert.deepEqual(selected.map((security) => security.displaySymbol).sort(), [
     "AMD",
     "VWCE",
+  ]);
+});
+
+test("tracked EUR FX pairs include cash-account and held-security currencies", () => {
+  const eurAccount = createAccount({
+    id: "eur-company-account",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "EUR",
+  });
+  const usdAccount = createAccount({
+    id: "usd-company-account",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "USD",
+  });
+  const btcAccount = createAccount({
+    id: "btc-company-account",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "BTC",
+  });
+  const investmentAccount = createAccount({
+    id: "brokerage-fx-account",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+  });
+  const dataset = createDataset({
+    accounts: [eurAccount, usdAccount, btcAccount, investmentAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: usdAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "1200.00",
+        balanceCurrency: "USD",
+        balanceBaseEur: "1104.00",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+      {
+        accountId: btcAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "0.01500000",
+        balanceCurrency: "BTC",
+        balanceBaseEur: "0.01500000",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+    securities: [
+      {
+        id: "security-amd",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "buy-amd",
+        accountId: investmentAccount.id,
+        transactionClass: "investment_trade_buy",
+        securityId: "security-amd",
+        quantity: "3",
+        amountOriginal: "-300.00",
+        amountBaseEur: "-300.00",
+      }),
+    ],
+  });
+
+  assert.deepEqual(selectTrackedEurFxPairs(dataset, "2026-04-10"), [
+    "BTC",
+    "USD",
   ]);
 });

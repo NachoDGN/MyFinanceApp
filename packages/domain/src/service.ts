@@ -30,6 +30,7 @@ import type {
 } from "./types";
 import type { FinanceRepository } from "./repository";
 import {
+  buildCryptoBalanceRows,
   buildLiveHoldingRows,
   filterTransactionsByPeriod,
   filterTransactionsByScope,
@@ -216,6 +217,7 @@ export class FinanceDomainService {
   ): Promise<HoldingsResponse> {
     const dataset = await this.repository.getDataset();
     const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
+    const cryptoBalances = buildCryptoBalanceRows(dataset, scope, referenceDate);
     const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
     const brokerageCashEur = getLatestInvestmentCashBalances(
       dataset,
@@ -233,16 +235,21 @@ export class FinanceDomainService {
       })
       .reduce((sum, row) => sum + Number(row.balanceBaseEur), 0)
       .toFixed(2);
+    const quoteStates = [
+      ...holdings.map((row) => row.quoteFreshness),
+      ...cryptoBalances.map((row) => row.quoteFreshness),
+    ];
 
     return {
       schemaVersion: "v1",
       scope,
       holdings,
-      quoteFreshness: holdings.some((row) => row.quoteFreshness === "fresh")
+      cryptoBalances,
+      quoteFreshness: quoteStates.includes("fresh")
         ? "fresh"
-        : holdings.some((row) => row.quoteFreshness === "delayed")
+        : quoteStates.includes("delayed")
           ? "delayed"
-          : holdings.some((row) => row.quoteFreshness === "stale")
+          : quoteStates.includes("stale")
             ? "stale"
             : "missing",
       brokerageCashEur,

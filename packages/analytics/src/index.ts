@@ -11,6 +11,7 @@ import type {
   Transaction,
 } from "@myfinance/domain";
 import {
+  buildCryptoBalanceRows,
   buildLiveHoldingRows,
   filterTransactionsByPeriod,
   filterTransactionsByScope,
@@ -22,6 +23,7 @@ import {
   getScopeLatestDate,
   isTransactionPendingEnrichment,
   isTransactionResolvedForAnalytics,
+  isCryptoCurrency,
   needsTransactionManualReview,
   resolveFxRate,
   resolvePeriodSelection,
@@ -302,17 +304,85 @@ function buildTrailingMonthlyFlowSeries(
   }));
 }
 
+function buildTrailingMonthlyIncomeComposition(
+  dataset: DomainDataset,
+  scope: Scope,
+  referenceDate: string,
+  monthCount: number,
+) {
+  const seriesStart = startOfTrailingMonthsIso(referenceDate, monthCount);
+  const seriesEnd = startOfMonthIso(referenceDate);
+  const monthRows = new Map<
+    string,
+    {
+      month: string;
+      operatingIncomeEur: Decimal;
+      investmentIncomeEur: Decimal;
+    }
+  >();
+
+  for (
+    let month = seriesStart;
+    month <= seriesEnd;
+    month = shiftMonthIso(month, 1)
+  ) {
+    monthRows.set(month, {
+      month,
+      operatingIncomeEur: new Decimal(0),
+      investmentIncomeEur: new Decimal(0),
+    });
+  }
+
+  const resolvedTransactions = filterTransactionsByScope(dataset, scope).filter(
+    (transaction) =>
+      isTransactionResolvedForAnalytics(transaction) &&
+      transaction.transactionDate >= seriesStart &&
+      transaction.transactionDate <= referenceDate,
+  );
+
+  for (const transaction of resolvedTransactions) {
+    const month = startOfMonthIso(transaction.transactionDate);
+    const row = monthRows.get(month);
+    if (!row) continue;
+
+    const contribution = incomeContributionEur(transaction);
+    if (!contribution) continue;
+
+    if (["dividend", "interest"].includes(transaction.transactionClass)) {
+      row.investmentIncomeEur = row.investmentIncomeEur.plus(contribution);
+      continue;
+    }
+
+    row.operatingIncomeEur = row.operatingIncomeEur.plus(contribution);
+  }
+
+  return [...monthRows.values()].map((row) => ({
+    month: row.month,
+    operatingIncomeEur: row.operatingIncomeEur.toFixed(2),
+    investmentIncomeEur: row.investmentIncomeEur.toFixed(2),
+    totalIncomeEur: row.operatingIncomeEur.plus(row.investmentIncomeEur).toFixed(2),
+  }));
+}
+
 function currentCashTotal(
   dataset: DomainDataset,
   scope: Scope,
   asOfDate: string,
 ) {
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const inScope = (accountId: string, expectedAssetDomain: "cash" | "investment") => {
+  const inScope = (
+    accountId: string,
+    expectedAssetDomain: "cash" | "investment",
+    balanceCurrency?: string,
+  ) => {
     const account = dataset.accounts.find((row) => row.id === accountId);
     return (
       account?.assetDomain === expectedAssetDomain &&
       !(expectedAssetDomain === "cash" && account.accountType === "credit_card") &&
+      !(
+        expectedAssetDomain === "cash" &&
+        isCryptoCurrency(balanceCurrency ?? account.defaultCurrency)
+      ) &&
       entityIds.has(account.entityId) &&
       (scope.kind !== "account" || account.id === scope.accountId)
     );
@@ -323,7 +393,11 @@ function currentCashTotal(
       if (!account) {
         return false;
       }
-      return inScope(snapshot.accountId, account.assetDomain);
+      return inScope(
+        snapshot.accountId,
+        account.assetDomain,
+        snapshot.balanceCurrency,
+      );
     })
     .reduce(
       (sum, snapshot) => sum.plus(snapshot.balanceBaseEur),
@@ -337,11 +411,17 @@ function currentPortfolioValue(
   scope: Scope,
   asOfDate: string,
 ) {
-  return sumStrings(
+  const holdingsValue = sumStrings(
     buildLiveHoldingRows(dataset, scope, asOfDate).map(
       (row) => row.currentValueEur,
     ),
   );
+  const cryptoValue = sumStrings(
+    buildCryptoBalanceRows(dataset, scope, asOfDate).map(
+      (row) => row.currentValueEur,
+    ),
+  );
+  return new Decimal(holdingsValue).plus(cryptoValue).toFixed(2);
 }
 
 function currentPortfolioUnrealized(
@@ -829,22 +909,38 @@ export function buildDashboardSummary(
     .filter((row) => new Decimal(row.amountEur).gt(0))
     .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
 
-  const holdings = buildLiveHoldingRows(dataset, input.scope, referenceDate).sort(
+  const holdings = buildLiveHoldingRows(
+    dataset,
+    input.scope,
+    referenceDate,
+  ).sort(
     (left, right) =>
       Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
   );
-  const totalPortfolio = new Decimal(
-    sumStrings(holdings.map((row) => row.currentValueEur)),
+  const cryptoBalances = buildCryptoBalanceRows(
+    dataset,
+    input.scope,
+    referenceDate,
   );
-  const portfolioAllocation = holdings.map((row) => ({
-    label: row.symbol,
-    amountEur: row.currentValueEur ?? "0.00",
+  const portfolioAllocationRows = [
+    ...holdings.map((row) => ({
+      label: row.symbol,
+      amountEur: row.currentValueEur ?? "0.00",
+    })),
+    ...cryptoBalances.map((row) => ({
+      label: row.currency,
+      amountEur: row.currentValueEur ?? "0.00",
+    })),
+  ];
+  const totalPortfolio = new Decimal(
+    sumStrings(portfolioAllocationRows.map((row) => row.amountEur)),
+  );
+  const portfolioAllocation = portfolioAllocationRows.map((row) => ({
+    label: row.label,
+    amountEur: row.amountEur,
     allocationPercent: totalPortfolio.eq(0)
       ? "0.00"
-      : new Decimal(row.currentValueEur ?? 0)
-          .div(totalPortfolio)
-          .mul(100)
-          .toFixed(2),
+      : new Decimal(row.amountEur).div(totalPortfolio).mul(100).toFixed(2),
   }));
 
   const recentLargeTransactions = [...scopedTransactions]
@@ -952,6 +1048,7 @@ function buildHoldingsSnapshot(
   referenceDate: string,
 ) {
   const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
+  const cryptoBalances = buildCryptoBalanceRows(dataset, scope, referenceDate);
   const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
   const brokerageCashEur = getLatestInvestmentCashBalances(
     dataset,
@@ -972,16 +1069,21 @@ function buildHoldingsSnapshot(
       new Decimal(0),
     )
     .toFixed(2);
+  const quoteStates = [
+    ...holdings.map((row) => row.quoteFreshness),
+    ...cryptoBalances.map((row) => row.quoteFreshness),
+  ];
 
   return {
     schemaVersion: "v1" as const,
     scope,
     holdings,
-    quoteFreshness: holdings.some((row) => row.quoteFreshness === "fresh")
+    cryptoBalances,
+    quoteFreshness: quoteStates.includes("fresh")
       ? ("fresh" as const)
-      : holdings.some((row) => row.quoteFreshness === "delayed")
+      : quoteStates.includes("delayed")
         ? ("delayed" as const)
-        : holdings.some((row) => row.quoteFreshness === "stale")
+        : quoteStates.includes("stale")
           ? ("stale" as const)
           : ("missing" as const),
     brokerageCashEur,
@@ -1125,6 +1227,7 @@ export function buildIncomeReadModel(
   },
 ) {
   const summary = buildDashboardSummary(dataset, input);
+  const referenceDate = input.referenceDate ?? todayIso();
   const transactions = scopedTransactions(
     dataset,
     input.scope,
@@ -1155,6 +1258,22 @@ export function buildIncomeReadModel(
           .mul(100)
           .toFixed(2)
       : "0.00";
+  const trailingThreeMonthAverage = averageMonthlySeries(
+    summary.monthlySeries,
+    "incomeEur",
+    3,
+  );
+  const ytdPeriod = resolvePeriodSelection({
+    preset: "ytd",
+    referenceDate,
+  });
+  const incomeCompletenessPercent =
+    transactions.length === 0
+      ? "100.00"
+      : new Decimal(resolvedTransactions.length)
+          .div(transactions.length)
+          .mul(100)
+          .toFixed(2);
 
   return {
     summary,
@@ -1162,12 +1281,20 @@ export function buildIncomeReadModel(
     incomeMetric,
     sourceRows,
     investmentIncomeRows,
-    trailingThreeMonthAverage: averageMonthlySeries(
-      summary.monthlySeries,
-      "incomeEur",
-      3,
+    trailingThreeMonthAverage,
+    monthlyIncomeComposition: buildTrailingMonthlyIncomeComposition(
+      dataset,
+      input.scope,
+      referenceDate,
+      6,
     ),
     topSourceShare,
+    activeSourceCount: sourceRows.length,
+    ytdIncomeTotal: flowMetric(dataset, input.scope, ytdPeriod, "income"),
+    projectedYearIncome: new Decimal(trailingThreeMonthAverage)
+      .mul(12)
+      .toFixed(2),
+    incomeCompletenessPercent,
     investmentIncome: sumTransactionAmounts(
       investmentIncomeRows,
       (transaction) => new Decimal(transaction.amountBaseEur),
@@ -1200,11 +1327,11 @@ export function buildInvestmentsReadModel(
     ["dividend", "interest", "transfer_internal"],
   ).filter((transaction) => isTransactionResolvedForAnalytics(transaction));
   const accountAllocation = aggregateAmountRows(
-    holdings.holdings,
-    (holding) =>
-      dataset.accounts.find((account) => account.id === holding.accountId)
-        ?.displayName ?? holding.accountId,
-    (holding) => new Decimal(holding.currentValueEur ?? 0),
+    [...holdings.holdings, ...holdings.cryptoBalances],
+    (row) =>
+      dataset.accounts.find((account) => account.id === row.accountId)
+        ?.displayName ?? row.accountId,
+    (row) => new Decimal(row.currentValueEur ?? 0),
   );
   const unresolved = sortTransactionsNewestFirst(
     filterTransactionsByScope(dataset, input.scope).filter((transaction) => {

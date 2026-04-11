@@ -601,6 +601,17 @@ export interface HoldingRow {
   unrealizedComplete: boolean;
 }
 
+export interface CryptoBalanceRow {
+  accountId: string;
+  entityId: string;
+  currency: CurrencyCode;
+  balanceOriginal: string;
+  currentPriceEur: string | null;
+  currentValueEur: string | null;
+  quoteFreshness: PriceFreshness;
+  quoteTimestamp: string | null;
+}
+
 export interface DomainDataset {
   schemaVersion: "v1";
   profile: Profile;
@@ -670,6 +681,7 @@ export interface HoldingsResponse {
   schemaVersion: "v1";
   scope: Scope;
   holdings: HoldingRow[];
+  cryptoBalances: CryptoBalanceRow[];
   quoteFreshness: PriceFreshness;
   brokerageCashEur: string;
   generatedAt: string;

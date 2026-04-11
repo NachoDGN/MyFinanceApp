@@ -4,7 +4,7 @@ export const metricRegistry: MetricDefinition[] = [
   {
     metricId: "net_worth_current",
     displayName: "Net Worth",
-    description: "Latest cash plus latest portfolio market value, excluding double-counting of securities as cash.",
+    description: "Latest fiat cash plus latest portfolio market value, including crypto treasury balances and excluding double-counting.",
     metricClass: "current_value",
     unitType: "currency",
     supportedScopes: ["consolidated", "entity", "account"],
@@ -18,7 +18,7 @@ export const metricRegistry: MetricDefinition[] = [
   {
     metricId: "cash_total_current",
     displayName: "Cash",
-    description: "Latest statement or computed cash balances across cash accounts and brokerage cash.",
+    description: "Latest fiat cash balances across cash accounts and brokerage cash, excluding crypto treasury balances.",
     metricClass: "current_value",
     unitType: "currency",
     supportedScopes: ["consolidated", "entity", "account"],
@@ -74,7 +74,7 @@ export const metricRegistry: MetricDefinition[] = [
   {
     metricId: "portfolio_market_value_current",
     displayName: "Portfolio Value",
-    description: "Current open-position market value converted to EUR, excluding brokerage cash.",
+    description: "Current open-position market value plus crypto treasury balances, converted to EUR and excluding brokerage cash.",
     metricClass: "current_value",
     unitType: "currency",
     supportedScopes: ["consolidated", "entity", "account"],
