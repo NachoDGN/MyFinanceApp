@@ -1,7 +1,14 @@
 import type {
   Account,
+  AccountBalanceSnapshot,
   ClassificationRule,
   DomainDataset,
+  FxRate,
+  InvestmentPosition,
+  ManualInvestment,
+  ManualInvestmentValuation,
+  Security,
+  SecurityPrice,
   Transaction,
 } from "../../packages/domain/src/index.ts";
 
@@ -107,6 +114,184 @@ export function createTransaction(
     updatedAt: "2026-04-01T08:00:00Z",
     ...overrides,
   };
+}
+
+export function createInvestmentAccount(
+  overrides: Partial<Account> = {},
+): Account {
+  return createAccount({
+    id: "brokerage-1",
+    institutionName: "Broker",
+    displayName: "Brokerage",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    defaultCurrency: "EUR",
+    ...overrides,
+  });
+}
+
+export function createInvestmentTransaction(
+  account: Pick<Account, "id" | "entityId">,
+  overrides: Partial<Transaction> = {},
+): Transaction {
+  return createTransaction({
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    transactionClass: "unknown",
+    categoryCode: "uncategorized_investment",
+    classificationStatus: "unknown",
+    classificationSource: "system_fallback",
+    classificationConfidence: "0.00",
+    needsReview: true,
+    reviewReason: "Needs LLM enrichment.",
+    ...overrides,
+  });
+}
+
+export function createSecurity(overrides: Partial<Security> = {}): Security {
+  return {
+    id: "security-1",
+    providerName: "manual",
+    providerSymbol: "ABC",
+    canonicalSymbol: "ABC",
+    displaySymbol: "ABC",
+    name: "ABC Corp",
+    exchangeName: "NYSE",
+    micCode: "XNYS",
+    assetType: "stock",
+    quoteCurrency: "USD",
+    country: "US",
+    isin: null,
+    figi: null,
+    active: true,
+    metadataJson: {},
+    lastPriceRefreshAt: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+export function createSecurityPrice(
+  overrides: Partial<SecurityPrice> = {},
+): SecurityPrice {
+  return {
+    securityId: "security-1",
+    priceDate: "2026-04-03",
+    quoteTimestamp: "2026-04-03T15:00:00Z",
+    price: "10.00",
+    currency: "USD",
+    sourceName: "twelve_data",
+    isRealtime: false,
+    isDelayed: true,
+    marketState: "closed",
+    rawJson: {},
+    createdAt: "2026-04-03T15:00:00Z",
+    ...overrides,
+  };
+}
+
+export function createFxRate(overrides: Partial<FxRate> = {}): FxRate {
+  return {
+    baseCurrency: "USD",
+    quoteCurrency: "EUR",
+    asOfDate: "2026-04-03",
+    asOfTimestamp: "2026-04-03T15:00:00Z",
+    rate: "0.500000",
+    sourceName: "ecb",
+    rawJson: {},
+    ...overrides,
+  };
+}
+
+export function createAccountBalanceSnapshot(
+  overrides: Partial<AccountBalanceSnapshot> = {},
+): AccountBalanceSnapshot {
+  return {
+    accountId: "account-1",
+    asOfDate: "2026-04-03",
+    balanceOriginal: "100.00",
+    balanceCurrency: "EUR",
+    balanceBaseEur: "100.00",
+    sourceKind: "statement",
+    importBatchId: null,
+    ...overrides,
+  };
+}
+
+export function createInvestmentPosition(
+  overrides: Partial<InvestmentPosition> = {},
+): InvestmentPosition {
+  return {
+    userId: profile.id,
+    entityId: entity.id,
+    accountId: "brokerage-1",
+    securityId: "security-1",
+    openQuantity: "4.00",
+    openCostBasisEur: "15.00",
+    avgCostEur: "3.75",
+    realizedPnlEur: "0.00",
+    dividendsEur: "0.00",
+    interestEur: "0.00",
+    feesEur: "0.00",
+    lastTradeDate: "2026-04-01",
+    lastRebuiltAt: "2026-04-03T16:00:00Z",
+    provenanceJson: {},
+    unrealizedComplete: true,
+    ...overrides,
+  };
+}
+
+export function createManualInvestment(
+  overrides: Partial<ManualInvestment> = {},
+): ManualInvestment {
+  return {
+    id: "manual-investment-1",
+    userId: profile.id,
+    entityId: entity.id,
+    fundingAccountId: "account-1",
+    label: "Manual Investment",
+    matcherText: "manual investment",
+    note: null,
+    createdAt: "2026-04-02T09:00:00Z",
+    updatedAt: "2026-04-02T09:00:00Z",
+    ...overrides,
+  };
+}
+
+export function createManualInvestmentValuation(
+  overrides: Partial<ManualInvestmentValuation> = {},
+): ManualInvestmentValuation {
+  return {
+    id: "manual-investment-valuation-1",
+    userId: profile.id,
+    manualInvestmentId: "manual-investment-1",
+    snapshotDate: "2026-04-03",
+    currentValueOriginal: "1012.50",
+    currentValueCurrency: "EUR",
+    note: "Manual mark-to-market",
+    createdAt: "2026-04-03T10:00:00Z",
+    updatedAt: "2026-04-03T10:00:00Z",
+    ...overrides,
+  };
+}
+
+export function createInvestmentDatasetFixture(
+  input: Omit<Partial<DomainDataset>, "accounts" | "transactions"> & {
+    account?: Partial<Account>;
+    transactions?: Array<Partial<Transaction>>;
+  } = {},
+): DomainDataset {
+  const account = createInvestmentAccount(input.account);
+  const { account: _account, transactions = [], ...overrides } = input;
+
+  return createDataset({
+    ...overrides,
+    accounts: [account],
+    transactions: transactions.map((transaction) =>
+      createInvestmentTransaction(account, transaction),
+    ),
+  });
 }
 
 export function createRule(

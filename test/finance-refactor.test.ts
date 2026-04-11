@@ -48,8 +48,18 @@ import {
 
 import {
   createAccount,
+  createAccountBalanceSnapshot,
   createDataset,
+  createFxRate,
+  createInvestmentAccount,
+  createInvestmentDatasetFixture,
+  createInvestmentPosition,
+  createInvestmentTransaction,
+  createManualInvestment,
+  createManualInvestmentValuation,
   createRule,
+  createSecurity,
+  createSecurityPrice,
   createTransaction,
 } from "./support/create-dataset";
 import {
@@ -1852,36 +1862,21 @@ test("rule matching respects account scope", () => {
 
 test("investment rebuild upgrades stale unknown investment rows into parsed trade buys", async () => {
   await withRuntimeOverrides({ env: { TWELVE_DATA_API_KEY: "" } }, async () => {
-    const account = createAccount({
-      id: "broker-1",
-      assetDomain: "investment",
-      accountType: "brokerage_account",
-      institutionName: "Broker",
-      displayName: "Brokerage",
-    });
-    const transaction = createTransaction({
-      id: "vanguard-row",
-      accountId: account.id,
-      accountEntityId: account.entityId,
-      economicEntityId: account.entityId,
-      transactionDate: "2026-03-24",
-      postedDate: "2026-03-24",
-      amountOriginal: "-99.58",
-      amountBaseEur: "-99.58",
-      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
-      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-      transactionClass: "unknown",
-      categoryCode: "uncategorized_investment",
-      classificationStatus: "unknown",
-      classificationSource: "system_fallback",
-      classificationConfidence: "0.00",
-      needsReview: true,
-      reviewReason:
-        "The description suggests an investment but lacks details for precise classification.",
-    });
-    const dataset = createDataset({
-      accounts: [account],
-      transactions: [transaction],
+    const dataset = createInvestmentDatasetFixture({
+      account: { id: "broker-1" },
+      transactions: [
+        {
+          id: "vanguard-row",
+          transactionDate: "2026-03-24",
+          postedDate: "2026-03-24",
+          amountOriginal: "-99.58",
+          amountBaseEur: "-99.58",
+          descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+          descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+          reviewReason:
+            "The description suggests an investment but lacks details for precise classification.",
+        },
+      ],
     });
 
     const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
@@ -1895,41 +1890,30 @@ test("investment rebuild upgrades stale unknown investment rows into parsed trad
 
 test("investment rebuild explains when a mapped trade still lacks quantity", async () => {
   await withRuntimeOverrides({ env: { TWELVE_DATA_API_KEY: "" } }, async () => {
-    const account = createAccount({
-      id: "broker-2",
-      assetDomain: "investment",
-      accountType: "brokerage_account",
-      institutionName: "Broker",
-      displayName: "Brokerage",
-    });
-    const transaction = createTransaction({
-      id: "mapped-without-quantity",
-      accountId: account.id,
-      accountEntityId: account.entityId,
-      economicEntityId: account.entityId,
-      transactionDate: "2026-03-24",
-      postedDate: "2026-03-24",
-      amountOriginal: "-99.58",
-      amountBaseEur: "-99.58",
-      descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
-      descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-      transactionClass: "investment_trade_buy",
-      categoryCode: "stock_buy",
-      classificationStatus: "investment_parser",
-      classificationSource: "investment_parser",
-      classificationConfidence: "0.96",
-      securityId: "security-vusa",
-      needsReview: true,
-      reviewReason:
-        "The description suggests an investment but lacks details for precise classification.",
-    });
-    const dataset = createDataset({
-      accounts: [account],
-      transactions: [transaction],
-      securities: [
+    const dataset = createInvestmentDatasetFixture({
+      account: { id: "broker-2" },
+      transactions: [
         {
+          id: "mapped-without-quantity",
+          transactionDate: "2026-03-24",
+          postedDate: "2026-03-24",
+          amountOriginal: "-99.58",
+          amountBaseEur: "-99.58",
+          descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+          descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+          transactionClass: "investment_trade_buy",
+          categoryCode: "stock_buy",
+          classificationStatus: "investment_parser",
+          classificationSource: "investment_parser",
+          classificationConfidence: "0.96",
+          securityId: "security-vusa",
+          reviewReason:
+            "The description suggests an investment but lacks details for precise classification.",
+        },
+      ],
+      securities: [
+        createSecurity({
           id: "security-vusa",
-          providerName: "manual",
           providerSymbol: "VUSA",
           canonicalSymbol: "VUSA",
           displaySymbol: "VUSA",
@@ -1939,13 +1923,7 @@ test("investment rebuild explains when a mapped trade still lacks quantity", asy
           assetType: "etf",
           quoteCurrency: "EUR",
           country: "IE",
-          isin: null,
-          figi: null,
-          active: true,
-          metadataJson: {},
-          lastPriceRefreshAt: null,
-          createdAt: "2026-01-01T00:00:00Z",
-        },
+        }),
       ],
     });
 
@@ -1988,58 +1966,38 @@ test("investment rebuild flags trades whose implied unit price is implausible", 
       },
     },
     async () => {
-      const account = createAccount({
-        id: "broker-4",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "goog-mismatch",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-16",
-        postedDate: "2026-03-16",
-        amountOriginal: "1.89",
-        amountBaseEur: "1.89",
-        descriptionRaw: "ALPHABET INC CL C @ 15",
-        descriptionClean: "ALPHABET INC CL C @ 15",
-        transactionClass: "investment_trade_sell",
-        categoryCode: "uncategorized_investment",
-        classificationStatus: "investment_parser",
-        classificationSource: "investment_parser",
-        classificationConfidence: "0.96",
-        securityId: "security-goog",
-        quantity: "15.00000000",
-        unitPriceOriginal: "0.13000000",
-        needsReview: false,
-        reviewReason: null,
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
-        securities: [
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-4" },
+        transactions: [
           {
+            id: "goog-mismatch",
+            transactionDate: "2026-03-16",
+            postedDate: "2026-03-16",
+            amountOriginal: "1.89",
+            amountBaseEur: "1.89",
+            descriptionRaw: "ALPHABET INC CL C @ 15",
+            descriptionClean: "ALPHABET INC CL C @ 15",
+            transactionClass: "investment_trade_sell",
+            classificationStatus: "investment_parser",
+            classificationSource: "investment_parser",
+            classificationConfidence: "0.96",
+            securityId: "security-goog",
+            quantity: "15.00000000",
+            unitPriceOriginal: "0.13000000",
+            needsReview: false,
+            reviewReason: null,
+          },
+        ],
+        securities: [
+          createSecurity({
             id: "security-goog",
-            providerName: "manual",
             providerSymbol: "GOOG",
             canonicalSymbol: "GOOG",
             displaySymbol: "GOOG",
             name: "Alphabet Inc.",
             exchangeName: "NASDAQ",
             micCode: "XNGS",
-            assetType: "stock",
-            quoteCurrency: "USD",
-            country: "US",
-            isin: null,
-            figi: null,
-            active: true,
-            metadataJson: {},
-            lastPriceRefreshAt: null,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
+          }),
         ],
       });
 
@@ -2084,41 +2042,31 @@ test("investment rebuild rejects historical quotes that are far older than the r
       },
     },
     async () => {
-      const account = createAccount({
-        id: "broker-historical-drift",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "intc-missing-quantity",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-12",
-        postedDate: "2026-03-12",
-        amountOriginal: "-41.00",
-        amountBaseEur: "-37.72",
-        currencyOriginal: "USD",
-        descriptionRaw: "INTEL CORP",
-        descriptionClean: "INTEL CORP",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        classificationStatus: "investment_parser",
-        classificationSource: "investment_parser",
-        classificationConfidence: "0.96",
-        securityId: "security-intc-drift",
-        quantity: null,
-        unitPriceOriginal: null,
-        needsReview: true,
-        reviewReason: "Needs quantity derivation.",
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
-        securities: [
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-historical-drift" },
+        transactions: [
           {
+            id: "intc-missing-quantity",
+            transactionDate: "2026-03-12",
+            postedDate: "2026-03-12",
+            amountOriginal: "-41.00",
+            amountBaseEur: "-37.72",
+            currencyOriginal: "USD",
+            descriptionRaw: "INTEL CORP",
+            descriptionClean: "INTEL CORP",
+            transactionClass: "investment_trade_buy",
+            categoryCode: "stock_buy",
+            classificationStatus: "investment_parser",
+            classificationSource: "investment_parser",
+            classificationConfidence: "0.96",
+            securityId: "security-intc-drift",
+            quantity: null,
+            unitPriceOriginal: null,
+            reviewReason: "Needs quantity derivation.",
+          },
+        ],
+        securities: [
+          createSecurity({
             id: "security-intc-drift",
             providerName: "twelve_data",
             providerSymbol: "INTC",
@@ -2127,27 +2075,16 @@ test("investment rebuild rejects historical quotes that are far older than the r
             name: "Intel Corporation",
             exchangeName: "NASDAQ",
             micCode: "XNGS",
-            assetType: "stock",
-            quoteCurrency: "USD",
             country: "United States",
-            isin: null,
-            figi: null,
-            active: true,
-            metadataJson: {},
-            lastPriceRefreshAt: null,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
+          }),
         ],
         fxRates: [
-          {
-            baseCurrency: "USD",
-            quoteCurrency: "EUR",
+          createFxRate({
             asOfDate: "2026-03-12",
             asOfTimestamp: "2026-03-12T16:00:00Z",
             rate: "0.92000000",
             sourceName: "twelve_data",
-            rawJson: {},
-          },
+          }),
         ],
       });
 
@@ -2205,20 +2142,14 @@ test("investment rebuild requests end-of-day quotes on weekends", async () => {
       },
     },
     async () => {
-      const investmentAccount = createAccount({
-        id: "brokerage-weekend",
-        accountType: "brokerage_account",
-        assetDomain: "investment",
-        defaultCurrency: "USD",
-      });
-      const dataset = createDataset({
-        accounts: [investmentAccount],
+      const dataset = createInvestmentDatasetFixture({
+        account: {
+          id: "brokerage-weekend",
+          defaultCurrency: "USD",
+        },
         transactions: [
-          createTransaction({
+          {
             id: "weekend-buy",
-            accountId: investmentAccount.id,
-            accountEntityId: investmentAccount.entityId,
-            economicEntityId: investmentAccount.entityId,
             transactionDate: "2026-04-01",
             postedDate: "2026-04-01",
             amountOriginal: "-100.00",
@@ -2234,10 +2165,11 @@ test("investment rebuild requests end-of-day quotes on weekends", async () => {
             securityId: "security-amd-weekend",
             quantity: "1.00000000",
             unitPriceOriginal: "100.00",
-          }),
+            needsReview: false,
+          },
         ],
         securities: [
-          {
+          createSecurity({
             id: "security-amd-weekend",
             providerName: "twelve_data",
             providerSymbol: "AMD",
@@ -2246,42 +2178,25 @@ test("investment rebuild requests end-of-day quotes on weekends", async () => {
             name: "Advanced Micro Devices Inc",
             exchangeName: "NASDAQ",
             micCode: "XNAS",
-            assetType: "stock",
-            quoteCurrency: "USD",
-            country: "US",
-            isin: null,
-            figi: null,
-            active: true,
-            metadataJson: {},
-            lastPriceRefreshAt: null,
             createdAt: "2026-04-01T08:00:00Z",
-          },
+          }),
         ],
         securityPrices: [
-          {
+          createSecurityPrice({
             securityId: "security-amd-weekend",
             priceDate: "2026-04-03",
             quoteTimestamp: "2026-04-03T08:20:00Z",
             price: "152.40",
-            currency: "USD",
-            sourceName: "twelve_data",
-            isRealtime: false,
-            isDelayed: true,
-            marketState: "closed",
-            rawJson: {},
             createdAt: "2026-04-03T12:37:43Z",
-          },
+          }),
         ],
         fxRates: [
-          {
-            baseCurrency: "USD",
-            quoteCurrency: "EUR",
+          createFxRate({
             asOfDate: "2026-04-03",
             asOfTimestamp: "2026-04-03T20:00:00Z",
             rate: "0.92000000",
             sourceName: "twelve_data",
-            rawJson: {},
-          },
+          }),
         ],
       });
 
@@ -2307,73 +2222,46 @@ test("investment rebuild uses stored historical prices for price sanity checks",
   await withRuntimeOverrides(
     { env: { TWELVE_DATA_API_KEY: undefined } },
     async () => {
-      const account = createAccount({
-        id: "broker-4b",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "goog-stored-mismatch",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-16",
-        postedDate: "2026-03-16",
-        amountOriginal: "1.89",
-        amountBaseEur: "1.89",
-        descriptionRaw: "ALPHABET INC CL C @ 15",
-        descriptionClean: "ALPHABET INC CL C @ 15",
-        transactionClass: "investment_trade_sell",
-        categoryCode: "uncategorized_investment",
-        classificationStatus: "investment_parser",
-        classificationSource: "investment_parser",
-        classificationConfidence: "0.96",
-        securityId: "security-goog-stored",
-        quantity: "15.00000000",
-        unitPriceOriginal: "0.13000000",
-        needsReview: false,
-        reviewReason: null,
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
-        securities: [
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-4b" },
+        transactions: [
           {
+            id: "goog-stored-mismatch",
+            transactionDate: "2026-03-16",
+            postedDate: "2026-03-16",
+            amountOriginal: "1.89",
+            amountBaseEur: "1.89",
+            descriptionRaw: "ALPHABET INC CL C @ 15",
+            descriptionClean: "ALPHABET INC CL C @ 15",
+            transactionClass: "investment_trade_sell",
+            classificationStatus: "investment_parser",
+            classificationSource: "investment_parser",
+            classificationConfidence: "0.96",
+            securityId: "security-goog-stored",
+            quantity: "15.00000000",
+            unitPriceOriginal: "0.13000000",
+            needsReview: false,
+            reviewReason: null,
+          },
+        ],
+        securities: [
+          createSecurity({
             id: "security-goog-stored",
-            providerName: "manual",
             providerSymbol: "GOOG",
             canonicalSymbol: "GOOG",
             displaySymbol: "GOOG",
             name: "Alphabet Inc.",
             exchangeName: "NASDAQ",
             micCode: "XNGS",
-            assetType: "stock",
-            quoteCurrency: "USD",
-            country: "US",
-            isin: null,
-            figi: null,
-            active: true,
-            metadataJson: {},
-            lastPriceRefreshAt: null,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
+          }),
         ],
         securityPrices: [
-          {
+          createSecurityPrice({
             securityId: "security-goog-stored",
             priceDate: "2026-03-13",
             quoteTimestamp: "2026-03-13T16:00:00Z",
             price: "301.45999",
-            currency: "USD",
-            sourceName: "twelve_data",
-            isRealtime: false,
-            isDelayed: true,
-            marketState: "closed",
-            rawJson: {},
-            createdAt: "2026-03-13T16:00:00Z",
-          },
+          }),
         ],
       });
 
@@ -2391,21 +2279,11 @@ test("investment rebuild uses stored historical prices for price sanity checks",
 });
 
 test("investment rebuild clears quantity and unit price for non-trade rows", async () => {
-  const account = createAccount({
-    id: "broker-fee-cleanup",
-    assetDomain: "investment",
-    accountType: "brokerage_account",
-    institutionName: "Broker",
-    displayName: "Brokerage",
-  });
-  const dataset = createDataset({
-    accounts: [account],
+  const dataset = createInvestmentDatasetFixture({
+    account: { id: "broker-fee-cleanup" },
     transactions: [
-      createTransaction({
+      {
         id: "commission-row",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
         transactionDate: "2026-03-16",
         postedDate: "2026-03-16",
         amountOriginal: "1.89",
@@ -2422,28 +2300,18 @@ test("investment rebuild clears quantity and unit price for non-trade rows", asy
         unitPriceOriginal: "0.13000000",
         needsReview: false,
         reviewReason: null,
-      }),
+      },
     ],
     securities: [
-      {
+      createSecurity({
         id: "security-goog-fee",
-        providerName: "manual",
         providerSymbol: "GOOG",
         canonicalSymbol: "GOOG",
         displaySymbol: "GOOG",
         name: "Alphabet Inc.",
         exchangeName: "NASDAQ",
         micCode: "XNGS",
-        assetType: "stock",
-        quoteCurrency: "USD",
-        country: "US",
-        isin: null,
-        figi: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-        createdAt: "2026-01-01T00:00:00Z",
-      },
+      }),
     ],
   });
 
@@ -2455,36 +2323,26 @@ test("investment rebuild clears quantity and unit price for non-trade rows", asy
 });
 
 test("investment rebuild clears stale review flags for deterministic interest rows", async () => {
-  const account = createAccount({
-    id: "broker-interest",
-    assetDomain: "investment",
-    accountType: "brokerage_account",
-    institutionName: "Broker",
-    displayName: "Brokerage",
-  });
-  const transaction = createTransaction({
-    id: "period-interest",
-    accountId: account.id,
-    accountEntityId: account.entityId,
-    economicEntityId: account.entityId,
-    transactionDate: "2026-03-20",
-    postedDate: "2026-03-20",
-    amountOriginal: "0.14",
-    amountBaseEur: "0.14",
-    descriptionRaw: "PERIODO 19/02/2026 19/03/2026",
-    descriptionClean: "PERIODO 19/02/2026 19/03/2026",
-    transactionClass: "interest",
-    categoryCode: "interest",
-    classificationStatus: "llm",
-    classificationSource: "llm",
-    classificationConfidence: "0.61",
-    needsReview: true,
-    reviewReason:
-      "The transaction description and data do not clearly indicate a known transaction type or category.",
-  });
-  const dataset = createDataset({
-    accounts: [account],
-    transactions: [transaction],
+  const dataset = createInvestmentDatasetFixture({
+    account: { id: "broker-interest" },
+    transactions: [
+      {
+        id: "period-interest",
+        transactionDate: "2026-03-20",
+        postedDate: "2026-03-20",
+        amountOriginal: "0.14",
+        amountBaseEur: "0.14",
+        descriptionRaw: "PERIODO 19/02/2026 19/03/2026",
+        descriptionClean: "PERIODO 19/02/2026 19/03/2026",
+        transactionClass: "interest",
+        categoryCode: "interest",
+        classificationStatus: "llm",
+        classificationSource: "llm",
+        classificationConfidence: "0.61",
+        reviewReason:
+          "The transaction description and data do not clearly indicate a known transaction type or category.",
+      },
+    ],
   });
 
   const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-20");
@@ -2495,35 +2353,19 @@ test("investment rebuild clears stale review flags for deterministic interest ro
 });
 
 test("investment rebuild clears stale review flags for zero-amount IRPF interest withholding memos", async () => {
-  const account = createAccount({
-    id: "broker-irpf-memo",
-    assetDomain: "investment",
-    accountType: "brokerage_account",
-    institutionName: "Broker",
-    displayName: "Brokerage",
-  });
-  const transaction = createTransaction({
-    id: "period-irpf-memo",
-    accountId: account.id,
-    accountEntityId: account.entityId,
-    economicEntityId: account.entityId,
-    transactionDate: "2025-01-03",
-    postedDate: "2025-01-03",
-    amountOriginal: "0.00",
-    amountBaseEur: "0.00",
-    descriptionRaw: "Retenci√≥n IRPF intereses dicie",
-    descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
-    transactionClass: "unknown",
-    categoryCode: "uncategorized_investment",
-    classificationStatus: "unknown",
-    classificationSource: "system_fallback",
-    classificationConfidence: "0.00",
-    needsReview: true,
-    reviewReason: "Needs LLM enrichment.",
-  });
-  const dataset = createDataset({
-    accounts: [account],
-    transactions: [transaction],
+  const dataset = createInvestmentDatasetFixture({
+    account: { id: "broker-irpf-memo" },
+    transactions: [
+      {
+        id: "period-irpf-memo",
+        transactionDate: "2025-01-03",
+        postedDate: "2025-01-03",
+        amountOriginal: "0.00",
+        amountBaseEur: "0.00",
+        descriptionRaw: "Retenci√≥n IRPF intereses dicie",
+        descriptionClean: "RETENCI√≥N IRPF INTERESES DICIE",
+      },
+    ],
   });
 
   const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-16");
@@ -2727,37 +2569,27 @@ test("investment rebuild prefers Samsung's London DR over preferred German listi
       },
     },
     async () => {
-      const account = createAccount({
-        id: "broker-samsung-dr",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "samsung-gdr-144a",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-04",
-        postedDate: "2026-03-06",
-        amountOriginal: "-2598.00",
-        amountBaseEur: "-2598.00",
-        descriptionRaw: "SAMSUNG ELECTR-GDR 144-A @ 1",
-        descriptionClean: "SAMSUNG ELECTR-GDR 144-A @ 1",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        classificationStatus: "investment_parser",
-        classificationSource: "investment_parser",
-        classificationConfidence: "0.96",
-        quantity: "1.00000000",
-        unitPriceOriginal: "2598.00000000",
-        needsReview: true,
-        reviewReason: "Security mapping requires review.",
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-samsung-dr" },
+        transactions: [
+          {
+            id: "samsung-gdr-144a",
+            transactionDate: "2026-03-04",
+            postedDate: "2026-03-06",
+            amountOriginal: "-2598.00",
+            amountBaseEur: "-2598.00",
+            descriptionRaw: "SAMSUNG ELECTR-GDR 144-A @ 1",
+            descriptionClean: "SAMSUNG ELECTR-GDR 144-A @ 1",
+            transactionClass: "investment_trade_buy",
+            categoryCode: "stock_buy",
+            classificationStatus: "investment_parser",
+            classificationSource: "investment_parser",
+            classificationConfidence: "0.96",
+            quantity: "1.00000000",
+            unitPriceOriginal: "2598.00000000",
+            reviewReason: "Security mapping requires review.",
+          },
+        ],
       });
 
       const rebuilt = await prepareInvestmentRebuild(dataset, "2026-04-05");
@@ -2798,60 +2630,51 @@ test("manual review notes can remap an ETF security to a mutual fund candidate",
       },
     },
     async () => {
-      const account = createAccount({
-        id: "broker-review-remap",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "review-remap-vanguard",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-24",
-        postedDate: "2026-03-24",
-        amountOriginal: "-99.58",
-        amountBaseEur: "-99.58",
-        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
-        descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        classificationStatus: "llm",
-        classificationSource: "llm",
-        classificationConfidence: "0.94",
-        securityId: "security-vusa-eur",
-        manualNotes: "This is an index fund in EUR, not an ETF.",
-        llmPayload: {
-          llm: {
-            rawOutput: {
-              resolved_instrument_name:
-                "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
-              resolved_instrument_isin: "IE00B03HCZ61",
-              resolved_instrument_ticker: null,
-              resolved_instrument_exchange: null,
-              current_price: 102.44,
-              current_price_currency: "EUR",
-              current_price_timestamp: "2026-04-04T09:00:00Z",
-              current_price_source: "Official Vanguard factsheet",
-              current_price_type: "NAV",
-            },
-          },
-          reviewContext: {
-            trigger: "manual_review_update",
-            userProvidedContext: "This is an index fund in EUR, not an ETF.",
-          },
-        },
-        needsReview: true,
-        reviewReason:
-          'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
-        securities: [
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-review-remap" },
+        transactions: [
           {
+            id: "review-remap-vanguard",
+            transactionDate: "2026-03-24",
+            postedDate: "2026-03-24",
+            amountOriginal: "-99.58",
+            amountBaseEur: "-99.58",
+            descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+            descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+            transactionClass: "investment_trade_buy",
+            categoryCode: "stock_buy",
+            classificationStatus: "llm",
+            classificationSource: "llm",
+            classificationConfidence: "0.94",
+            securityId: "security-vusa-eur",
+            manualNotes: "This is an index fund in EUR, not an ETF.",
+            llmPayload: {
+              llm: {
+                rawOutput: {
+                  resolved_instrument_name:
+                    "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+                  resolved_instrument_isin: "IE00B03HCZ61",
+                  resolved_instrument_ticker: null,
+                  resolved_instrument_exchange: null,
+                  current_price: 102.44,
+                  current_price_currency: "EUR",
+                  current_price_timestamp: "2026-04-04T09:00:00Z",
+                  current_price_source: "Official Vanguard factsheet",
+                  current_price_type: "NAV",
+                },
+              },
+              reviewContext: {
+                trigger: "manual_review_update",
+                userProvidedContext:
+                  "This is an index fund in EUR, not an ETF.",
+              },
+            },
+            reviewReason:
+              'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+          },
+        ],
+        securities: [
+          createSecurity({
             id: "security-vusa-eur",
             providerName: "twelve_data",
             providerSymbol: "VUSA",
@@ -2863,15 +2686,10 @@ test("manual review notes can remap an ETF security to a mutual fund candidate",
             assetType: "etf",
             quoteCurrency: "EUR",
             country: "Germany",
-            isin: null,
-            figi: null,
-            active: true,
             metadataJson: {
               instrumentType: "ETF",
             },
-            lastPriceRefreshAt: null,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
+          }),
         ],
         securityAliases: [
           {
@@ -2955,62 +2773,52 @@ test("exact ISIN from a manual re-review can remap a mismatched ETF security", a
       },
     },
     async () => {
-      const account = createAccount({
-        id: "broker-review-isin-remap",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "review-isin-remap-vanguard",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-24",
-        postedDate: "2026-03-24",
-        amountOriginal: "-99.58",
-        amountBaseEur: "-99.58",
-        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
-        descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        classificationStatus: "llm",
-        classificationSource: "llm",
-        classificationConfidence: "0.94",
-        securityId: "security-vusa-eur",
-        manualNotes:
-          "Exact ISIN is IE00B03HCZ61 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
-        needsReview: true,
-        reviewReason:
-          'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
-        llmPayload: {
-          llm: {
-            rawOutput: {
-              resolved_instrument_name:
-                "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
-              resolved_instrument_isin: "IE00B03HCZ61",
-              resolved_instrument_ticker: null,
-              resolved_instrument_exchange: null,
-              current_price: 101.37,
-              current_price_currency: "EUR",
-              current_price_timestamp: "2026-04-04T09:00:00Z",
-              current_price_source: "Official Vanguard factsheet",
-              current_price_type: "NAV",
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-review-isin-remap" },
+        transactions: [
+          {
+            id: "review-isin-remap-vanguard",
+            transactionDate: "2026-03-24",
+            postedDate: "2026-03-24",
+            amountOriginal: "-99.58",
+            amountBaseEur: "-99.58",
+            descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+            descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+            transactionClass: "investment_trade_buy",
+            categoryCode: "stock_buy",
+            classificationStatus: "llm",
+            classificationSource: "llm",
+            classificationConfidence: "0.94",
+            securityId: "security-vusa-eur",
+            manualNotes:
+              "Exact ISIN is IE00B03HCZ61 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+            reviewReason:
+              'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+            llmPayload: {
+              llm: {
+                rawOutput: {
+                  resolved_instrument_name:
+                    "Vanguard U.S. 500 Stock Index Fund Investor EUR Accumulation",
+                  resolved_instrument_isin: "IE00B03HCZ61",
+                  resolved_instrument_ticker: null,
+                  resolved_instrument_exchange: null,
+                  current_price: 101.37,
+                  current_price_currency: "EUR",
+                  current_price_timestamp: "2026-04-04T09:00:00Z",
+                  current_price_source: "Official Vanguard factsheet",
+                  current_price_type: "NAV",
+                },
+              },
+              reviewContext: {
+                trigger: "manual_review_update",
+                userProvidedContext:
+                  "Exact ISIN is IE00B03HCZ61 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+              },
             },
           },
-          reviewContext: {
-            trigger: "manual_review_update",
-            userProvidedContext:
-              "Exact ISIN is IE00B03HCZ61 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
-          },
-        },
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
+        ],
         securities: [
-          {
+          createSecurity({
             id: "security-vusa-eur",
             providerName: "twelve_data",
             providerSymbol: "VUSA",
@@ -3022,15 +2830,10 @@ test("exact ISIN from a manual re-review can remap a mismatched ETF security", a
             assetType: "etf",
             quoteCurrency: "EUR",
             country: "Germany",
-            isin: null,
-            figi: null,
-            active: true,
             metadataJson: {
               instrumentType: "ETF",
             },
-            lastPriceRefreshAt: null,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
+          }),
         ],
         securityAliases: [
           {
@@ -3089,70 +2892,60 @@ test("manual review ISIN fallback resolves web-mapped fund security even when st
       },
     },
     async () => {
-      const account = createAccount({
-        id: "broker-review-isin-fallback",
-        assetDomain: "investment",
-        accountType: "brokerage_account",
-        institutionName: "Broker",
-        displayName: "Brokerage",
-      });
-      const transaction = createTransaction({
-        id: "review-isin-fallback-vanguard",
-        accountId: account.id,
-        accountEntityId: account.entityId,
-        economicEntityId: account.entityId,
-        transactionDate: "2026-03-24",
-        postedDate: "2026-03-24",
-        amountOriginal: "-99.58",
-        amountBaseEur: "-99.58",
-        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
-        descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        classificationStatus: "llm",
-        classificationSource: "llm",
-        classificationConfidence: "0.94",
-        securityId: null,
-        manualNotes:
-          "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
-        needsReview: true,
-        reviewReason:
-          'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
-        llmPayload: {
-          llm: {
-            rawOutput: {
-              resolved_instrument_name: null,
-              resolved_instrument_isin: null,
-              resolved_instrument_ticker: null,
-              resolved_instrument_exchange: null,
-              current_price: null,
-              current_price_currency: null,
-              current_price_timestamp: null,
-              current_price_source: null,
-              current_price_type: null,
-              explanation:
-                "The ISIN uniquely identifies the Vanguard U.S. 500 Stock Index Fund EUR Acc, and Vanguard published a EUR NAV for it.",
-              reason:
-                "Exact ISIN match; NAV retrieved from Vanguard official fund page.",
-              transaction_class: "investment_trade_buy",
-              category_code: "stock_buy",
-              merchant_normalized: null,
-              counterparty_name: null,
-              economic_entity_override: null,
-              security_hint: "VANGUARD US 500 STOCK INDEX EU",
-              confidence: 0.94,
+      const dataset = createInvestmentDatasetFixture({
+        account: { id: "broker-review-isin-fallback" },
+        transactions: [
+          {
+            id: "review-isin-fallback-vanguard",
+            transactionDate: "2026-03-24",
+            postedDate: "2026-03-24",
+            amountOriginal: "-99.58",
+            amountBaseEur: "-99.58",
+            descriptionRaw: "VANGUARD US 500 STOCK INDEX EU",
+            descriptionClean: "VANGUARD US 500 STOCK INDEX EU",
+            transactionClass: "investment_trade_buy",
+            categoryCode: "stock_buy",
+            classificationStatus: "llm",
+            classificationSource: "llm",
+            classificationConfidence: "0.94",
+            securityId: null,
+            manualNotes:
+              "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+            reviewReason:
+              'Security mapping unresolved for "VANGUARD US 500 STOCK INDEX EU".',
+            llmPayload: {
+              llm: {
+                rawOutput: {
+                  resolved_instrument_name: null,
+                  resolved_instrument_isin: null,
+                  resolved_instrument_ticker: null,
+                  resolved_instrument_exchange: null,
+                  current_price: null,
+                  current_price_currency: null,
+                  current_price_timestamp: null,
+                  current_price_source: null,
+                  current_price_type: null,
+                  explanation:
+                    "The ISIN uniquely identifies the Vanguard U.S. 500 Stock Index Fund EUR Acc, and Vanguard published a EUR NAV for it.",
+                  reason:
+                    "Exact ISIN match; NAV retrieved from Vanguard official fund page.",
+                  transaction_class: "investment_trade_buy",
+                  category_code: "stock_buy",
+                  merchant_normalized: null,
+                  counterparty_name: null,
+                  economic_entity_override: null,
+                  security_hint: "VANGUARD US 500 STOCK INDEX EU",
+                  confidence: 0.94,
+                },
+              },
+              reviewContext: {
+                trigger: "manual_review_update",
+                userProvidedContext:
+                  "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+              },
             },
           },
-          reviewContext: {
-            trigger: "manual_review_update",
-            userProvidedContext:
-              "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
-          },
-        },
-      });
-      const dataset = createDataset({
-        accounts: [account],
-        transactions: [transaction],
+        ],
       });
 
       const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-24");
@@ -5941,16 +5734,14 @@ test("template config builder converts typed inputs into stored JSON rules", () 
 });
 
 test("holding valuation is computed from positions, quotes, and FX instead of hardcoded values", () => {
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-1",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "USD",
   });
   const dataset = createDataset({
     accounts: [investmentAccount],
     securities: [
-      {
+      createSecurity({
         id: "security-1",
         providerName: "twelve_data",
         providerSymbol: "ABC",
@@ -5958,47 +5749,33 @@ test("holding valuation is computed from positions, quotes, and FX instead of ha
         displaySymbol: "ABC",
         name: "ABC Corp",
         exchangeName: "NYSE",
-        exchangeMic: "XNYS",
-        securityType: "stock",
+        micCode: "XNYS",
         quoteCurrency: "USD",
-        countryCode: "US",
-        isin: null,
-        cusip: null,
-        active: true,
-        metadataJson: {},
-        lastPriceRefreshAt: null,
-      },
+        country: "US",
+      }),
     ],
     securityPrices: [
-      {
+      createSecurityPrice({
         securityId: "security-1",
         priceDate: "2026-04-03",
         quoteTimestamp: "2026-04-03T15:00:00Z",
         price: "10.00",
         currency: "USD",
         sourceName: "twelve_data",
-        isRealtime: false,
-        isDelayed: true,
-        marketState: "closed",
-        rawJson: {},
-        createdAt: "2026-04-03T15:00:00Z",
-      },
+      }),
     ],
     fxRates: [
-      {
+      createFxRate({
         baseCurrency: "USD",
         quoteCurrency: "EUR",
         asOfDate: "2026-04-03",
         asOfTimestamp: "2026-04-03T15:00:00Z",
         rate: "0.500000",
         sourceName: "ecb",
-        rawJson: {},
-      },
+      }),
     ],
     investmentPositions: [
-      {
-        userId: "user-1",
-        entityId: "entity-1",
+      createInvestmentPosition({
         accountId: "brokerage-1",
         securityId: "security-1",
         openQuantity: "4.00",
@@ -6010,9 +5787,8 @@ test("holding valuation is computed from positions, quotes, and FX instead of ha
         feesEur: "0.00",
         lastTradeDate: "2026-04-01",
         lastRebuiltAt: "2026-04-03T16:00:00Z",
-        provenanceJson: {},
         unrealizedComplete: true,
-      },
+      }),
     ],
   });
 
@@ -6055,30 +5831,24 @@ test("manual investment valuations contribute to portfolio KPIs using matched ca
       }),
     ],
     manualInvestments: [
-      {
+      createManualInvestment({
         id: "manual-revolut-fund",
         userId: cashAccount.userId,
         entityId: cashAccount.entityId,
         fundingAccountId: cashAccount.id,
         label: "Revolut Treasury Fund",
         matcherText: "low-risk fund",
-        note: null,
-        createdAt: "2026-04-02T09:00:00Z",
-        updatedAt: "2026-04-02T09:00:00Z",
-      },
+      }),
     ],
     manualInvestmentValuations: [
-      {
+      createManualInvestmentValuation({
         id: "manual-revolut-fund-valuation",
         userId: cashAccount.userId,
         manualInvestmentId: "manual-revolut-fund",
         snapshotDate: "2026-04-03",
         currentValueOriginal: "1012.50",
         currentValueCurrency: "EUR",
-        note: "Manual mark-to-market",
-        createdAt: "2026-04-03T10:00:00Z",
-        updatedAt: "2026-04-03T10:00:00Z",
-      },
+      }),
     ],
   });
 
@@ -6934,10 +6704,8 @@ test("cash metric includes computed brokerage cash when statement balances are a
     assetDomain: "cash",
     defaultCurrency: "EUR",
   });
-  const investmentAccount = createAccount({
+  const investmentAccount = createInvestmentAccount({
     id: "brokerage-cash-metric",
-    accountType: "brokerage_account",
-    assetDomain: "investment",
     defaultCurrency: "EUR",
     openingBalanceOriginal: "5078.06",
     openingBalanceCurrency: "EUR",
@@ -6957,11 +6725,8 @@ test("cash metric includes computed brokerage cash when statement balances are a
       },
     ],
     transactions: [
-      createTransaction({
+      createInvestmentTransaction(investmentAccount, {
         id: "brokerage-buy-for-cash-metric",
-        accountId: investmentAccount.id,
-        accountEntityId: investmentAccount.entityId,
-        economicEntityId: investmentAccount.entityId,
         transactionDate: "2023-09-21",
         postedDate: "2023-09-21",
         amountOriginal: "-5036.91",
@@ -7052,24 +6817,18 @@ test("cash metric excludes credit-card liabilities from the cash position KPI", 
   const dataset = createDataset({
     accounts: [checkingAccount, creditCardAccount],
     accountBalanceSnapshots: [
-      {
+      createAccountBalanceSnapshot({
         accountId: checkingAccount.id,
         asOfDate: "2026-04-10",
         balanceOriginal: "6911.24",
-        balanceCurrency: "EUR",
         balanceBaseEur: "6911.24",
-        sourceKind: "statement",
-        importBatchId: null,
-      },
-      {
+      }),
+      createAccountBalanceSnapshot({
         accountId: creditCardAccount.id,
         asOfDate: "2026-04-10",
         balanceOriginal: "-432.65",
-        balanceCurrency: "EUR",
         balanceBaseEur: "-432.65",
-        sourceKind: "statement",
-        importBatchId: null,
-      },
+      }),
     ],
   });
 

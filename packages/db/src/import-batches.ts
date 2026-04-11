@@ -285,6 +285,55 @@ async function finalizeImportBatchRecord(
   `;
 }
 
+async function persistCommittedImportBatch(
+  sql: SqlClient,
+  input: {
+    importBatchRecord: Parameters<typeof insertImportBatchRecord>[1];
+    userId: string;
+    accountId: string;
+    importedAt: string;
+    jobsQueued: ImportCommitResult["jobsQueued"];
+    preparedTransactions: Transaction[];
+    queueBeforeInsert?: boolean;
+  },
+) {
+  await insertImportBatchRecord(sql, input.importBatchRecord);
+
+  let insertedTransactions: Transaction[] = [];
+  if (input.queueBeforeInsert) {
+    await queueImportBatchJobs(sql, {
+      jobsQueued: input.jobsQueued,
+      importBatchId: input.importBatchRecord.importBatchId,
+      accountId: input.accountId,
+    });
+    insertedTransactions = await insertTransactions(
+      sql,
+      input.preparedTransactions,
+    );
+  } else {
+    insertedTransactions = await insertTransactions(
+      sql,
+      input.preparedTransactions,
+    );
+    await queueImportBatchJobs(sql, {
+      jobsQueued: input.jobsQueued,
+      importBatchId: input.importBatchRecord.importBatchId,
+      accountId: input.accountId,
+    });
+  }
+
+  await touchAccountLastImportedAt(sql, {
+    accountId: input.accountId,
+    userId: input.userId,
+    importedAt: input.importedAt,
+  });
+
+  return {
+    insertedTransactions,
+    transactionIds: insertedTransactions.map((transaction) => transaction.id),
+  };
+}
+
 export function sumPreparedTransactionAmountBaseEur(
   transactions: Transaction[],
 ) {
@@ -342,58 +391,50 @@ export async function commitPreparedImportBatch(
           transactionIds: [],
           jobsQueued: [...DEFAULT_IMPORT_JOBS_QUEUED],
         } satisfies ImportCommitResult);
-  const jobsQueued =
-    input.options?.jobsQueued ??
+  const jobsQueued = input.options?.jobsQueued ??
     ((commitResult as ImportCommitResult | null)?.jobsQueued as
       | ImportCommitResult["jobsQueued"]
-      | undefined) ??
-    [...DEFAULT_IMPORT_JOBS_QUEUED];
+      | undefined) ?? [...DEFAULT_IMPORT_JOBS_QUEUED];
   const importedAt = new Date().toISOString();
 
-  await insertImportBatchRecord(sql, {
-    importBatchId,
-    userId: input.userId,
-    accountId: input.normalizedInput.accountId,
-    templateId: input.normalizedInput.templateId,
-    sourceKind: "upload",
-    providerName: null,
-    bankConnectionId: null,
-    storagePath: input.normalizedInput.filePath
-      ? `private-imports/local/${input.normalizedInput.originalFilename}`
-      : `private-imports/manual/${input.normalizedInput.originalFilename}`,
-    originalFilename: input.normalizedInput.originalFilename,
-    rowCountDetected: preview.rowCountDetected,
-    rowCountParsed: preview.rowCountParsed,
-    rowCountInserted:
-      preparedTransactions?.inserted.length ?? preview.rowCountParsed,
-    rowCountDuplicates:
-      preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates,
-    rowCountFailed: preview.rowCountFailed,
-    previewSummary: {
-      sampleRows: preview.sampleRows,
-      parseErrors: preview.parseErrors,
-      dateRange: preview.dateRange,
-    },
-    commitSummary: { jobsQueued },
-    importedByActor: input.options?.importedByActor ?? "web-cli",
-    importedAt,
-    extraValues: input.options?.importBatchExtraValues,
-  });
-
-  await queueImportBatchJobs(sql, {
-    jobsQueued,
-    importBatchId,
-    accountId: input.normalizedInput.accountId,
-  });
-
-  const insertedTransactions = preparedTransactions
-    ? await insertTransactions(sql, preparedTransactions.inserted)
-    : [];
-  await touchAccountLastImportedAt(sql, {
-    accountId: input.normalizedInput.accountId,
-    userId: input.userId,
-    importedAt,
-  });
+  const { insertedTransactions, transactionIds } =
+    await persistCommittedImportBatch(sql, {
+      importBatchRecord: {
+        importBatchId,
+        userId: input.userId,
+        accountId: input.normalizedInput.accountId,
+        templateId: input.normalizedInput.templateId,
+        sourceKind: "upload",
+        providerName: null,
+        bankConnectionId: null,
+        storagePath: input.normalizedInput.filePath
+          ? `private-imports/local/${input.normalizedInput.originalFilename}`
+          : `private-imports/manual/${input.normalizedInput.originalFilename}`,
+        originalFilename: input.normalizedInput.originalFilename,
+        rowCountDetected: preview.rowCountDetected,
+        rowCountParsed: preview.rowCountParsed,
+        rowCountInserted:
+          preparedTransactions?.inserted.length ?? preview.rowCountParsed,
+        rowCountDuplicates:
+          preparedTransactions?.duplicateCount ?? preview.rowCountDuplicates,
+        rowCountFailed: preview.rowCountFailed,
+        previewSummary: {
+          sampleRows: preview.sampleRows,
+          parseErrors: preview.parseErrors,
+          dateRange: preview.dateRange,
+        },
+        commitSummary: { jobsQueued },
+        importedByActor: input.options?.importedByActor ?? "web-cli",
+        importedAt,
+        extraValues: input.options?.importBatchExtraValues,
+      },
+      userId: input.userId,
+      accountId: input.normalizedInput.accountId,
+      importedAt,
+      jobsQueued,
+      preparedTransactions: preparedTransactions?.inserted ?? [],
+      queueBeforeInsert: true,
+    });
 
   const rowCountInserted =
     insertedTransactions.length ||
@@ -411,7 +452,7 @@ export async function commitPreparedImportBatch(
     rowCountDuplicates,
     commitSummary: {
       jobsQueued,
-      transactionIds: insertedTransactions.map((transaction) => transaction.id),
+      transactionIds,
     },
   });
 
@@ -421,7 +462,7 @@ export async function commitPreparedImportBatch(
       importBatchId,
       rowCountInserted,
       rowCountDuplicates,
-      transactionIds: insertedTransactions.map((transaction) => transaction.id),
+      transactionIds,
       jobsQueued: [...jobsQueued],
     },
     importBatchId,
@@ -453,56 +494,55 @@ export async function commitSyntheticImportBatch(
       : (["metric_refresh"] satisfies ImportCommitResult["jobsQueued"]));
   const importedAt = new Date().toISOString();
 
-  await insertImportBatchRecord(sql, {
-    importBatchId,
-    userId: input.userId,
-    accountId: input.accountId,
-    templateId: null,
-    sourceKind: input.sourceKind,
-    providerName: input.providerName,
-    bankConnectionId: input.bankConnectionId,
-    storagePath: `bank-sync/${input.providerName}/${input.bankConnectionId}/${input.originalFilename}`,
-    originalFilename: input.originalFilename,
-    rowCountDetected: input.preparedTransactions.length,
-    rowCountParsed: input.preparedTransactions.length,
-    rowCountInserted: input.preparedTransactions.length,
-    rowCountDuplicates: 0,
-    rowCountFailed: 0,
-    previewSummary: {
-      dateRange: input.dateRange ?? null,
-      sampleRows: input.preparedTransactions.slice(0, 3).map((transaction) => ({
-        providerRecordId: transaction.providerRecordId,
-        transactionDate: transaction.transactionDate,
-        amountOriginal: transaction.amountOriginal,
-        currencyOriginal: transaction.currencyOriginal,
-        descriptionRaw: transaction.descriptionRaw,
-      })),
-    },
-    commitSummary: {
+  const preparedTransactions = input.preparedTransactions.map(
+    (transaction) => ({
+      ...transaction,
+      importBatchId,
+    }),
+  );
+  const { insertedTransactions, transactionIds } =
+    await persistCommittedImportBatch(sql, {
+      importBatchRecord: {
+        importBatchId,
+        userId: input.userId,
+        accountId: input.accountId,
+        templateId: null,
+        sourceKind: input.sourceKind,
+        providerName: input.providerName,
+        bankConnectionId: input.bankConnectionId,
+        storagePath: `bank-sync/${input.providerName}/${input.bankConnectionId}/${input.originalFilename}`,
+        originalFilename: input.originalFilename,
+        rowCountDetected: input.preparedTransactions.length,
+        rowCountParsed: input.preparedTransactions.length,
+        rowCountInserted: input.preparedTransactions.length,
+        rowCountDuplicates: 0,
+        rowCountFailed: 0,
+        previewSummary: {
+          dateRange: input.dateRange ?? null,
+          sampleRows: input.preparedTransactions
+            .slice(0, 3)
+            .map((transaction) => ({
+              providerRecordId: transaction.providerRecordId,
+              transactionDate: transaction.transactionDate,
+              amountOriginal: transaction.amountOriginal,
+              currencyOriginal: transaction.currencyOriginal,
+              descriptionRaw: transaction.descriptionRaw,
+            })),
+        },
+        commitSummary: {
+          jobsQueued,
+          sourceKind: input.sourceKind,
+          providerName: input.providerName,
+        },
+        importedByActor: input.importedByActor,
+        importedAt,
+      },
+      userId: input.userId,
+      accountId: input.accountId,
+      importedAt,
       jobsQueued,
-      sourceKind: input.sourceKind,
-      providerName: input.providerName,
-    },
-    importedByActor: input.importedByActor,
-    importedAt,
-  });
-
-  const preparedTransactions = input.preparedTransactions.map((transaction) => ({
-    ...transaction,
-    importBatchId,
-  }));
-  const insertedTransactions = await insertTransactions(sql, preparedTransactions);
-
-  await queueImportBatchJobs(sql, {
-    jobsQueued,
-    importBatchId,
-    accountId: input.accountId,
-  });
-  await touchAccountLastImportedAt(sql, {
-    accountId: input.accountId,
-    userId: input.userId,
-    importedAt,
-  });
+      preparedTransactions,
+    });
 
   await finalizeImportBatchRecord(sql, {
     importBatchId,
@@ -516,7 +556,7 @@ export async function commitSyntheticImportBatch(
       jobsQueued,
       sourceKind: input.sourceKind,
       providerName: input.providerName,
-      transactionIds: insertedTransactions.map((transaction) => transaction.id),
+      transactionIds,
     },
   });
 
