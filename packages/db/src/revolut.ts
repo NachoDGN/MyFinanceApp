@@ -300,7 +300,7 @@ function base64UrlDecode(value: string) {
 }
 
 function getClientAssertionIss(redirectUri: string) {
-  return new URL(redirectUri).host;
+  return new URL(redirectUri).hostname;
 }
 
 export function createRevolutClientAssertion(config: RevolutRuntimeConfig) {
