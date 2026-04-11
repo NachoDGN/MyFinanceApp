@@ -4,7 +4,6 @@ import { Decimal } from "decimal.js";
 
 import {
   enrichImportedTransaction,
-  getReviewPropagationEmbeddingModel,
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
   rankReviewPropagationTransactions,
@@ -23,7 +22,6 @@ import {
   getImportTemplateInferenceConfig,
   getRuleParserConfig,
   isCreditCardSettlementTransaction,
-  normalizeInvestmentMatchingText,
   normalizeImportExecutionInput,
   resolveFxRate,
   runDeterministicImport,
@@ -65,14 +63,11 @@ import {
 } from "@myfinance/domain";
 import {
   buildPromptProfilePreview,
-  createTextEmbeddingClient,
-  isTextEmbeddingConfigured,
   listPromptProfileDefinitions,
   resolvePromptProfileSections,
   sanitizePromptProfileSectionOverrides,
   type PromptProfileId,
   type PromptProfileOverrides,
-  type TextEmbeddingClient,
 } from "@myfinance/llm";
 import {
   prepareInvestmentRebuild,
@@ -146,34 +141,46 @@ import {
 } from "./revolut-sync-support";
 import { updateTransactionRecord } from "./transaction-record";
 export {
+  DEFAULT_MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT,
+  DEFAULT_RESOLVED_REVIEW_SIMILARITY_THRESHOLD,
+  ensureTransactionDescriptionEmbeddings,
+  findSimilarResolvedTransactionsByDescriptionEmbedding,
+  findSimilarUnresolvedTransactionsByDescriptionEmbedding,
+  getReviewPropagationSimilarityThreshold,
+  parseTransactionEmbeddingSeedRow,
+  readTransactionRawOutput,
+  readTransactionReviewContext,
+  serializeVector,
+  type SimilarResolvedTransactionMatch,
+  type SimilarUnresolvedTransactionMatch,
+  type TransactionEmbeddingSeedRow,
+} from "./transaction-embedding-search";
+import {
+  DEFAULT_MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT,
+  DEFAULT_RESOLVED_REVIEW_SIMILARITY_THRESHOLD,
+  ensureTransactionDescriptionEmbeddings,
+  findSimilarResolvedTransactionsByDescriptionEmbedding,
+  findSimilarUnresolvedTransactionsByDescriptionEmbedding,
+  getReviewPropagationSimilarityThreshold,
+  normalizeStoredVectorLiteral,
+  parseTransactionEmbeddingSeedRow,
+  readTransactionRawOutput,
+  readTransactionReviewContext,
+  type SimilarUnresolvedTransactionMatch,
+} from "./transaction-embedding-search";
+export {
   TRANSACTION_SELECT_COLUMN_NAMES,
   TRANSACTION_SELECT_COLUMNS,
 } from "./transaction-columns";
 import { transactionColumnsSql } from "./transaction-columns";
 
-const TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS = 768;
 const MAX_PROPAGATED_CONTEXT_ENTRIES = 10;
-const RESOLVED_REVIEW_SIMILARITY_THRESHOLD = 0.8;
-const MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT = 5;
 const DEFAULT_IMPORT_JOBS_QUEUED = [
   "classification",
   "transfer_rematch",
   "position_rebuild",
   "metric_refresh",
 ] as const satisfies ImportCommitResult["jobsQueued"];
-
-type TransactionEmbeddingSeedRow = {
-  id: string;
-  descriptionRaw: string;
-  descriptionEmbedding: string | number[] | null;
-};
-
-type SimilarUnresolvedTransactionMatch = {
-  transactionId: string;
-  similarity: number;
-};
-
-type SimilarResolvedTransactionMatch = SimilarUnresolvedTransactionMatch;
 
 type ReviewReanalysisMode = "manual_review_update" | "manual_resolved_review";
 
@@ -259,18 +266,6 @@ function buildLinkedCreditCardAccountDisplayName(
   return contractSuffix
     ? `${account.institutionName} Credit Card ${contractSuffix}`
     : `${account.institutionName} Credit Card`;
-}
-
-function getReviewPropagationSimilarityThreshold() {
-  const value = Number(
-    process.env.REVIEW_PROPAGATION_SIMILARITY_THRESHOLD ?? "0.9",
-  );
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0.9;
-  }
-
-  // Resolved-source propagation must never become stricter than 0.9.
-  return Math.min(value, 0.9);
 }
 
 export interface PromptProfileModel {
@@ -422,235 +417,6 @@ export async function updatePromptProfile(input: {
 
 function readUnknownArray(value: unknown) {
   return Array.isArray(value) ? value : null;
-}
-
-function readTransactionRawOutput(
-  transaction: Transaction,
-): Record<string, unknown> | null {
-  const llmPayload = readOptionalRecord(transaction.llmPayload);
-  const llmNode = readOptionalRecord(llmPayload?.llm);
-  return readOptionalRecord(llmNode?.rawOutput);
-}
-
-function readTransactionReviewContext(
-  transaction: Transaction,
-): Record<string, unknown> | null {
-  return readOptionalRecord(
-    readOptionalRecord(transaction.llmPayload)?.reviewContext,
-  );
-}
-
-function normalizeStoredVectorLiteral(value: unknown) {
-  if (typeof value === "string" && value.trim() !== "") {
-    return value.trim();
-  }
-  if (Array.isArray(value)) {
-    const numericValues = value.filter(
-      (candidate): candidate is number =>
-        typeof candidate === "number" && Number.isFinite(candidate),
-    );
-    return numericValues.length > 0 ? serializeVector(numericValues) : null;
-  }
-  return null;
-}
-
-export function serializeVector(values: number[]) {
-  return `[${values
-    .filter((value) => Number.isFinite(value))
-    .map((value) => value.toString())
-    .join(",")}]`;
-}
-
-function parseTransactionEmbeddingSeedRow(
-  row: Record<string, unknown>,
-): TransactionEmbeddingSeedRow {
-  return {
-    id: typeof row.id === "string" ? row.id : "",
-    descriptionRaw:
-      typeof row.description_raw === "string" ? row.description_raw : "",
-    descriptionEmbedding: normalizeStoredVectorLiteral(
-      row.description_embedding,
-    ),
-  };
-}
-
-async function ensureTransactionDescriptionEmbeddings(
-  sql: SqlClient,
-  userId: string,
-  rows: readonly TransactionEmbeddingSeedRow[],
-  embeddingClient?: TextEmbeddingClient | null,
-) {
-  const rowsMissingEmbeddings = rows.filter(
-    (row) => !normalizeStoredVectorLiteral(row.descriptionEmbedding),
-  );
-  if (rowsMissingEmbeddings.length === 0) {
-    return {
-      generatedCount: 0,
-      skippedCount: 0,
-      skippedReason: null,
-    };
-  }
-
-  let client = embeddingClient;
-  if (client === undefined) {
-    if (!isTextEmbeddingConfigured()) {
-      return {
-        generatedCount: 0,
-        skippedCount: rowsMissingEmbeddings.length,
-        skippedReason: "embedding_client_not_configured",
-      };
-    }
-
-    try {
-      client = createTextEmbeddingClient(getReviewPropagationEmbeddingModel());
-    } catch {
-      return {
-        generatedCount: 0,
-        skippedCount: rowsMissingEmbeddings.length,
-        skippedReason: "embedding_client_unavailable",
-      };
-    }
-  }
-
-  if (!client) {
-    return {
-      generatedCount: 0,
-      skippedCount: rowsMissingEmbeddings.length,
-      skippedReason: "embedding_client_unavailable",
-    };
-  }
-
-  const embeddings = await client.embedTexts({
-    texts: rowsMissingEmbeddings.map(
-      (row) => normalizeInvestmentMatchingText(row.descriptionRaw) || " ",
-    ),
-    taskType: "SEMANTIC_SIMILARITY",
-    outputDimensionality: TRANSACTION_DESCRIPTION_EMBEDDING_DIMENSIONS,
-  });
-
-  for (const [index, row] of rowsMissingEmbeddings.entries()) {
-    const vector = embeddings[index];
-    if (!vector || vector.length === 0) {
-      continue;
-    }
-
-    await sql`
-      update public.transactions
-      set description_embedding = ${serializeVector(vector)}::extensions.vector(768)
-      where id = ${row.id}
-        and user_id = ${userId}
-    `;
-  }
-
-  return {
-    generatedCount: embeddings.length,
-    skippedCount: 0,
-    skippedReason: null,
-  };
-}
-
-export async function findSimilarUnresolvedTransactionsByDescriptionEmbedding(
-  sql: SqlClient,
-  input: {
-    userId: string;
-    sourceTransactionId: string;
-    accountId: string;
-    sourceEmbedding: string;
-    threshold?: number;
-    limit?: number;
-  },
-): Promise<SimilarUnresolvedTransactionMatch[]> {
-  const threshold =
-    input.threshold ?? getReviewPropagationSimilarityThreshold();
-  const limit =
-    input.limit && Number.isFinite(input.limit) && input.limit > 0
-      ? Math.floor(input.limit)
-      : 2147483647;
-  const rows = await sql`
-    select
-      id,
-      1 - (
-        description_embedding <=>
-        ${input.sourceEmbedding}::extensions.vector(768)
-      ) as similarity
-    from public.transactions
-    where user_id = ${input.userId}
-      and account_id = ${input.accountId}
-      and id <> ${input.sourceTransactionId}
-      and coalesce(needs_review, false) = true
-      and voided_at is null
-      and description_embedding is not null
-      and 1 - (
-        description_embedding <=>
-        ${input.sourceEmbedding}::extensions.vector(768)
-      ) >= ${threshold}
-    order by
-      description_embedding <=>
-      ${input.sourceEmbedding}::extensions.vector(768) asc
-    limit ${limit}
-  `;
-
-  return rows
-    .map((row) => ({
-      transactionId: typeof row.id === "string" ? row.id : "",
-      similarity: Number(row.similarity ?? 0),
-    }))
-    .filter(
-      (row) => row.transactionId !== "" && Number.isFinite(row.similarity),
-    );
-}
-
-export async function findSimilarResolvedTransactionsByDescriptionEmbedding(
-  sql: SqlClient,
-  input: {
-    userId: string;
-    sourceTransactionId: string;
-    accountId: string;
-    sourceEmbedding: string;
-    threshold?: number;
-    limit?: number;
-  },
-): Promise<SimilarResolvedTransactionMatch[]> {
-  const threshold =
-    typeof input.threshold === "number" && Number.isFinite(input.threshold)
-      ? input.threshold
-      : RESOLVED_REVIEW_SIMILARITY_THRESHOLD;
-  const limit =
-    input.limit && Number.isFinite(input.limit) && input.limit > 0
-      ? Math.floor(input.limit)
-      : MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT;
-  const rows = await sql`
-    select
-      id,
-      1 - (
-        description_embedding <=>
-        ${input.sourceEmbedding}::extensions.vector(768)
-      ) as similarity
-    from public.transactions
-    where user_id = ${input.userId}
-      and account_id = ${input.accountId}
-      and id <> ${input.sourceTransactionId}
-      and coalesce(needs_review, false) = false
-      and voided_at is null
-      and description_embedding is not null
-      and 1 - (
-        description_embedding <=>
-        ${input.sourceEmbedding}::extensions.vector(768)
-      ) >= ${threshold}
-    order by
-      description_embedding <=>
-      ${input.sourceEmbedding}::extensions.vector(768) asc
-    limit ${limit}
-  `;
-
-  return rows
-    .map((row) => ({
-      transactionId: typeof row.id === "string" ? row.id : "",
-      similarity: Number(row.similarity ?? 0),
-    }))
-    .filter(
-      (row) => row.transactionId !== "" && Number.isFinite(row.similarity),
-    );
 }
 
 export async function selectReviewPropagationCandidateMatches(input: {
@@ -2996,8 +2762,8 @@ async function loadSimilarResolvedTransactionsForResolvedReview(
       sourceTransactionId: input.sourceTransaction.id,
       accountId: input.sourceTransaction.accountId,
       sourceEmbedding,
-      threshold: RESOLVED_REVIEW_SIMILARITY_THRESHOLD,
-      limit: MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT,
+      threshold: DEFAULT_RESOLVED_REVIEW_SIMILARITY_THRESHOLD,
+      limit: DEFAULT_MAX_RESOLVED_REVIEW_SIMILAR_CONTEXT,
     },
   );
 
