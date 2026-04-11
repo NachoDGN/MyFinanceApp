@@ -20,14 +20,11 @@ import {
   parseRuleDraftRequest,
   buildImportedTransactions,
   getDatasetLatestDate,
-  getLatestAccountBalances,
   getImportTemplateInferenceConfig,
   getRuleParserConfig,
   isCreditCardSettlementTransaction,
   normalizeInvestmentMatchingText,
   normalizeImportExecutionInput,
-  normalizeDescription,
-  rebuildInvestmentState,
   resolveFxRate,
   runDeterministicImport,
   sanitizeImportResult,
@@ -51,7 +48,6 @@ import {
   type DeleteTemplateInput,
   type DomainDataset,
   type FinanceRepository,
-  type FxRate,
   type ImportExecutionInput,
   type ImportCommitResult,
   type ImportPreviewResult,
@@ -60,8 +56,6 @@ import {
   type RecordManualInvestmentValuationInput,
   type ResetWorkspaceInput,
   type ResetWorkspaceResult,
-  type Security,
-  type SecurityPrice,
   type Transaction,
   type UpdateAccountInput,
   type UpdateEntityInput,
@@ -84,6 +78,13 @@ import {
   prepareInvestmentRebuild,
   type InvestmentRebuildProgress,
 } from "./investment-rebuild";
+import { withInvestmentMutationLock } from "./investment-mutation-lock";
+export {
+  refreshOwnedStockPrices,
+  selectOwnedStockPriceRefreshSecurities,
+  selectTrackedEurFxPairs,
+  type RefreshOwnedStockPricesResult,
+} from "./market-data-refresh";
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
 import { loadDatasetForUser } from "./dataset-loader";
 import {
@@ -116,34 +117,32 @@ import {
   serializeJson,
 } from "./sql-json";
 import {
-  buildRevolutAuthorizationUrl,
-  createSignedRevolutState,
   decryptBankSecret,
   encryptBankSecret,
-  exchangeRevolutAuthorizationCode,
   fetchRevolutAccounts,
   fetchRevolutExpenses,
   fetchRevolutTransactions,
   getRevolutRuntimeConfig,
   getRevolutRuntimeStatus,
   refreshRevolutAccessToken,
-  verifyRevolutWebhookSignature,
-  verifyRevolutWebhookTimestamp,
-  verifySignedRevolutState,
   type RevolutAccount,
   type RevolutExpense,
   type RevolutTransaction,
 } from "./revolut";
+export {
+  beginRevolutAuthorization,
+  completeRevolutAuthorization,
+  processRevolutWebhookEvent,
+  queueRevolutConnectionSync,
+} from "./revolut-connection";
 import {
   buildRevolutProviderRecordId,
   buildRevolutSyntheticTransaction,
   queueUniqueRevolutSyncJob,
   resolveOrCreateRevolutAccountLinks,
-  REVOLUT_CONNECTION_LABEL,
   REVOLUT_PROVIDER_NAME,
   runRevolutSyncWithLock,
   upsertAccountBalanceSnapshot,
-  type BankSyncTrigger,
 } from "./revolut-sync-support";
 import { updateTransactionRecord } from "./transaction-record";
 export {
@@ -350,409 +349,6 @@ export async function listPromptProfiles() {
   return withSeededUserContext(async (sql) => {
     const promptOverrides = await loadPromptOverrides(sql, userId);
     return buildPromptProfileModels(promptOverrides);
-  });
-}
-
-function readPayloadField<T>(
-  payload: Record<string, unknown>,
-  keys: string[],
-): T | null {
-  for (const key of keys) {
-    if (key in payload) {
-      return payload[key] as T;
-    }
-  }
-  return null;
-}
-
-function readPayloadString(payload: Record<string, unknown>, keys: string[]) {
-  const value = readPayloadField<unknown>(payload, keys);
-  if (typeof value === "string" && value.trim() !== "") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return null;
-}
-
-function readPayloadBoolean(payload: Record<string, unknown>, keys: string[]) {
-  const value = readPayloadField<unknown>(payload, keys);
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    if (value.toLowerCase() === "true") return true;
-    if (value.toLowerCase() === "false") return false;
-  }
-  return null;
-}
-
-function readPayloadTimestamp(
-  payload: Record<string, unknown>,
-  keys: string[],
-) {
-  const value = readPayloadField<unknown>(payload, keys);
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value * 1000).toISOString();
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const trimmed = value.trim();
-    if (/^\d+$/.test(trimmed)) {
-      return new Date(Number(trimmed) * 1000).toISOString();
-    }
-
-    const normalized = trimmed.includes("T")
-      ? trimmed
-      : trimmed.replace(" ", "T");
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toISOString();
-    }
-  }
-  return null;
-}
-
-function isWeekendIso(value: string) {
-  const date = new Date(`${value}T00:00:00Z`);
-  const day = date.getUTCDay();
-  return day === 0 || day === 6;
-}
-
-function isRefreshableOwnedStockSecurity(security: Security) {
-  return (
-    security.providerName === "twelve_data" &&
-    (security.assetType === "stock" || security.assetType === "etf")
-  );
-}
-
-export function selectOwnedStockPriceRefreshSecurities(
-  dataset: DomainDataset,
-  referenceDate = getDatasetLatestDate(dataset),
-) {
-  const { positions } = rebuildInvestmentState(dataset, referenceDate);
-  const ownedSecurityIds = new Set(
-    positions.map((position) => position.securityId),
-  );
-
-  return dataset.securities.filter(
-    (security) =>
-      ownedSecurityIds.has(security.id) &&
-      isRefreshableOwnedStockSecurity(security),
-  );
-}
-
-export function selectTrackedEurFxPairs(
-  dataset: DomainDataset,
-  referenceDate = getDatasetLatestDate(dataset),
-) {
-  const accountsById = new Map(
-    dataset.accounts.map((account) => [account.id, account]),
-  );
-  const balanceCurrencies = getLatestAccountBalances(dataset, referenceDate)
-    .flatMap((snapshot) => {
-      const account = accountsById.get(snapshot.accountId);
-      if (!account || account.accountType === "credit_card") {
-        return [];
-      }
-
-      const currency = (snapshot.balanceCurrency ?? account.defaultCurrency)
-        .trim()
-        .toUpperCase();
-      return currency && currency !== "EUR" ? [currency] : [];
-    });
-  const holdingCurrencies = selectOwnedStockPriceRefreshSecurities(
-    dataset,
-    referenceDate,
-  )
-    .map((security) => security.quoteCurrency.trim().toUpperCase())
-    .filter((currency) => currency !== "EUR");
-
-  return [...new Set([...balanceCurrencies, ...holdingCurrencies])].sort();
-}
-
-async function fetchLatestOwnedStockPrice(
-  security: Security,
-  apiKey: string,
-  requestDate: string,
-): Promise<{ quote: SecurityPrice | null; reason: string | null }> {
-  const url = new URL("https://api.twelvedata.com/quote");
-  url.searchParams.set("symbol", security.providerSymbol);
-  url.searchParams.set("apikey", apiKey);
-  if (isWeekendIso(requestDate)) {
-    url.searchParams.set("eod", "true");
-  }
-
-  const response = await fetch(url);
-  const payload = (await response.json()) as Record<string, unknown> | string;
-  if (!response.ok || typeof payload === "string") {
-    return {
-      quote: null,
-      reason: `HTTP ${response.status} from Twelve Data.`,
-    };
-  }
-
-  if (payload.status === "error") {
-    const message = readPayloadString(payload, ["message"]);
-    return {
-      quote: null,
-      reason: message ?? "Twelve Data returned an error payload.",
-    };
-  }
-
-  const price = readPayloadString(payload, ["close", "price"]);
-  if (!price) {
-    return {
-      quote: null,
-      reason: "Twelve Data did not return a usable quote price.",
-    };
-  }
-
-  const priceDate =
-    readPayloadString(payload, ["datetime"])?.slice(0, 10) ?? requestDate;
-  const isMarketOpen =
-    readPayloadBoolean(payload, ["is_market_open", "isMarketOpen"]) ?? false;
-  const currency =
-    readPayloadString(payload, ["currency"]) ?? security.quoteCurrency;
-
-  return {
-    quote: {
-      securityId: security.id,
-      priceDate,
-      quoteTimestamp:
-        readPayloadTimestamp(payload, [
-          "last_quote_at",
-          "lastQuoteAt",
-          "timestamp",
-        ]) ?? `${priceDate}T16:00:00Z`,
-      price,
-      currency,
-      sourceName: "twelve_data",
-      isRealtime: isMarketOpen,
-      isDelayed: !isMarketOpen,
-      marketState: isMarketOpen ? "open" : "closed",
-      rawJson: payload,
-      createdAt: new Date().toISOString(),
-    },
-    reason: null,
-  };
-}
-
-async function fetchLatestFxRate(
-  baseCurrency: string,
-  quoteCurrency: string,
-  apiKey: string,
-  requestDate: string,
-): Promise<{ fxRate: FxRate | null; reason: string | null }> {
-  const url = new URL("https://api.twelvedata.com/exchange_rate");
-  url.searchParams.set("symbol", `${baseCurrency}/${quoteCurrency}`);
-  url.searchParams.set("apikey", apiKey);
-
-  const response = await fetch(url);
-  const payload = (await response.json()) as Record<string, unknown> | string;
-  if (!response.ok || typeof payload === "string") {
-    return {
-      fxRate: null,
-      reason: `HTTP ${response.status} from Twelve Data.`,
-    };
-  }
-
-  if (payload.status === "error") {
-    return {
-      fxRate: null,
-      reason:
-        readPayloadString(payload, ["message"]) ??
-        "Twelve Data returned an error payload.",
-    };
-  }
-
-  const rate = readPayloadString(payload, ["rate", "price", "close"]);
-  if (!rate) {
-    return {
-      fxRate: null,
-      reason: "Twelve Data did not return a usable FX rate.",
-    };
-  }
-
-  const asOfTimestamp =
-    readPayloadTimestamp(payload, ["timestamp", "last_quote_at"]) ??
-    `${requestDate}T16:00:00Z`;
-  const asOfDate =
-    readPayloadString(payload, ["datetime", "date"])?.slice(0, 10) ??
-    asOfTimestamp.slice(0, 10);
-
-  return {
-    fxRate: {
-      baseCurrency,
-      quoteCurrency,
-      asOfDate,
-      asOfTimestamp,
-      rate,
-      sourceName: "twelve_data",
-      rawJson: payload,
-    },
-    reason: null,
-  };
-}
-
-async function upsertSecurityPriceRow(sql: SqlClient, price: SecurityPrice) {
-  await sql`
-    insert into public.security_prices ${sql({
-      security_id: price.securityId,
-      price_date: price.priceDate,
-      quote_timestamp: price.quoteTimestamp,
-      price: price.price,
-      currency: price.currency,
-      source_name: price.sourceName,
-      is_realtime: price.isRealtime,
-      is_delayed: price.isDelayed,
-      market_state: price.marketState,
-      raw_json: serializeJson(sql, price.rawJson),
-      created_at: price.createdAt,
-    } as Record<string, unknown>)}
-    on conflict (security_id, price_date, source_name)
-    do update set
-      quote_timestamp = excluded.quote_timestamp,
-      price = excluded.price,
-      currency = excluded.currency,
-      is_realtime = excluded.is_realtime,
-      is_delayed = excluded.is_delayed,
-      market_state = excluded.market_state,
-      raw_json = excluded.raw_json,
-      created_at = excluded.created_at
-  `;
-}
-
-async function upsertFxRateRow(sql: SqlClient, fxRate: FxRate) {
-  await sql`
-    insert into public.fx_rates ${sql({
-      base_currency: fxRate.baseCurrency,
-      quote_currency: fxRate.quoteCurrency,
-      as_of_date: fxRate.asOfDate,
-      as_of_timestamp: fxRate.asOfTimestamp,
-      rate: fxRate.rate,
-      source_name: fxRate.sourceName,
-      raw_json: serializeJson(sql, fxRate.rawJson),
-    } as Record<string, unknown>)}
-    on conflict (base_currency, quote_currency, as_of_date, source_name)
-    do update set
-      as_of_timestamp = excluded.as_of_timestamp,
-      rate = excluded.rate,
-      raw_json = excluded.raw_json
-  `;
-}
-
-async function updateSecurityPriceRefreshMetadata(
-  sql: SqlClient,
-  input: {
-    securityId: string;
-    quoteCurrency: string;
-    quoteTimestamp: string;
-  },
-) {
-  await sql`
-    update public.securities
-    set
-      quote_currency = ${input.quoteCurrency},
-      last_price_refresh_at = ${input.quoteTimestamp}
-    where id = ${input.securityId}
-  `;
-}
-
-export interface RefreshOwnedStockPricesResult {
-  totalTrackedStocks: number;
-  totalTrackedFxPairs: number;
-  refreshedCount: number;
-  skippedCount: number;
-  refreshedSymbols: string[];
-  skippedSymbols: string[];
-  skippedDetails: Array<{ symbol: string; reason: string }>;
-  refreshedFxPairs: string[];
-  skippedFxPairs: Array<{ symbol: string; reason: string }>;
-  latestPriceDate: string | null;
-  generatedAt: string;
-}
-
-export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPricesResult> {
-  const runtime = getDbRuntimeConfig();
-  const apiKey = process.env.TWELVE_DATA_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error(
-      "TWELVE_DATA_API_KEY is not configured. Add it to .env.local before refreshing prices.",
-    );
-  }
-
-  return withSeededUserContext(async (sql) => {
-    return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
-      const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
-      const securities = selectOwnedStockPriceRefreshSecurities(dataset);
-      const trackedFxPairs = selectTrackedEurFxPairs(dataset);
-      const requestDate = new Date().toISOString().slice(0, 10);
-      const refreshedSymbols: string[] = [];
-      const skippedSymbols: string[] = [];
-      const skippedDetails: Array<{ symbol: string; reason: string }> = [];
-      const refreshedFxPairs: string[] = [];
-      const skippedFxPairs: Array<{ symbol: string; reason: string }> = [];
-      let latestPriceDate: string | null = null;
-
-      for (const baseCurrency of trackedFxPairs) {
-        const pair = `${baseCurrency}/EUR`;
-        const { fxRate, reason } = await fetchLatestFxRate(
-          baseCurrency,
-          "EUR",
-          apiKey,
-          requestDate,
-        );
-        if (!fxRate) {
-          skippedFxPairs.push({
-            symbol: pair,
-            reason: reason ?? "FX refresh failed.",
-          });
-          continue;
-        }
-
-        await upsertFxRateRow(sql, fxRate);
-        refreshedFxPairs.push(pair);
-        if (!latestPriceDate || fxRate.asOfDate > latestPriceDate) {
-          latestPriceDate = fxRate.asOfDate;
-        }
-      }
-
-      for (const security of securities) {
-        const { quote, reason } = await fetchLatestOwnedStockPrice(
-          security,
-          apiKey,
-          requestDate,
-        );
-        if (!quote) {
-          skippedSymbols.push(security.displaySymbol);
-          skippedDetails.push({
-            symbol: security.displaySymbol,
-            reason: reason ?? "Quote refresh failed.",
-          });
-          continue;
-        }
-
-        await upsertSecurityPriceRow(sql, quote);
-        await updateSecurityPriceRefreshMetadata(sql, {
-          securityId: security.id,
-          quoteCurrency: quote.currency,
-          quoteTimestamp: quote.quoteTimestamp,
-        });
-        refreshedSymbols.push(security.displaySymbol);
-        if (!latestPriceDate || quote.priceDate > latestPriceDate) {
-          latestPriceDate = quote.priceDate;
-        }
-      }
-
-      return {
-        totalTrackedStocks: securities.length,
-        totalTrackedFxPairs: trackedFxPairs.length,
-        refreshedCount: refreshedSymbols.length,
-        skippedCount: skippedSymbols.length,
-        refreshedSymbols,
-        skippedSymbols,
-        skippedDetails,
-        refreshedFxPairs,
-        skippedFxPairs,
-        latestPriceDate,
-        generatedAt: new Date().toISOString(),
-      };
-    });
   });
 }
 
@@ -2665,14 +2261,6 @@ async function commitSyntheticImportBatch(
   };
 }
 
-function normalizeDescriptionForSourceImport(value: string) {
-  return normalizeDescription(value).clean;
-}
-
-function humanizeRevolutType(value: string) {
-  return value.replace(/_/g, " ").replace(/\s+/g, " ").trim().toUpperCase();
-}
-
 async function processRevolutSyncJob(
   sql: SqlClient,
   userId: string,
@@ -3057,233 +2645,6 @@ async function processRevolutSyncJob(
       `;
       throw error;
     }
-  });
-}
-
-export async function beginRevolutAuthorization(input: { entityId: string }) {
-  const config = getRevolutRuntimeConfig();
-  return withSeededUserContext(async (sql) => {
-    const userId = getDbRuntimeConfig().seededUserId;
-    const entityRows = await sql`
-      select *
-      from public.entities
-      where id = ${input.entityId}
-        and user_id = ${userId}
-      limit 1
-    `;
-    const entity = entityRows[0];
-    if (!entity) {
-      throw new Error(`Entity ${input.entityId} was not found.`);
-    }
-    if (entity.entity_kind !== "company") {
-      throw new Error(
-        "Revolut Business connections can only be attached to company entities.",
-      );
-    }
-
-    const state = createSignedRevolutState(config, {
-      userId,
-      entityId: input.entityId,
-    });
-
-    return {
-      url: buildRevolutAuthorizationUrl(config, state),
-      state,
-    };
-  });
-}
-
-export async function completeRevolutAuthorization(input: {
-  code: string;
-  state: string;
-}) {
-  const config = getRevolutRuntimeConfig();
-  return withSeededUserContext(async (sql) => {
-    const userId = getDbRuntimeConfig().seededUserId;
-    const statePayload = verifySignedRevolutState(config, input.state);
-    const entityId =
-      typeof statePayload.entityId === "string" ? statePayload.entityId : "";
-    const stateUserId =
-      typeof statePayload.userId === "string" ? statePayload.userId : "";
-    if (!entityId || stateUserId !== userId) {
-      throw new Error("Revolut OAuth state is invalid for this user session.");
-    }
-
-    const tokens = await exchangeRevolutAuthorizationCode(config, input.code);
-    const revolutAccounts = await fetchRevolutAccounts(
-      config,
-      tokens.access_token,
-    );
-    const encryptedRefreshToken = tokens.refresh_token
-      ? encryptBankSecret(config.masterKey, tokens.refresh_token)
-      : null;
-    if (!encryptedRefreshToken) {
-      throw new Error("Revolut did not return a refresh token.");
-    }
-
-    const upsertedConnections = await sql`
-      insert into public.bank_connections ${sql({
-        id: randomUUID(),
-        user_id: userId,
-        entity_id: entityId,
-        provider: REVOLUT_PROVIDER_NAME,
-        connection_label: REVOLUT_CONNECTION_LABEL,
-        status: "active",
-        encrypted_refresh_token: encryptedRefreshToken,
-        external_business_id: null,
-        last_cursor_created_at: null,
-        last_successful_sync_at: null,
-        last_sync_queued_at: null,
-        last_webhook_at: null,
-        auth_expires_at: new Date(
-          Date.now() + tokens.expires_in * 1000,
-        ).toISOString(),
-        last_error: null,
-        metadata_json: serializeJson(sql, {
-          scopes: ["READ"],
-          connectedVia: "oauth_callback",
-        }),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      } as Record<string, unknown>)}
-      on conflict (user_id, provider, entity_id)
-      do update set
-        connection_label = excluded.connection_label,
-        status = excluded.status,
-        encrypted_refresh_token = excluded.encrypted_refresh_token,
-        auth_expires_at = excluded.auth_expires_at,
-        last_error = excluded.last_error,
-        metadata_json = excluded.metadata_json,
-        updated_at = excluded.updated_at
-      returning id
-    `;
-    const connectionId = String(upsertedConnections[0]?.id ?? "");
-    if (!connectionId) {
-      throw new Error("Failed to persist the Revolut bank connection.");
-    }
-
-    let dataset = await loadDatasetForUser(sql, userId);
-    const linked = await resolveOrCreateRevolutAccountLinks(sql, {
-      userId,
-      dataset,
-      connectionId,
-      entityId,
-      revolutAccounts,
-      actorName: "web-revolut-connect",
-      sourceChannel: "web",
-    });
-    dataset = linked.dataset;
-
-    await queueUniqueRevolutSyncJob(sql, {
-      userId,
-      connectionId,
-      trigger: "oauth_callback",
-    });
-
-    return {
-      connectionId,
-      linkedAccountIds: linked.bankAccountLinks.map((link) => link.accountId),
-    };
-  });
-}
-
-export async function queueRevolutConnectionSync(input: {
-  connectionId: string;
-  trigger: Exclude<BankSyncTrigger, "oauth_callback" | "scheduled">;
-}) {
-  return withSeededUserContext(async (sql) => {
-    const userId = getDbRuntimeConfig().seededUserId;
-    const connectionRows = await sql`
-      select id
-      from public.bank_connections
-      where id = ${input.connectionId}
-        and user_id = ${userId}
-        and provider = ${REVOLUT_PROVIDER_NAME}
-      limit 1
-    `;
-    if (!connectionRows[0]) {
-      throw new Error(`Bank connection ${input.connectionId} was not found.`);
-    }
-
-    return queueUniqueRevolutSyncJob(sql, {
-      userId,
-      connectionId: input.connectionId,
-      trigger: input.trigger,
-    });
-  });
-}
-
-export async function processRevolutWebhookEvent(input: {
-  headers: Record<string, string | null | undefined>;
-  body: string;
-}) {
-  const config = getRevolutRuntimeConfig();
-  const timestamp =
-    input.headers["revolut-request-timestamp"] ??
-    input.headers["Revolut-Request-Timestamp"] ??
-    null;
-  const signature =
-    input.headers["revolut-signature"] ??
-    input.headers["Revolut-Signature"] ??
-    null;
-  if (!config.webhookSigningSecret) {
-    throw new Error(
-      "REVOLUT_WEBHOOK_SIGNING_SECRET is required to validate Revolut webhooks.",
-    );
-  }
-  if (!timestamp || !signature) {
-    throw new Error("Revolut webhook is missing signature headers.");
-  }
-  if (!verifyRevolutWebhookTimestamp(timestamp)) {
-    throw new Error("Revolut webhook timestamp is outside the allowed window.");
-  }
-  if (
-    !verifyRevolutWebhookSignature({
-      signingSecret: config.webhookSigningSecret,
-      timestamp,
-      signatureHeader: signature,
-      body: input.body,
-    })
-  ) {
-    throw new Error("Revolut webhook signature verification failed.");
-  }
-
-  return withSeededUserContext(async (sql) => {
-    const userId = getDbRuntimeConfig().seededUserId;
-    const connectionRows = await sql`
-      select id
-      from public.bank_connections
-      where user_id = ${userId}
-        and provider = ${REVOLUT_PROVIDER_NAME}
-        and status = ${"active"}
-    `;
-    const queuedConnectionIds: string[] = [];
-    for (const row of connectionRows) {
-      const connectionId = String(row.id ?? "");
-      if (!connectionId) {
-        continue;
-      }
-      const queued = await queueUniqueRevolutSyncJob(sql, {
-        userId,
-        connectionId,
-        trigger: "webhook",
-      });
-      if (queued.queued) {
-        queuedConnectionIds.push(connectionId);
-      }
-      await sql`
-        update public.bank_connections
-        set last_webhook_at = ${new Date().toISOString()},
-            updated_at = ${new Date().toISOString()}
-        where id = ${connectionId}
-          and user_id = ${userId}
-      `;
-    }
-
-    return {
-      accepted: true,
-      queuedConnectionIds,
-    };
   });
 }
 
@@ -4005,37 +3366,6 @@ async function acquireReviewReanalysisQueueLock(
       hashtext(${transactionId})
     )
   `;
-}
-
-async function acquireInvestmentMutationLock(sql: SqlClient, userId: string) {
-  await sql`
-    select pg_advisory_lock(
-      hashtext(${"investment_mutation"}),
-      hashtext(${userId})
-    )
-  `;
-}
-
-async function releaseInvestmentMutationLock(sql: SqlClient, userId: string) {
-  await sql`
-    select pg_advisory_unlock(
-      hashtext(${"investment_mutation"}),
-      hashtext(${userId})
-    )
-  `;
-}
-
-async function withInvestmentMutationLock<T>(
-  sql: SqlClient,
-  userId: string,
-  runner: () => Promise<T>,
-) {
-  await acquireInvestmentMutationLock(sql, userId);
-  try {
-    return await runner();
-  } finally {
-    await releaseInvestmentMutationLock(sql, userId);
-  }
 }
 
 export async function queueTransactionReviewReanalysis(
