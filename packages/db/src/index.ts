@@ -81,6 +81,10 @@ import {
   supportsJobType,
   updateRunningJobPayload,
 } from "./job-state";
+import {
+  logReviewReanalysisProgress,
+  warnRevolutSyncExpensesSkipped,
+} from "./logging";
 import { loadPromptOverrides } from "./prompt-profiles";
 export {
   getPromptOverrides,
@@ -1512,11 +1516,7 @@ async function processRevolutSyncJob(
           nextExpenseToCursor = nextCursor;
         }
       } catch (error) {
-        console.warn(
-          `[revolut-sync] Expenses enrichment skipped for connection ${connectionId}: ${
-            error instanceof Error ? error.message : "unknown error"
-          }`,
-        );
+        warnRevolutSyncExpensesSkipped(connectionId, error);
       }
 
       const linkedAccountIds = linked.bankAccountLinks.map(
@@ -4767,9 +4767,7 @@ class SqlFinanceRepository implements FinanceRepository {
                     updatedAt: new Date().toISOString(),
                   },
                 };
-                console.log(
-                  `[review_reanalyze] ${job.id} ${progress.stage}: ${progress.message}`,
-                );
+                logReviewReanalysisProgress(job.id, progress);
                 await updateRunningJobPayload(sql, job.id, nextPayloadJson);
               };
               await reportProgress({

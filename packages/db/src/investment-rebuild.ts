@@ -23,6 +23,7 @@ import {
   readRawOutputNumberAsString,
   readRawOutputString,
 } from "./sql-json";
+import { logTwelveDataDebug, redactApiKey } from "./logging";
 
 type SearchCandidate = {
   providerSymbol: string;
@@ -114,23 +115,6 @@ function buildTransactionRebuildEvidence(input: {
 
 function isPlaceholderSecurityPrice(price: SecurityPrice) {
   return price.sourceName === "twelve_data" && !hasNonEmptyPayload(price.rawJson);
-}
-
-function isTwelveDataDebugEnabled() {
-  return /^(1|true|yes)$/i.test(process.env.TWELVE_DATA_DEBUG ?? "");
-}
-
-function redactApiKey(url: URL) {
-  const copy = new URL(url);
-  if (copy.searchParams.has("apikey")) {
-    copy.searchParams.set("apikey", "***REDACTED***");
-  }
-  return copy.toString();
-}
-
-function logTwelveDataDebug(event: string, details: Record<string, unknown>) {
-  if (!isTwelveDataDebugEnabled()) return;
-  console.log(`[twelve-data] ${JSON.stringify({ event, ...details })}`);
 }
 
 function dayDistance(start: string, end: string) {
