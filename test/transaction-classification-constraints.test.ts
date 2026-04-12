@@ -166,6 +166,165 @@ test("cash transaction classifier defaults to gemini-3-flash-preview", () => {
   }
 });
 
+test("cash enrichment falls back to OpenAI when Gemini quota is exhausted", async () => {
+  const previousGeminiKey = process.env.GEMINI_API_KEY;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  const previousLlmModel = process.env.LLM_TRANSACTION_MODEL;
+  const previousGeminiModel = process.env.GEMINI_TRANSACTION_MODEL;
+  const previousOpenAiModel = process.env.OPENAI_TRANSACTION_MODEL;
+  const previousFetch = globalThis.fetch;
+  const requestedUrls: string[] = [];
+  const requestedModels: string[] = [];
+
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  process.env.OPENAI_API_KEY = "test-openai-key";
+  delete process.env.LLM_TRANSACTION_MODEL;
+  delete process.env.GEMINI_TRANSACTION_MODEL;
+  delete process.env.OPENAI_TRANSACTION_MODEL;
+
+  const { dataset, personalAccount, personalEntity } = buildScopedDataset();
+  const transaction = createTransaction({
+    id: "cash-fallback-transaction",
+    accountId: personalAccount.id,
+    accountEntityId: personalEntity.id,
+    economicEntityId: personalEntity.id,
+    transactionDate: "2026-04-12",
+    postedDate: "2026-04-12",
+    amountOriginal: "-18.40",
+    amountBaseEur: "-18.40",
+    currencyOriginal: "EUR",
+    descriptionRaw: "UBER BV trip madrid",
+    descriptionClean: "UBER BV TRIP MADRID",
+    transactionClass: "unknown",
+    categoryCode: null,
+    classificationStatus: "unknown",
+    classificationSource: "system_fallback",
+    classificationConfidence: "0.00",
+    needsReview: true,
+    reviewReason: "Needs LLM enrichment.",
+  });
+  const datasetWithTransaction = {
+    ...dataset,
+    transactions: [transaction],
+  };
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requestedUrls.push(url);
+
+    if (url.includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 429,
+            message:
+              "Your project has exceeded its monthly spending cap.",
+            status: "RESOURCE_EXHAUSTED",
+          },
+        }),
+        {
+          status: 429,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    assert.equal(url, "https://api.openai.com/v1/responses");
+    const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      model?: string;
+    };
+    requestedModels.push(
+      typeof requestBody.model === "string" ? requestBody.model : "",
+    );
+
+    return new Response(
+      JSON.stringify({
+        output_text: JSON.stringify({
+          transaction_class: "expense",
+          category_code: "travel",
+          merchant_normalized: "UBER",
+          counterparty_name: "Uber BV",
+          economic_entity_override: null,
+          security_hint: null,
+          quantity: null,
+          unit_price_original: null,
+          resolved_instrument_name: null,
+          resolved_instrument_isin: null,
+          resolved_instrument_ticker: null,
+          resolved_instrument_exchange: null,
+          current_price: null,
+          current_price_currency: null,
+          current_price_timestamp: null,
+          current_price_source: null,
+          current_price_type: null,
+          resolution_process: null,
+          confidence: 0.93,
+          explanation: "Matched to a ride-hailing travel expense.",
+          reason: "Uber trip expense.",
+        }),
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const decision = await enrichImportedTransaction(
+      datasetWithTransaction,
+      personalAccount,
+      transaction,
+      {
+        trigger: "import_classification",
+      },
+    );
+
+    assert.ok(
+      requestedUrls.some((url) =>
+        /generativelanguage\.googleapis\.com/.test(url),
+      ),
+    );
+    assert.equal(requestedModels.length, 1);
+    assert.equal(requestedModels[0], "gpt-5.4-mini");
+    assert.equal(decision.transactionClass, "expense");
+    assert.equal(decision.categoryCode, "travel");
+    assert.equal(decision.classificationSource, "llm");
+    assert.equal(decision.needsReview, false);
+    assert.equal(
+      (decision.llmPayload as { model?: string }).model,
+      "gpt-5.4-mini",
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousGeminiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+    } else {
+      process.env.GEMINI_API_KEY = previousGeminiKey;
+    }
+    if (previousOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiKey;
+    }
+    if (previousLlmModel === undefined) {
+      delete process.env.LLM_TRANSACTION_MODEL;
+    } else {
+      process.env.LLM_TRANSACTION_MODEL = previousLlmModel;
+    }
+    if (previousGeminiModel === undefined) {
+      delete process.env.GEMINI_TRANSACTION_MODEL;
+    } else {
+      process.env.GEMINI_TRANSACTION_MODEL = previousGeminiModel;
+    }
+    if (previousOpenAiModel === undefined) {
+      delete process.env.OPENAI_TRANSACTION_MODEL;
+    } else {
+      process.env.OPENAI_TRANSACTION_MODEL = previousOpenAiModel;
+    }
+  }
+});
+
 test("personal cash accounts only expose personal and system categories", () => {
   const { dataset, personalAccount } = buildScopedDataset();
 

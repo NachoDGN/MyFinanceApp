@@ -171,13 +171,15 @@ export class FinanceDomainService {
     options: {
       referenceDate?: string;
       period?: TransactionListResponse["period"];
+      query?: string | null;
     } = {},
   ): Promise<TransactionListResponse> {
     const dataset = await this.repository.getDataset();
     const referenceDate = options.referenceDate ?? todayIso();
     const period =
-      options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
-    const transactions = [
+      options.period ??
+      resolvePeriodSelection({ preset: "mtd", referenceDate });
+    const defaultTransactions = [
       ...filterTransactionsByReferenceDate(
         filterTransactionsByScope(dataset, scope),
         referenceDate,
@@ -187,12 +189,66 @@ export class FinanceDomainService {
         `${a.transactionDate}${a.createdAt}`,
       ),
     );
+    const query = options.query?.trim() ?? "";
+    const search =
+      query.length > 0
+        ? await this.repository.searchTransactions({
+            dataset,
+            scope,
+            period,
+            referenceDate,
+            query,
+          })
+        : null;
+    const rows =
+      search?.rows ??
+      defaultTransactions.map((transaction) => ({
+        transaction,
+        originalText: transaction.descriptionRaw,
+        contextualizedText: transaction.descriptionRaw,
+        documentSummary: "",
+        searchDiagnostics: null,
+      }));
+    const transactions = rows.map((row) => row.transaction);
+
     return {
       schemaVersion: "v1",
       scope,
       period,
       totalCount: transactions.length,
       transactions,
+      rows,
+      search: search
+        ? {
+            mode: "hybrid",
+            query: search.query,
+            semanticCandidateCount: search.semanticCandidateCount,
+            keywordCandidateCount: search.keywordCandidateCount,
+            warnings: search.warnings,
+            filters: search.filters,
+          }
+        : {
+            mode: "default",
+            query: query || null,
+            semanticCandidateCount: 0,
+            keywordCandidateCount: 0,
+            warnings: [],
+            filters: {
+              accountIds: [],
+              entityIds: [],
+              accountTypes: [],
+              entityKinds: [],
+              reviewStates: [],
+              directions: [],
+              dateStart: period.start,
+              dateEnd: period.end,
+              usedScopeFallback: false,
+              usedPeriodFallback: false,
+              hasExplicitScopeConstraint: false,
+              hasExplicitTimeConstraint: false,
+              explanation: "",
+            },
+          },
       quality: buildQualitySummary(dataset, scope, {
         referenceDate,
         period,
@@ -201,7 +257,9 @@ export class FinanceDomainService {
     };
   }
 
-  async listAccounts(options: { referenceDate?: string } = {}): Promise<AccountListResponse> {
+  async listAccounts(
+    options: { referenceDate?: string } = {},
+  ): Promise<AccountListResponse> {
     const dataset = await this.repository.getDataset();
     return {
       schemaVersion: "v1",
@@ -248,7 +306,11 @@ export class FinanceDomainService {
   ): Promise<HoldingsResponse> {
     const dataset = await this.repository.getDataset();
     const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
-    const cryptoBalances = buildCryptoBalanceRows(dataset, scope, referenceDate);
+    const cryptoBalances = buildCryptoBalanceRows(
+      dataset,
+      scope,
+      referenceDate,
+    );
     const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
     const brokerageCashEur = getLatestInvestmentCashBalances(
       dataset,

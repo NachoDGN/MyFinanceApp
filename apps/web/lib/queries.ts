@@ -102,6 +102,7 @@ export async function resolveAppState(searchParams: RawSearchParams) {
         : workspaceSettings.defaultDisplayCurrency;
   const periodParam =
     normalizeParam(params, "period") ?? workspaceSettings.defaultPeriodPreset;
+  const transactionSearchQuery = normalizeParam(params, "q") ?? "";
   const entityBySlug = new Map(
     dataset.entities.map((entity) => [entity.slug, entity.id]),
   );
@@ -183,6 +184,7 @@ export async function resolveAppState(searchParams: RawSearchParams) {
       start: period.preset === "custom" ? period.start : undefined,
       end: period.preset === "custom" ? period.end : undefined,
     },
+    transactionSearchQuery,
   };
 }
 
@@ -204,6 +206,7 @@ export function buildHref(
     start: string;
     end: string;
   }>,
+  extraParams: Record<string, string | undefined> = {},
 ) {
   const period = overrides.period ?? current.period;
   const query = new URLSearchParams({
@@ -220,6 +223,13 @@ export function buildHref(
   if (period === "custom" && start && end) {
     query.set("start", start);
     query.set("end", end);
+  }
+  for (const [key, value] of Object.entries(extraParams)) {
+    if (typeof value === "string" && value.trim() !== "") {
+      query.set(key, value);
+    } else {
+      query.delete(key);
+    }
   }
   return `${pathname}?${query.toString()}`;
 }
@@ -264,6 +274,7 @@ export async function getTransactionsModel(searchParams: RawSearchParams) {
   const ledger = await domainService.listTransactions(state.scope, {
     referenceDate: state.referenceDate,
     period: state.period,
+    query: state.transactionSearchQuery,
   });
   return { ...state, ledger };
 }
@@ -303,8 +314,8 @@ export async function getCreditCardStatementModel(
     state.dataset.accounts.find(
       (account) => account.id === importBatch.accountId,
     ) ?? null;
-  const unresolvedCount = statementTransactions.filter(
-    (transaction) => needsTransactionManualReview(transaction),
+  const unresolvedCount = statementTransactions.filter((transaction) =>
+    needsTransactionManualReview(transaction),
   ).length;
   const llmResolvedCount = statementTransactions.filter(
     (transaction) => transaction.classificationSource === "llm",

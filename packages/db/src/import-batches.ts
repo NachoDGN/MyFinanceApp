@@ -13,7 +13,7 @@ import {
   type Transaction,
 } from "@myfinance/domain";
 
-import { queueJob } from "./job-state";
+import { queueJob, supportsJobType } from "./job-state";
 import { serializeJson } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 
@@ -23,6 +23,17 @@ const DEFAULT_IMPORT_JOBS_QUEUED = [
   "position_rebuild",
   "metric_refresh",
 ] as const satisfies ImportCommitResult["jobsQueued"];
+
+function mergeDefaultImportJobs(
+  jobsQueued: readonly ImportCommitResult["jobsQueued"][number][] | undefined,
+): ImportCommitResult["jobsQueued"] {
+  return [
+    ...new Set([
+      ...DEFAULT_IMPORT_JOBS_QUEUED,
+      ...((jobsQueued ?? []) as ImportCommitResult["jobsQueued"]),
+    ]),
+  ] as ImportCommitResult["jobsQueued"];
+}
 
 export type CommitPreparedImportBatchOptions = {
   importBatchId?: string;
@@ -184,6 +195,9 @@ async function queueImportBatchJobs(
 ) {
   const availableAt = new Date().toISOString();
   for (const jobType of input.jobsQueued) {
+    if (!(await supportsJobType(sql, jobType))) {
+      continue;
+    }
     await queueJob(
       sql,
       jobType,
@@ -391,10 +405,13 @@ export async function commitPreparedImportBatch(
           transactionIds: [],
           jobsQueued: [...DEFAULT_IMPORT_JOBS_QUEUED],
         } satisfies ImportCommitResult);
-  const jobsQueued = input.options?.jobsQueued ??
-    ((commitResult as ImportCommitResult | null)?.jobsQueued as
-      | ImportCommitResult["jobsQueued"]
-      | undefined) ?? [...DEFAULT_IMPORT_JOBS_QUEUED];
+  const jobsQueued =
+    input.options?.jobsQueued ??
+    mergeDefaultImportJobs(
+      (commitResult as ImportCommitResult | null)?.jobsQueued as
+        | ImportCommitResult["jobsQueued"]
+        | undefined,
+    );
   const importedAt = new Date().toISOString();
 
   const { insertedTransactions, transactionIds } =
@@ -433,7 +450,7 @@ export async function commitPreparedImportBatch(
       importedAt,
       jobsQueued,
       preparedTransactions: preparedTransactions?.inserted ?? [],
-      queueBeforeInsert: true,
+      queueBeforeInsert: false,
     });
 
   const rowCountInserted =

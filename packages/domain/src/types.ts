@@ -85,6 +85,7 @@ export type JobStatus = "queued" | "running" | "completed" | "failed";
 export type JobType =
   | "classification"
   | "bank_sync"
+  | "transaction_search_index"
   | "transfer_rematch"
   | "security_resolution"
   | "price_refresh"
@@ -253,6 +254,55 @@ export interface Transaction {
   linkedCreditCardAccountId?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TransactionSearchDiagnostics {
+  sourceBatchKey: string;
+  hybridScore: number;
+  semanticDistance: number | null;
+  rerankScore: number | null;
+  bm25Score: number | null;
+  semanticRank: number | null;
+  rerankRank: number | null;
+  keywordRank: number | null;
+  matchedBy: Array<"semantic" | "keyword">;
+  direction: "debit" | "credit" | "neutral";
+  reviewState: "pending_enrichment" | "needs_review" | "resolved";
+}
+
+export interface TransactionListRow {
+  transaction: Transaction;
+  originalText: string;
+  contextualizedText: string;
+  documentSummary: string;
+  searchDiagnostics: TransactionSearchDiagnostics | null;
+}
+
+export interface TransactionSearchFilters {
+  accountIds: string[];
+  entityIds: string[];
+  accountTypes: AccountType[];
+  entityKinds: EntityKind[];
+  reviewStates: Array<
+    "pending_enrichment" | "needs_review" | "resolved" | "unresolved"
+  >;
+  directions: Array<"credit" | "debit">;
+  dateStart: string | null;
+  dateEnd: string | null;
+  usedScopeFallback: boolean;
+  usedPeriodFallback: boolean;
+  hasExplicitScopeConstraint: boolean;
+  hasExplicitTimeConstraint: boolean;
+  explanation: string;
+}
+
+export interface TransactionSearchState {
+  mode: "default" | "hybrid";
+  query: string | null;
+  semanticCandidateCount: number;
+  keywordCandidateCount: number;
+  warnings: string[];
+  filters: TransactionSearchFilters;
 }
 
 export interface BankConnection {
@@ -673,6 +723,8 @@ export interface TransactionListResponse {
   period?: PeriodSelection;
   totalCount: number;
   transactions: Transaction[];
+  rows: TransactionListRow[];
+  search: TransactionSearchState;
   quality: QualitySummary;
   generatedAt: string;
 }

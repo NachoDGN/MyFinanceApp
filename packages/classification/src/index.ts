@@ -4,6 +4,8 @@ import {
   analyzeBankTransaction,
   createLLMClient,
   isModelConfigured,
+  resolveModelProvider,
+  type AnalyzeBankTransactionResult,
   type PromptProfileOverrides,
 } from "@myfinance/llm";
 import type {
@@ -62,6 +64,8 @@ export type {
   ReviewPropagationTransactionMatch,
   SimilarAccountTransactionMatch,
 } from "./investment-support";
+
+const quotaExhaustedTransactionModels = new Set<string>();
 
 export const NON_AI_RULE_SUMMARIES = [
   {
@@ -228,6 +232,15 @@ export interface SimilarAccountTransactionPromptContext {
   model?: string | null;
 }
 
+export interface TransactionBatchContext {
+  phase: "parallel_first_pass" | "sequential_escalation";
+  sourceBatchKey?: string | null;
+  batchSummary?: string | null;
+  retrievalContext?: string | null;
+  totalTransactions?: number | null;
+  trustedResolvedCount?: number | null;
+}
+
 export interface TransactionEnrichmentOptions {
   trigger?:
     | "import_classification"
@@ -237,6 +250,12 @@ export interface TransactionEnrichmentOptions {
   reviewContext?: TransactionReviewContextInput;
   promptOverrides?: PromptProfileOverrides;
   similarAccountTransactions?: SimilarAccountTransactionPromptContext[];
+  reviewExamples?: ReturnType<typeof buildHistoricalReviewExamples>;
+  batchContext?: TransactionBatchContext | null;
+  modelNameOverride?: string | null;
+  skipHistoricalReviewExamples?: boolean;
+  skipSimilarAccountTransactions?: boolean;
+  allowDeterministicLlmSkip?: boolean;
 }
 
 type TransactionEnrichmentTrigger = Exclude<
@@ -313,6 +332,10 @@ function getResolvedTransactionReviewModel() {
   return process.env.RESOLVED_TRANSACTION_REVIEW_LLM?.trim() || "gpt-5.4-mini";
 }
 
+export function getBatchEscalationReviewModel() {
+  return process.env.BATCH_TRANSACTION_ESCALATION_LLM?.trim() || "gpt-5.4";
+}
+
 function normalizeCashCategoryCode(
   transactionClass: string,
   categoryCode: string | null,
@@ -376,6 +399,106 @@ function getTransactionReviewModel(
     : getTransactionClassifierConfig().model;
 }
 
+function buildSkippedLlmClassification(
+  requestedAt: string,
+  reason: string,
+  reviewExamplesUsed: Array<{
+    auditEventId: string;
+    objectId: string;
+    createdAt: string;
+  }>,
+): LlmClassification {
+  const completedAt = new Date().toISOString();
+  return {
+    analysisStatus: "skipped",
+    model: null,
+    transactionClass: null,
+    categoryCode: null,
+    merchantNormalized: null,
+    counterpartyName: null,
+    economicEntityId: null,
+    securityHint: null,
+    quantity: null,
+    unitPriceOriginal: null,
+    confidence: null,
+    explanation: null,
+    reason,
+    error: reason,
+    rawOutput: null,
+    requestedAt,
+    completedAt,
+    durationMs:
+      new Date(completedAt).getTime() - new Date(requestedAt).getTime(),
+    reviewExamplesUsed,
+  };
+}
+
+function getOpenAiTransactionFallbackModel(
+  account: Account,
+  trigger: TransactionEnrichmentOptions["trigger"] | undefined,
+  primaryModel: string,
+) {
+  const explicitOpenAiModel = process.env.OPENAI_TRANSACTION_MODEL?.trim();
+  const fallbackModel =
+    account.assetDomain === "investment"
+      ? getInvestmentReviewModel(trigger)
+      : explicitOpenAiModel || "gpt-5.4-mini";
+
+  if (!fallbackModel || !isModelConfigured(fallbackModel)) {
+    return null;
+  }
+
+  if (resolveModelProvider(fallbackModel) !== "openai") {
+    return null;
+  }
+
+  if (fallbackModel.trim().toLowerCase() === primaryModel.trim().toLowerCase()) {
+    return null;
+  }
+
+  return fallbackModel;
+}
+
+function shouldRetryTransactionClassificationWithOpenAiFallback(
+  result: AnalyzeBankTransactionResult,
+  primaryModel: string,
+  fallbackModel: string | null,
+) {
+  if (result.analysisStatus !== "failed") {
+    return false;
+  }
+
+  if (!fallbackModel) {
+    return false;
+  }
+
+  if (resolveModelProvider(primaryModel) !== "gemini") {
+    return false;
+  }
+
+  if (result.provider !== "gemini") {
+    return false;
+  }
+
+  if (result.statusCode === 429) {
+    return true;
+  }
+
+  return /RESOURCE_EXHAUSTED|spending cap|quota/i.test(result.error ?? "");
+}
+
+function normalizeModelKey(modelName: string) {
+  return modelName.trim().toLowerCase();
+}
+
+function markTransactionModelQuotaExhausted(modelName: string) {
+  quotaExhaustedTransactionModels.add(normalizeModelKey(modelName));
+}
+
+function isTransactionModelQuotaExhausted(modelName: string) {
+  return quotaExhaustedTransactionModels.has(normalizeModelKey(modelName));
+}
+
 export function isTransactionClassifierConfigured() {
   return isModelConfigured(getTransactionClassifierConfig().model);
 }
@@ -397,7 +520,9 @@ async function requestLlmClassification(
     transaction,
     deterministic,
   );
-  const model = getTransactionReviewModel(account, options?.trigger);
+  const model =
+    options?.modelNameOverride?.trim() ||
+    getTransactionReviewModel(account, options?.trigger);
   const providerContext = extractProviderContext(transaction);
   const providerMerchantName = readOptionalString(
     readOptionalRecord(providerContext?.merchant)?.name,
@@ -405,41 +530,55 @@ async function requestLlmClassification(
   const allowedTransactionClasses =
     buildAllowedTransactionClassesForAccount(account);
   const allowedCategories = buildAllowedCategoriesForAccount(dataset, account);
-  const reviewExamples = buildHistoricalReviewExamples(
-    dataset,
-    account,
-    transaction,
-  );
+  const reviewExamples =
+    options?.reviewExamples ??
+    (options?.skipHistoricalReviewExamples
+      ? []
+      : buildHistoricalReviewExamples(dataset, account, transaction));
   const reviewExamplesUsed = buildReviewExamplesUsed(reviewExamples);
   const reviewContext = buildTransactionReviewContext(
     transaction,
     persistedSecurityMappings,
     options,
   );
+  const requestedAt = new Date().toISOString();
+  if (
+    options?.allowDeterministicLlmSkip !== false &&
+    !deterministic.needsReview &&
+    (deterministic.classificationSource === "user_rule" ||
+      deterministic.classificationSource === "transfer_matcher")
+  ) {
+    return buildSkippedLlmClassification(
+      requestedAt,
+      "Skipped LLM because deterministic classification is already trusted.",
+      reviewExamplesUsed,
+    );
+  }
   const similarAccountTransactions =
     options?.similarAccountTransactions ??
-    rankSimilarAccountTransactions(dataset, account, transaction, {
-      limit: 5,
-      minScore: 6,
-      includeNeedsReview: false,
-      requireEarlierDate: true,
-    }).map((match) => ({
-      transactionDate: match.transaction.transactionDate,
-      postedDate: match.transaction.postedDate ?? null,
-      amountOriginal: match.transaction.amountOriginal,
-      currencyOriginal: match.transaction.currencyOriginal,
-      descriptionRaw: match.transaction.descriptionRaw,
-      transactionClass: match.transaction.transactionClass,
-      categoryCode: match.transaction.categoryCode ?? null,
-      merchantNormalized: match.transaction.merchantNormalized ?? null,
-      counterpartyName: match.transaction.counterpartyName ?? null,
-      securityId: match.transaction.securityId ?? null,
-      quantity: match.transaction.quantity ?? null,
-      unitPriceOriginal: match.transaction.unitPriceOriginal ?? null,
-      reviewReason: match.transaction.reviewReason ?? null,
-      similarityScore: match.score.toFixed(2),
-    }));
-  const requestedAt = new Date().toISOString();
+    (options?.skipSimilarAccountTransactions
+      ? []
+      : rankSimilarAccountTransactions(dataset, account, transaction, {
+          limit: 5,
+          minScore: 6,
+          includeNeedsReview: false,
+          requireEarlierDate: true,
+        }).map((match) => ({
+          transactionDate: match.transaction.transactionDate,
+          postedDate: match.transaction.postedDate ?? null,
+          amountOriginal: match.transaction.amountOriginal,
+          currencyOriginal: match.transaction.currencyOriginal,
+          descriptionRaw: match.transaction.descriptionRaw,
+          transactionClass: match.transaction.transactionClass,
+          categoryCode: match.transaction.categoryCode ?? null,
+          merchantNormalized: match.transaction.merchantNormalized ?? null,
+          counterpartyName: match.transaction.counterpartyName ?? null,
+          securityId: match.transaction.securityId ?? null,
+          quantity: match.transaction.quantity ?? null,
+          unitPriceOriginal: match.transaction.unitPriceOriginal ?? null,
+          reviewReason: match.transaction.reviewReason ?? null,
+          similarityScore: match.score.toFixed(2),
+        })));
   if (!isModelConfigured(model)) {
     const completedAt = new Date().toISOString();
     return {
@@ -466,65 +605,95 @@ async function requestLlmClassification(
     };
   }
 
-  const result = await analyzeBankTransaction(
-    createLLMClient(),
-    {
-      account: {
-        id: account.id,
-        assetDomain: account.assetDomain,
-        institutionName: account.institutionName,
-        displayName: account.displayName,
-        accountType: account.accountType,
-      },
-      allowedTransactionClasses,
-      allowedCategories: allowedCategories.map((category) => ({
-        code: category.code,
-        displayName: category.displayName,
-      })),
-      transaction: {
-        transactionDate: transaction.transactionDate,
-        postedDate: transaction.postedDate ?? null,
-        amountOriginal: transaction.amountOriginal,
-        currencyOriginal: transaction.currencyOriginal,
-        descriptionRaw: transaction.descriptionRaw,
-        merchantNormalized:
-          transaction.merchantNormalized ?? providerMerchantName ?? null,
-        counterpartyName: transaction.counterpartyName ?? null,
-        securityId: transaction.securityId ?? null,
-        quantity: transaction.quantity ?? null,
-        unitPriceOriginal: transaction.unitPriceOriginal ?? null,
-        providerContext,
-        rawPayload: transaction.rawPayload,
-      },
-      deterministicHint: {
-        transactionClass: deterministic.transactionClass,
-        categoryCode: deterministic.categoryCode,
-        explanation: deterministic.explanation,
-        source: deterministic.classificationSource,
-      },
-      portfolioState: buildInvestmentPortfolioState(
-        dataset,
-        account,
-        transaction,
-        deterministic,
-      ),
-      similarAccountTransactions,
-      reviewExamples: reviewExamples.map((example) => ({
-        transaction: example.transaction,
-        initialInference: example.initialInference,
-        userFeedback: example.userFeedback,
-        correctedOutcome: example.correctedOutcome,
-      })),
-      promptOverrides:
-        options?.promptOverrides?.[
-          account.assetDomain === "investment"
-            ? "investment_transaction_analyzer"
-            : "cash_transaction_analyzer"
-        ] ?? null,
-      reviewContext,
+  const llmClient = createLLMClient();
+  const analyzerInput = {
+    account: {
+      id: account.id,
+      assetDomain: account.assetDomain,
+      institutionName: account.institutionName,
+      displayName: account.displayName,
+      accountType: account.accountType,
     },
+    allowedTransactionClasses,
+    allowedCategories: allowedCategories.map((category) => ({
+      code: category.code,
+      displayName: category.displayName,
+    })),
+    transaction: {
+      transactionDate: transaction.transactionDate,
+      postedDate: transaction.postedDate ?? null,
+      amountOriginal: transaction.amountOriginal,
+      currencyOriginal: transaction.currencyOriginal,
+      descriptionRaw: transaction.descriptionRaw,
+      merchantNormalized:
+        transaction.merchantNormalized ?? providerMerchantName ?? null,
+      counterpartyName: transaction.counterpartyName ?? null,
+      securityId: transaction.securityId ?? null,
+      quantity: transaction.quantity ?? null,
+      unitPriceOriginal: transaction.unitPriceOriginal ?? null,
+      providerContext,
+      rawPayload: transaction.rawPayload,
+    },
+    deterministicHint: {
+      transactionClass: deterministic.transactionClass,
+      categoryCode: deterministic.categoryCode,
+      explanation: deterministic.explanation,
+      source: deterministic.classificationSource,
+    },
+    portfolioState: buildInvestmentPortfolioState(
+      dataset,
+      account,
+      transaction,
+      deterministic,
+    ),
+    similarAccountTransactions,
+    batchContext: options?.batchContext ?? null,
+    reviewExamples: reviewExamples.map((example) => ({
+      transaction: example.transaction,
+      initialInference: example.initialInference,
+      userFeedback: example.userFeedback,
+      correctedOutcome: example.correctedOutcome,
+    })),
+    promptOverrides:
+      options?.promptOverrides?.[
+        account.assetDomain === "investment"
+          ? "investment_transaction_analyzer"
+          : "cash_transaction_analyzer"
+      ] ?? null,
+    reviewContext,
+  } as const;
+
+  const fallbackModel = getOpenAiTransactionFallbackModel(
+    account,
+    options?.trigger,
     model,
   );
+  const initialModel =
+    fallbackModel &&
+    resolveModelProvider(model) === "gemini" &&
+    isTransactionModelQuotaExhausted(model)
+      ? fallbackModel
+      : model;
+
+  let result = await analyzeBankTransaction(
+    llmClient,
+    analyzerInput,
+    initialModel,
+  );
+  if (
+    shouldRetryTransactionClassificationWithOpenAiFallback(
+      result,
+      model,
+      fallbackModel,
+    )
+  ) {
+    markTransactionModelQuotaExhausted(model);
+    result = await analyzeBankTransaction(
+      llmClient,
+      analyzerInput,
+      fallbackModel!,
+    );
+  }
   const completedAt = new Date().toISOString();
   const durationMs =
     new Date(completedAt).getTime() - new Date(requestedAt).getTime();
@@ -532,7 +701,7 @@ async function requestLlmClassification(
   if (result.analysisStatus !== "done" || !result.output) {
     return {
       analysisStatus: "failed",
-      model,
+      model: result.model,
       transactionClass: null,
       categoryCode: null,
       merchantNormalized: null,
@@ -555,7 +724,7 @@ async function requestLlmClassification(
 
   return {
     analysisStatus: "done",
-    model,
+    model: result.model,
     transactionClass: result.output.transaction_class,
     categoryCode: normalizeOptionalText(result.output.category_code ?? null),
     merchantNormalized: normalizeOptionalText(
@@ -774,6 +943,7 @@ export async function enrichImportedTransaction(
       analysisStatus: llm.analysisStatus,
       model:
         llm.model ??
+        options?.modelNameOverride?.trim() ??
         (account.assetDomain === "investment"
           ? getInvestmentReviewModel(options?.trigger)
           : getTransactionClassifierConfig().model),
@@ -790,6 +960,16 @@ export async function enrichImportedTransaction(
         completedAt: llm.completedAt,
         durationMs: llm.durationMs,
       },
+      batchPipeline: options?.batchContext
+        ? {
+            phase: options.batchContext.phase,
+            sourceBatchKey: options.batchContext.sourceBatchKey ?? null,
+            totalTransactions: options.batchContext.totalTransactions ?? null,
+            trustedResolvedCount:
+              options.batchContext.trustedResolvedCount ?? null,
+            processedAt: llm.completedAt,
+          }
+        : null,
       applied: {
         transactionClass,
         categoryCode,

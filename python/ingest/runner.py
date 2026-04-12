@@ -1565,6 +1565,7 @@ def build_result(
         summary["transactionIds"] = [str(uuid.uuid4()) for _ in records]
         summary["jobsQueued"] = [
             "classification",
+            "transaction_search_index",
             "transfer_rematch",
             "position_rebuild",
             "metric_refresh",

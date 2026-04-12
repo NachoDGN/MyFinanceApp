@@ -291,6 +291,14 @@ export interface AnalyzeBankTransactionInput {
     resolutionProcess?: string | null;
     model?: string | null;
   }>;
+  batchContext?: {
+    phase: string;
+    sourceBatchKey?: string | null;
+    batchSummary?: string | null;
+    retrievalContext?: string | null;
+    totalTransactions?: number | null;
+    trustedResolvedCount?: number | null;
+  } | null;
   reviewContext?: {
     trigger: string;
     previousReviewReason?: string | null;
@@ -346,6 +354,9 @@ export interface AnalyzeBankTransactionResult {
   output: TransactionAnalysisOutput | null;
   error: string | null;
   rawOutput: Record<string, unknown> | null;
+  provider: "openai" | "gemini";
+  statusCode: number | null;
+  failureKind: string | null;
 }
 
 export async function analyzeBankTransaction(
@@ -383,6 +394,18 @@ export async function analyzeBankTransaction(
       similarAccountHistory: JSON.stringify(
         input.similarAccountTransactions ?? [],
       ),
+      batchContext: input.batchContext
+        ? {
+            phase: input.batchContext.phase,
+            sourceBatchKey: input.batchContext.sourceBatchKey ?? "unknown",
+            batchSummary: input.batchContext.batchSummary ?? "none",
+            retrievalContext: input.batchContext.retrievalContext ?? "none",
+            totalTransactions: String(input.batchContext.totalTransactions ?? 0),
+            trustedResolvedCount: String(
+              input.batchContext.trustedResolvedCount ?? 0,
+            ),
+          }
+        : null,
       reviewExamples:
         input.reviewExamples?.map((example) => ({
           transaction: JSON.stringify(example.transaction),
@@ -434,6 +457,9 @@ export async function analyzeBankTransaction(
       output,
       error: null,
       rawOutput: output as unknown as Record<string, unknown>,
+      provider: resolveModelProvider(modelName),
+      statusCode: null,
+      failureKind: null,
     } satisfies AnalyzeBankTransactionResult;
   } catch (error) {
     return {
@@ -448,6 +474,12 @@ export async function analyzeBankTransaction(
         error instanceof LLMError && error.rawOutput
           ? { invalidOutput: error.rawOutput }
           : null,
+      provider:
+        error instanceof LLMError
+          ? error.provider
+          : resolveModelProvider(modelName),
+      statusCode: error instanceof LLMError ? error.statusCode ?? null : null,
+      failureKind: error instanceof LLMError ? error.kind : null,
     } satisfies AnalyzeBankTransactionResult;
   }
 }

@@ -25,6 +25,7 @@ export function AppShell({
   pathname,
   state,
   scopeOptions,
+  pageQueryParams = {},
 }: {
   children: ReactNode;
   pathname: string;
@@ -37,6 +38,7 @@ export function AppShell({
     end?: string;
   };
   scopeOptions: Array<{ value: string; label: string }>;
+  pageQueryParams?: Record<string, string | undefined>;
 }) {
   const entityScopeOptions = scopeOptions.filter(
     (option) =>
@@ -84,7 +86,12 @@ export function AppShell({
           {entityScopeOptions.map((option) => (
             <a
               key={option.value}
-              href={buildHref(pathname, state, { scopeParam: option.value })}
+              href={buildHref(
+                pathname,
+                state,
+                { scopeParam: option.value },
+                pageQueryParams,
+              )}
               className={`filter-pill ${state.scopeParam === option.value ? "active" : ""}`}
             >
               {option.label}
@@ -93,25 +100,45 @@ export function AppShell({
         </div>
         <div className="filter-group">
           <a
-            href={buildHref(pathname, state, { period: "mtd" })}
+            href={buildHref(
+              pathname,
+              state,
+              { period: "mtd" },
+              pageQueryParams,
+            )}
             className={`filter-pill ${state.period === "mtd" ? "active" : ""}`}
           >
             Month to Date
           </a>
           <a
-            href={buildHref(pathname, state, { period: "ytd" })}
+            href={buildHref(
+              pathname,
+              state,
+              { period: "ytd" },
+              pageQueryParams,
+            )}
             className={`filter-pill ${state.period === "ytd" ? "active" : ""}`}
           >
             Year to Date
           </a>
           <a
-            href={buildHref(pathname, state, { currency: "EUR" })}
+            href={buildHref(
+              pathname,
+              state,
+              { currency: "EUR" },
+              pageQueryParams,
+            )}
             className={`filter-pill ${state.currency === "EUR" ? "active" : ""}`}
           >
             EUR
           </a>
           <a
-            href={buildHref(pathname, state, { currency: "USD" })}
+            href={buildHref(
+              pathname,
+              state,
+              { currency: "USD" },
+              pageQueryParams,
+            )}
             className={`filter-pill ${state.currency === "USD" ? "active" : ""}`}
           >
             USD

@@ -128,8 +128,7 @@ export default async function AccountsPage({
                 model.currency,
                 model.referenceDate,
               ),
-              currentBalanceCurrency:
-                snapshot?.balanceCurrency ?? account.defaultCurrency,
+              currentBalanceCurrency: model.currency,
               lastImport: account.lastImportedAt?.slice(0, 10) ?? "Never",
               staleThreshold: account.staleAfterDays
                 ? `${account.staleAfterDays} days`

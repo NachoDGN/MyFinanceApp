@@ -62,6 +62,7 @@ export function AccountsWorkbench({
     String(defaultCashStaleAfterDays),
   );
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const hasEntities = entities.length > 0;
 
   const compatibleTemplates = useMemo(
     () =>
@@ -206,6 +207,12 @@ export function AccountsWorkbench({
           className="form-grid"
           onSubmit={(event) => {
             event.preventDefault();
+            if (!hasEntities) {
+              setFeedback(
+                "Create an entity first in Settings before adding an account.",
+              );
+              return;
+            }
             handleCreate(
               new FormData(event.currentTarget),
               event.currentTarget,
@@ -217,8 +224,12 @@ export function AccountsWorkbench({
             <select
               className="input-select"
               name="entityId"
+              disabled={!hasEntities}
               defaultValue={entities[0]?.id}
             >
+              {!hasEntities ? (
+                <option value="">Create an entity first</option>
+              ) : null}
               {entities.map((entity) => (
                 <option key={entity.id} value={entity.id}>
                   {entity.displayName}
@@ -360,12 +371,17 @@ export function AccountsWorkbench({
             Include in consolidated totals
           </label>
           <div className="inline-actions" style={{ gridColumn: "1 / -1" }}>
-            <button className="btn-pill" type="submit" disabled={isPending}>
+            <button
+              className="btn-pill"
+              type="submit"
+              disabled={isPending || !hasEntities}
+            >
               {isPending ? "Saving..." : "Create Account"}
             </button>
             <span className="muted">
-              Deletion is only available for accounts with no imported or
-              derived history.
+              {hasEntities
+                ? "Deletion is only available for accounts with no imported or derived history."
+                : "Create an entity in Settings first, then come back here to add accounts."}
             </span>
           </div>
           {feedback ? (
