@@ -261,7 +261,10 @@ export type CreditCardStatementModel = Awaited<
 
 export async function getTransactionsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const ledger = await domainService.listTransactions(state.scope);
+  const ledger = await domainService.listTransactions(state.scope, {
+    referenceDate: state.referenceDate,
+    period: state.period,
+  });
   return { ...state, ledger };
 }
 
@@ -321,7 +324,9 @@ export async function getCreditCardStatementModel(
 
 export async function getAccountsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const accounts = await domainService.listAccounts();
+  const accounts = await domainService.listAccounts({
+    referenceDate: state.referenceDate,
+  });
   return {
     ...state,
     accounts,

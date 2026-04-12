@@ -14,7 +14,10 @@ export async function GET(
     state.scope,
     state.currency,
     metricId,
-    { referenceDate: state.referenceDate },
+    {
+      referenceDate: state.referenceDate,
+      period: state.period,
+    },
   );
   return NextResponse.json(metric);
 }

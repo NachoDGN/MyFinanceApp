@@ -1,7 +1,10 @@
 import type { DashboardModel } from "../lib/queries";
 import { formatCurrency } from "../lib/formatters";
 import { buildHref } from "../lib/queries";
-import { convertBaseEurToDisplayAmount } from "../lib/currency";
+import {
+  convertBaseEurToDisplayAmount,
+  formatBaseEurAmountForDisplay,
+} from "../lib/currency";
 import { AppShell } from "./app-shell";
 import {
   HighlightCard,
@@ -125,9 +128,11 @@ export function DashboardView({
     },
     {
       label: "Uncategorized amount",
-      value: formatCurrency(
+      value: formatBaseEurAmountForDisplay(
+        model.dataset,
         model.summary.quality.unclassifiedAmountMtdEur,
         model.currency,
+        model.referenceDate,
       ),
       meta: "Current month uncategorized exposure",
     },

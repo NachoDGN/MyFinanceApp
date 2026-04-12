@@ -37,7 +37,7 @@ import {
   filterTransactionsByScope,
   getLatestAccountBalances,
   getLatestInvestmentCashBalances,
-  getDatasetLatestDate,
+  getScopeLatestDate,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   todayIso,
@@ -68,9 +68,14 @@ function ageInDays(
 function buildQualitySummary(
   dataset: Awaited<ReturnType<FinanceRepository["getDataset"]>>,
   scope: Scope,
+  options: {
+    referenceDate?: string;
+    period?: TransactionListResponse["period"];
+  } = {},
 ) {
-  const referenceDate = todayIso();
-  const period = resolvePeriodSelection({ preset: "mtd", referenceDate });
+  const referenceDate = options.referenceDate ?? todayIso();
+  const period =
+    options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
   const scopedTransactions = filterTransactionsByScope(dataset, scope);
   const scopedAccounts =
     scope.kind === "consolidated"
@@ -121,7 +126,7 @@ function buildQualitySummary(
       accountName: account.displayName,
       latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
     })),
-    latestDataDateByScope: getDatasetLatestDate(dataset),
+    latestDataDateByScope: getScopeLatestDate(dataset, scope, referenceDate),
     priceFreshness: dataset.securityPrices.every((row) => row.isDelayed)
       ? "delayed"
       : "fresh",
@@ -158,8 +163,17 @@ export class FinanceDomainService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  async listTransactions(scope: Scope): Promise<TransactionListResponse> {
+  async listTransactions(
+    scope: Scope,
+    options: {
+      referenceDate?: string;
+      period?: TransactionListResponse["period"];
+    } = {},
+  ): Promise<TransactionListResponse> {
     const dataset = await this.repository.getDataset();
+    const referenceDate = options.referenceDate ?? todayIso();
+    const period =
+      options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
     const transactions = [...filterTransactionsByScope(dataset, scope)].sort(
       (a, b) =>
         `${b.transactionDate}${b.createdAt}`.localeCompare(
@@ -169,19 +183,26 @@ export class FinanceDomainService {
     return {
       schemaVersion: "v1",
       scope,
+      period,
       totalCount: transactions.length,
       transactions,
-      quality: buildQualitySummary(dataset, scope),
+      quality: buildQualitySummary(dataset, scope, {
+        referenceDate,
+        period,
+      }),
       generatedAt: new Date().toISOString(),
     };
   }
 
-  async listAccounts(): Promise<AccountListResponse> {
+  async listAccounts(options: { referenceDate?: string } = {}): Promise<AccountListResponse> {
     const dataset = await this.repository.getDataset();
     return {
       schemaVersion: "v1",
       accounts: dataset.accounts,
-      balances: getLatestAccountBalances(dataset),
+      balances: getLatestAccountBalances(
+        dataset,
+        options.referenceDate ?? todayIso(),
+      ),
       generatedAt: new Date().toISOString(),
     };
   }

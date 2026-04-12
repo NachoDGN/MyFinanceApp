@@ -588,13 +588,6 @@ export function buildInvestmentsPageModel(
   const totalPortfolioValueDisplay = new Decimal(
     toDisplayAmount(model, totalPortfolioValueEur.toFixed(2)) ?? 0,
   );
-  const totalDisplayUnrealized = sortedHoldings
-    .reduce(
-      (sum, holding) =>
-        sum.plus(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
-      new Decimal(0),
-    )
-    .toFixed(2);
   const fundsSummary = buildHoldingBucketSummary(
     model,
     fundHoldings,
@@ -776,9 +769,12 @@ export function buildInvestmentsPageModel(
       },
       {
         label: "Unrealized Gain",
-        value: formatCurrency(totalDisplayUnrealized, model.currency),
+        value: formatCurrency(model.metrics.unrealized.valueDisplay, model.currency),
         badge: `${model.metrics.unrealized.deltaPercent ?? "0.00"}%`,
-        badgeTone: Number(totalDisplayUnrealized) >= 0 ? "accent" : "neutral",
+        badgeTone:
+          Number(model.metrics.unrealized.valueDisplay ?? "0") >= 0
+            ? "accent"
+            : "neutral",
         subtitle: `${formatCurrency(model.metrics.unrealized.deltaDisplay, model.currency)} vs ${comparisonLabel}`,
         chartValues: model.holdings.holdings.map((holding) =>
           Number(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),

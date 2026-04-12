@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildDashboardSummary,
   buildInvestmentsReadModel,
   buildMetricResult,
   buildSpendingReadModel,
@@ -23,6 +24,7 @@ import {
   buildHoldingRows,
   buildImportedTransactions,
   createTemplateConfig,
+  FinanceDomainService,
   getDatasetLatestDate,
   getLatestAccountBalances,
   getLatestInvestmentCashBalances,
@@ -6855,6 +6857,100 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
     investmentsModel.holdings.cryptoBalances[0]?.currentValueEur,
     "800.00000000",
   );
+});
+
+test("transaction list quality respects the supplied reference date and period", async () => {
+  const account = createAccount({
+    id: "historical-quality-account",
+    lastImportedAt: "2026-04-03T08:00:00Z",
+    staleAfterDays: 7,
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "ytd-uncategorized",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-02-14",
+        postedDate: "2026-02-14",
+        amountOriginal: "-250.00",
+        amountBaseEur: "-250.00",
+        categoryCode: "uncategorized_expense",
+        needsReview: true,
+        reviewReason: "Needs review.",
+      }),
+      createTransaction({
+        id: "mtd-uncategorized",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-100.00",
+        categoryCode: "uncategorized_expense",
+      }),
+    ],
+  });
+  const service = new FinanceDomainService({
+    getDataset: async () => dataset,
+  });
+  const referenceDate = "2026-04-03";
+  const period = resolvePeriodSelection({
+    preset: "ytd",
+    referenceDate,
+  });
+  const summary = buildDashboardSummary(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period,
+    referenceDate,
+  });
+  const ledger = await service.listTransactions(
+    { kind: "consolidated" },
+    {
+      referenceDate,
+      period,
+    },
+  );
+
+  assert.deepEqual(ledger.period, period);
+  assert.deepEqual(ledger.quality, summary.quality);
+});
+
+test("account list balances respect the supplied reference date", async () => {
+  const account = createAccount({
+    id: "historical-balance-account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    accountBalanceSnapshots: [
+      createAccountBalanceSnapshot({
+        accountId: account.id,
+        asOfDate: "2026-03-31",
+        balanceOriginal: "1000.00",
+        balanceBaseEur: "1000.00",
+      }),
+      createAccountBalanceSnapshot({
+        accountId: account.id,
+        asOfDate: "2026-04-11",
+        balanceOriginal: "1500.00",
+        balanceBaseEur: "1500.00",
+      }),
+    ],
+  });
+  const service = new FinanceDomainService({
+    getDataset: async () => dataset,
+  });
+  const accounts = await service.listAccounts({
+    referenceDate: "2026-03-31",
+  });
+
+  assert.equal(accounts.balances[0]?.accountId, account.id);
+  assert.equal(accounts.balances[0]?.asOfDate, "2026-03-31");
+  assert.equal(accounts.balances[0]?.balanceBaseEur, "1000.00000000");
 });
 
 test("investments read model keeps resolved broker transfers visible in the investments ledger", () => {

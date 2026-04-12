@@ -15,6 +15,7 @@ import {
   createDefaultColumnMappings,
   createTemplateConfig,
   FinanceDomainService,
+  getScopeLatestDate,
   isCanonicalFieldKey,
   parseMyInvestorFundOrderHistoryText,
   reconcileFundOrderHistoryImportPlan,
@@ -74,12 +75,20 @@ function getDisplayCurrency(options: CommonOptions) {
   return options.currency === "USD" ? "USD" : "EUR";
 }
 
-function getPeriod(options: CommonOptions) {
+function getResolvedReferenceDate(
+  dataset: Awaited<ReturnType<typeof repository.getDataset>>,
+  scope: Awaited<ReturnType<typeof resolveScope>>["scope"],
+  options: CommonOptions,
+) {
+  return options.asOf ?? getScopeLatestDate(dataset, scope, todayIso());
+}
+
+function getPeriod(options: CommonOptions, referenceDate: string) {
   return resolvePeriodSelection({
     preset: options.period,
     start: options.start,
     end: options.end,
-    referenceDate: options.asOf ?? todayIso(),
+    referenceDate,
   });
 }
 
@@ -131,11 +140,12 @@ program
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
+    const referenceDate = getResolvedReferenceDate(dataset, scope, options);
     const summary = buildDashboardSummary(dataset, {
       scope,
       displayCurrency: getDisplayCurrency(options),
-      period: getPeriod(options),
-      referenceDate: options.asOf,
+      period: getPeriod(options, referenceDate),
+      referenceDate,
     });
     render(summary, options.json);
   });
@@ -148,17 +158,22 @@ program
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
   .option("--currency <currency>", "EUR or USD", "EUR")
+  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
+  .option("--start <date>", "Custom period start in YYYY-MM-DD format")
+  .option("--end <date>", "Custom period end in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (metricId: string, options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
+    const referenceDate = getResolvedReferenceDate(dataset, scope, options);
     const metric = buildMetricResult(
       dataset,
       scope,
       getDisplayCurrency(options),
       metricId,
       {
-        referenceDate: options.asOf,
+        referenceDate,
+        period: getPeriod(options, referenceDate),
       },
     );
     render(metric, options.json);
@@ -170,13 +185,20 @@ program
     "--scope <scope>",
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
+  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
+  .option("--start <date>", "Custom period start in YYYY-MM-DD format")
+  .option("--end <date>", "Custom period end in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
     const { dataset, scope } = await resolveScope(options.scope);
+    const referenceDate = getResolvedReferenceDate(dataset, scope, options);
     const insights = {
       schemaVersion: "v1",
-      insights: buildInsights(dataset, scope, { referenceDate: options.asOf }),
+      insights: buildInsights(dataset, scope, {
+        referenceDate,
+        period: getPeriod(options, referenceDate),
+      }),
       generatedAt: new Date().toISOString(),
     };
     render(insights, options.json);
@@ -188,10 +210,18 @@ program
     "--scope <scope>",
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
+  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
+  .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
+  .option("--start <date>", "Custom period start in YYYY-MM-DD format")
+  .option("--end <date>", "Custom period end in YYYY-MM-DD format")
   .option("--json", "Output JSON")
   .action(async (options: CommonOptions) => {
-    const { scope } = await resolveScope(options.scope);
-    const result = await domain.listTransactions(scope);
+    const { dataset, scope } = await resolveScope(options.scope);
+    const referenceDate = getResolvedReferenceDate(dataset, scope, options);
+    const result = await domain.listTransactions(scope, {
+      referenceDate,
+      period: getPeriod(options, referenceDate),
+    });
     render(result, options.json);
   });
 

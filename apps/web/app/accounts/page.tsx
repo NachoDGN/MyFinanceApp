@@ -1,7 +1,7 @@
 import { AppShell } from "../../components/app-shell";
 import { AccountsWorkbench } from "../../components/accounts-workbench";
 import { RevolutConnectionsCard } from "../../components/revolut-connections-card";
-import { formatCurrency } from "../../lib/formatters";
+import { formatBaseEurAmountForDisplay } from "../../lib/currency";
 import { getAccountsModel } from "../../lib/queries";
 
 export default async function AccountsPage({
@@ -122,9 +122,11 @@ export default async function AccountsPage({
                   (entity) => entity.id === account.entityId,
                 )?.displayName ?? account.entityId,
               accountType: account.accountType,
-              currentBalance: formatCurrency(
+              currentBalance: formatBaseEurAmountForDisplay(
+                model.dataset,
                 snapshot?.balanceBaseEur,
                 model.currency,
+                model.referenceDate,
               ),
               currentBalanceCurrency:
                 snapshot?.balanceCurrency ?? account.defaultCurrency,

@@ -1,7 +1,10 @@
 import { AppShell } from "../../components/app-shell";
 import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
-import { convertBaseEurToDisplayAmount } from "../../lib/currency";
+import {
+  convertBaseEurToDisplayAmount,
+  formatBaseEurAmountForDisplay,
+} from "../../lib/currency";
 import { formatCurrency, formatDate } from "../../lib/formatters";
 import { getSpendingModel } from "../../lib/queries";
 
@@ -189,9 +192,11 @@ export default async function SpendingPage({
                 settlement payment
                 {model.excludedCreditCardSettlementCount === 1 ? "" : "s"}{" "}
                 totaling{" "}
-                {formatCurrency(
+                {formatBaseEurAmountForDisplay(
+                  model.dataset,
                   model.excludedCreditCardSettlementAmountEur,
                   model.currency,
+                  model.referenceDate,
                 )}
                 . Their underlying card purchases stay out of the KPI layer
                 until the matching statement is uploaded against the settlement
@@ -375,7 +380,12 @@ export default async function SpendingPage({
                   </h2>
                 </div>
                 <span className="spending-inline-pill">
-                  {formatCurrency(model.uncategorizedSpendEur, model.currency)}
+                  {formatBaseEurAmountForDisplay(
+                    model.dataset,
+                    model.uncategorizedSpendEur,
+                    model.currency,
+                    model.referenceDate,
+                  )}
                 </span>
               </div>
               <div className="spending-coverage-value">{model.coverage}%</div>
@@ -410,14 +420,19 @@ export default async function SpendingPage({
                           <div className="spending-breakdown-label">
                             {row.label}
                           </div>
-                          <div className="spending-breakdown-share">
-                            {share.toFixed(0)}% of total
-                          </div>
+                        <div className="spending-breakdown-share">
+                          {share.toFixed(0)}% of total
                         </div>
-                        <span className="spending-breakdown-amount">
-                          {formatCurrency(row.amountEur, model.currency)}
-                        </span>
                       </div>
+                      <span className="spending-breakdown-amount">
+                          {formatBaseEurAmountForDisplay(
+                            model.dataset,
+                            row.amountEur,
+                            model.currency,
+                            model.referenceDate,
+                          )}
+                      </span>
+                    </div>
                       <div className="spending-breakdown-track">
                         <div
                           className="spending-breakdown-fill"
@@ -513,9 +528,11 @@ export default async function SpendingPage({
               <article className="spending-stat-card">
                 <span className="spending-card-label">Trailing 3-mo avg</span>
                 <div className="spending-stat-value">
-                  {formatCurrency(
+                  {formatBaseEurAmountForDisplay(
+                    model.dataset,
                     model.trailingThreeMonthAverage,
                     model.currency,
+                    model.referenceDate,
                   )}
                 </div>
                 <p className="spending-card-note">
@@ -530,7 +547,12 @@ export default async function SpendingPage({
                 </div>
                 <p className="spending-card-note">
                   {model.topCategory
-                    ? `${formatCurrency(model.topCategory.amountEur, model.currency)} · ${topCategoryShare.toFixed(0)}% of current-period spend`
+                    ? `${formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        model.topCategory.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )} · ${topCategoryShare.toFixed(0)}% of current-period spend`
                     : "No categorized spend available."}
                 </p>
               </article>
@@ -542,7 +564,12 @@ export default async function SpendingPage({
                 </div>
                 <p className="spending-card-note">
                   {model.topMerchant
-                    ? `${formatCurrency(model.topMerchant.amountEur, model.currency)} · ${topMerchantShare.toFixed(0)}% of current-period spend`
+                    ? `${formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        model.topMerchant.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )} · ${topMerchantShare.toFixed(0)}% of current-period spend`
                     : "No merchant totals available."}
                 </p>
               </article>
@@ -575,7 +602,12 @@ export default async function SpendingPage({
                       </p>
                     </div>
                     <div className="spending-merchant-amount">
-                      {formatCurrency(row.amountEur, model.currency)}
+                      {formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        row.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )}
                     </div>
                   </div>
                 ))}

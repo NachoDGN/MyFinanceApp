@@ -4,11 +4,20 @@ import test from "node:test";
 import { buildInvestmentsReadModel } from "../packages/analytics/src/index.ts";
 import { resolvePeriodSelection } from "../packages/domain/src/index.ts";
 
-import { convertBaseEurToDisplayAmount } from "../apps/web/lib/currency.ts";
+import { buildInvestmentsPageModel } from "../apps/web/lib/investments-page.ts";
+import {
+  convertBaseEurToDisplayAmount,
+  formatBaseEurAmountForDisplay,
+} from "../apps/web/lib/currency.ts";
 import { buildHoldingDisplayMetricsMap } from "../apps/web/lib/investment-display.ts";
 import {
   createAccount,
   createDataset,
+  createFxRate,
+  createInvestmentAccount,
+  createInvestmentTransaction,
+  createSecurity,
+  createSecurityPrice,
   createTransaction,
 } from "./support/create-dataset";
 
@@ -111,6 +120,124 @@ test("display conversion prefers the freshest reverse FX quote when the direct p
     convertBaseEurToDisplayAmount(dataset, "19416.38", "USD", "2026-04-11"),
     "22765.66",
   );
+});
+
+test("formatted base-EUR aggregates are converted before rendering in the selected currency", () => {
+  const dataset = createDataset({
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-11",
+        asOfTimestamp: "2026-04-11T16:00:00Z",
+        rate: "0.85288000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+  });
+
+  assert.equal(
+    formatBaseEurAmountForDisplay(
+      dataset,
+      "61489.84",
+      "USD",
+      "2026-04-11",
+    ),
+    "$72,096.71",
+  );
+});
+
+test("investments page unrealized KPI uses the canonical metric display amount", () => {
+  const account = createInvestmentAccount({
+    id: "brokerage-fx-kpi",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createInvestmentTransaction(account, {
+        id: "buy-1",
+        transactionDate: "2026-04-01",
+        postedDate: "2026-04-01",
+        amountOriginal: "-100.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-100.00",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-fx",
+        quantity: "1.00000000",
+        needsReview: false,
+        reviewReason: null,
+        classificationStatus: "rule",
+        classificationSource: "user_rule",
+        classificationConfidence: "1.00",
+        descriptionRaw: "Buy FX",
+        descriptionClean: "BUY FX",
+      }),
+    ],
+    securities: [
+      createSecurity({
+        id: "security-fx",
+        displaySymbol: "FX",
+        providerSymbol: "FX",
+        canonicalSymbol: "FX",
+        quoteCurrency: "USD",
+      }),
+    ],
+    securityPrices: [
+      createSecurityPrice({
+        securityId: "security-fx",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T15:00:00Z",
+        price: "300.00",
+        currency: "USD",
+      }),
+    ],
+    fxRates: [
+      createFxRate({
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T12:00:00Z",
+        rate: "0.500000",
+        sourceName: "ecb",
+      }),
+    ],
+  });
+
+  const period = resolvePeriodSelection({
+    preset: "mtd",
+    referenceDate: "2026-04-03",
+  });
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "USD",
+    period,
+    referenceDate: "2026-04-03",
+  });
+  const pageModel = buildInvestmentsPageModel(
+    {
+      ...model,
+      dataset,
+      scopeParam: "consolidated",
+      currency: "USD",
+      referenceDate: "2026-04-03",
+      period,
+      navigationState: {
+        scopeParam: "consolidated",
+        currency: "USD",
+        period: "mtd",
+        referenceDate: "2026-04-03",
+      },
+      scopeOptions: [{ value: "consolidated", label: "Consolidated" }],
+    },
+    {},
+  );
+  const unrealizedCard = pageModel.metricCards.find(
+    (card) => card.label === "Unrealized Gain",
+  );
+
+  assert.equal(model.metrics.unrealized.valueDisplay, "100.00");
+  assert.equal(unrealizedCard?.value, "$100.00");
 });
 
 test("holding display metrics replay open trade cost basis in the selected currency", () => {

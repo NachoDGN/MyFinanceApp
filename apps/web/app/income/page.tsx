@@ -1,7 +1,10 @@
 import { AppShell } from "../../components/app-shell";
 import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
-import { convertBaseEurToDisplayAmount } from "../../lib/currency";
+import {
+  convertBaseEurToDisplayAmount,
+  formatBaseEurAmountForDisplay,
+} from "../../lib/currency";
 import { formatCurrency } from "../../lib/formatters";
 import { getIncomeModel } from "../../lib/queries";
 
@@ -115,7 +118,12 @@ export default async function IncomePage({
               <span>Trailing 3-Month Avg</span>
             </div>
             <div className="income-kpi-value">
-              {formatCurrency(model.trailingThreeMonthAverage, model.currency)}
+              {formatBaseEurAmountForDisplay(
+                model.dataset,
+                model.trailingThreeMonthAverage,
+                model.currency,
+                model.referenceDate,
+              )}
             </div>
             <div className="income-kpi-badge neutral">Average baseline</div>
           </article>
@@ -264,7 +272,12 @@ export default async function IncomePage({
             <div className="income-summary-stat">
               <div className="stat-label">Total Realized YTD</div>
               <div className="stat-value accent">
-                {formatCurrency(model.ytdIncomeTotal, model.currency)}
+                {formatBaseEurAmountForDisplay(
+                  model.dataset,
+                  model.ytdIncomeTotal,
+                  model.currency,
+                  model.referenceDate,
+                )}
               </div>
               <div className="stat-description">
                 Includes all settled incoming transactions.
@@ -274,7 +287,12 @@ export default async function IncomePage({
             <div className="income-summary-stat">
               <div className="stat-label">Projected EOY</div>
               <div className="stat-value">
-                {formatCurrency(model.projectedYearIncome, model.currency)}
+                {formatBaseEurAmountForDisplay(
+                  model.dataset,
+                  model.projectedYearIncome,
+                  model.currency,
+                  model.referenceDate,
+                )}
               </div>
               <div className="stat-description">
                 Based on trailing 3-month run rate.
@@ -289,7 +307,12 @@ export default async function IncomePage({
               </div>
               <div className="stat-description">
                 Investment income for this period:{" "}
-                {formatCurrency(model.investmentIncome, model.currency)}.
+                {formatBaseEurAmountForDisplay(
+                  model.dataset,
+                  model.investmentIncome,
+                  model.currency,
+                  model.referenceDate,
+                )}.
               </div>
             </div>
           </article>

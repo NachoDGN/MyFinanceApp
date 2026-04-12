@@ -1,5 +1,6 @@
 import { AppShell } from "../../components/app-shell";
 import { InsightCards, SectionCard } from "../../components/primitives";
+import { formatBaseEurAmountForDisplay } from "../../lib/currency";
 import { getInsightsModel } from "../../lib/queries";
 
 export default async function InsightsPage({
@@ -33,7 +34,15 @@ export default async function InsightsPage({
           <div className="legend-list">
             <span className="pill">Queued enrichment: {model.summary.quality.pendingEnrichmentCount}</span>
             <span className="pill">Pending review: {model.summary.quality.pendingReviewCount}</span>
-            <span className="pill">Unclassified amount: {model.summary.quality.unclassifiedAmountMtdEur} EUR</span>
+            <span className="pill">
+              Unclassified amount:{" "}
+              {formatBaseEurAmountForDisplay(
+                model.dataset,
+                model.summary.quality.unclassifiedAmountMtdEur,
+                model.currency,
+                model.referenceDate,
+              )}
+            </span>
             <span className="pill">Stale accounts: {model.summary.quality.staleAccountsCount}</span>
             <span className="pill">Price freshness: {model.summary.quality.priceFreshness}</span>
           </div>
