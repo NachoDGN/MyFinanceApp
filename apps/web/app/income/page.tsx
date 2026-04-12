@@ -29,30 +29,42 @@ export default async function IncomePage({
 }) {
   const model = await getIncomeModel(searchParams);
   const chartRows = model.monthlyIncomeComposition.map((row) => {
-    const operatingIncomeDisplay = Number(
-      convertBaseEurToDisplayAmount(
-        model.dataset,
-        row.operatingIncomeEur,
-        model.currency,
-        row.month,
-      ) ?? 0,
+    const operatingIncomeDisplayRaw = convertBaseEurToDisplayAmount(
+      model.dataset,
+      row.operatingIncomeEur,
+      model.currency,
+      row.month,
     );
-    const investmentIncomeDisplay = Number(
-      convertBaseEurToDisplayAmount(
-        model.dataset,
-        row.investmentIncomeEur,
-        model.currency,
-        row.month,
-      ) ?? 0,
+    const investmentIncomeDisplayRaw = convertBaseEurToDisplayAmount(
+      model.dataset,
+      row.investmentIncomeEur,
+      model.currency,
+      row.month,
     );
 
     return {
       ...row,
-      operatingIncomeDisplay,
-      investmentIncomeDisplay,
-      totalIncomeDisplay: operatingIncomeDisplay + investmentIncomeDisplay,
+      operatingIncomeDisplay: Number(operatingIncomeDisplayRaw ?? 0),
+      investmentIncomeDisplay: Number(investmentIncomeDisplayRaw ?? 0),
+      missingDisplayFx:
+        model.currency !== "EUR" &&
+        ((row.operatingIncomeEur !== "0.00" && operatingIncomeDisplayRaw === null) ||
+          (row.investmentIncomeEur !== "0.00" &&
+            investmentIncomeDisplayRaw === null)),
+      totalIncomeDisplay:
+        Number(operatingIncomeDisplayRaw ?? 0) +
+        Number(investmentIncomeDisplayRaw ?? 0),
     };
   });
+  const missingFxMonths = chartRows
+    .filter((row) => row.missingDisplayFx)
+    .map((row) => formatMonthLabel(row.month));
+  const missingFxRangeLabel =
+    missingFxMonths.length > 0
+      ? missingFxMonths.length === 1
+        ? missingFxMonths[0]
+        : `${missingFxMonths[0]}-${missingFxMonths[missingFxMonths.length - 1]}`
+      : null;
   const chartMax = Math.max(
     ...chartRows.map((row) => row.totalIncomeDisplay),
     1,
@@ -166,6 +178,13 @@ export default async function IncomePage({
             </div>
             <div className="income-kpi-badge neutral">{chartRangeLabel}</div>
           </div>
+          {missingFxRangeLabel ? (
+            <div className="status-note" style={{ marginTop: 16 }}>
+              Historical {model.currency} conversion is unavailable for{" "}
+              {missingFxRangeLabel}, so those months cannot be rendered
+              accurately in the selected display currency.
+            </div>
+          ) : null}
 
           <div className="income-chart-body">
             <div className="income-y-axis">

@@ -425,11 +425,18 @@ export function InvestmentsPageView({
           referenceDate={model.referenceDate}
         />
         {model.manualInvestmentSummaries.length === 0 ? (
-          <div className="status-note" style={{ marginTop: -8 }}>
-            No manual fund valuations are configured right now. The fund values
-            you do see on this page are coming from your broker-imported fund
-            holdings, not from separate manual company fund inputs.
-          </div>
+          <SectionCard
+            title="Manual Fund Valuations"
+            subtitle="Separate company-level inputs"
+            span="span-4"
+          >
+            <div className="status-note" style={{ marginTop: 0 }}>
+              No manual fund valuations are configured right now. The fund
+              values you do see on this page are coming from your
+              broker-imported fund holdings, not from separate manual company
+              fund inputs.
+            </div>
+          </SectionCard>
         ) : null}
 
         <PositionListSection

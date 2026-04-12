@@ -1092,6 +1092,13 @@ export function buildDashboardReadModel(
   },
 ) {
   const summary = buildDashboardSummary(dataset, input);
+  if (input.scope.kind !== "consolidated") {
+    return {
+      summary,
+      summaryBreakdown: null,
+    };
+  }
+
   const personalEntityId = dataset.entities.find(
     (entity) => entity.entityKind === "personal",
   )?.id;

@@ -41,6 +41,9 @@ export function DashboardView({
   };
   model: DashboardModel;
 }) {
+  const selectedScopeLabel =
+    scopeOptions.find((option) => option.value === state.scopeParam)?.label ??
+    "Selected scope";
   const metricMap = new Map(
     model.summary.metrics.map((metric) => [metric.metricId, metric]),
   );
@@ -152,6 +155,8 @@ export function DashboardView({
 
   const transactionsHref = buildHref("/transactions", state, {});
   const spendingHref = buildHref("/spending", state, {});
+  const showWealthBreakdown =
+    state.scopeParam === "consolidated" && model.summaryBreakdown !== null;
 
   return (
     <AppShell pathname={pathname} scopeOptions={scopeOptions} state={state}>
@@ -164,24 +169,33 @@ export function DashboardView({
             </div>
           </div>
           <div className="wealth-breakdown">
-            <div className="account-type">
-              <span className="label-sm dark-label">Personal Accounts</span>
-              <div className="account-value">
-                {formatCurrency(
-                  model.summaryBreakdown.personal?.valueDisplay,
-                  model.currency,
-                )}
+            {showWealthBreakdown ? (
+              <>
+                <div className="account-type">
+                  <span className="label-sm dark-label">Personal Accounts</span>
+                  <div className="account-value">
+                    {formatCurrency(
+                      model.summaryBreakdown?.personal?.valueDisplay,
+                      model.currency,
+                    )}
+                  </div>
+                </div>
+                <div className="account-type">
+                  <span className="label-sm dark-label">Company Assets</span>
+                  <div className="account-value">
+                    {formatCurrency(
+                      model.summaryBreakdown?.companies.valueDisplay,
+                      model.currency,
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="account-type">
+                <span className="label-sm dark-label">Selected Scope</span>
+                <div className="account-value">{selectedScopeLabel}</div>
               </div>
-            </div>
-            <div className="account-type">
-              <span className="label-sm dark-label">Company Assets</span>
-              <div className="account-value">
-                {formatCurrency(
-                  model.summaryBreakdown.companies.valueDisplay,
-                  model.currency,
-                )}
-              </div>
-            </div>
+            )}
             <a className="btn-pill" href={transactionsHref}>
               Review Ledger
             </a>

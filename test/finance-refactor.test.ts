@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildDashboardReadModel,
   buildDashboardSummary,
   buildInvestmentsReadModel,
   buildMetricResult,
@@ -528,6 +529,55 @@ test("scope latest date prefers newer market and FX data over the latest transac
     getScopeLatestDate(dataset, { kind: "consolidated" }),
     "2026-04-03",
   );
+});
+
+test("dashboard scope breakdown is omitted outside consolidated scope", () => {
+  const base = createDataset();
+  const personalEntity = base.entities[0]!;
+  const companyEntity = {
+    ...personalEntity,
+    id: "entity-company",
+    slug: "company",
+    displayName: "Company",
+    entityKind: "company" as const,
+  };
+  const personalAccount = createAccount({
+    id: "personal-account",
+    entityId: personalEntity.id,
+  });
+  const companyAccount = createAccount({
+    id: "company-account",
+    entityId: companyEntity.id,
+    institutionName: "Company Bank",
+    displayName: "Company Main",
+    accountType: "company_bank",
+  });
+  const dataset = createDataset({
+    entities: [personalEntity, companyEntity],
+    accounts: [personalAccount, companyAccount],
+    accountBalanceSnapshots: [
+      createAccountBalanceSnapshot({
+        accountId: personalAccount.id,
+        asOfDate: "2026-04-03",
+        balanceOriginal: "1000.00",
+        balanceBaseEur: "1000.00",
+      }),
+      createAccountBalanceSnapshot({
+        accountId: companyAccount.id,
+        asOfDate: "2026-04-03",
+        balanceOriginal: "500.00",
+        balanceBaseEur: "500.00",
+      }),
+    ],
+  });
+
+  const scoped = buildDashboardReadModel(dataset, {
+    scope: { kind: "entity", entityId: companyEntity.id },
+    displayCurrency: "EUR",
+    referenceDate: "2026-04-03",
+  });
+
+  assert.equal(scoped.summaryBreakdown, null);
 });
 
 test("saved classification rules win before fallback logic or LLM classification", async () => {
