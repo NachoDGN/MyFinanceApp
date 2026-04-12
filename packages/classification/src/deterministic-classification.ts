@@ -7,6 +7,7 @@ import type {
 import {
   buildAllowedTransactionClassesForAccount,
   getAllowedCategoryCodesForAccount,
+  isUncategorizedCategoryCode,
   normalizeDescription,
   resolveConstrainedEconomicEntityId,
 } from "@myfinance/domain";
@@ -208,6 +209,8 @@ export function extractProviderContext(transaction: Transaction) {
 }
 
 function buildRevolutDeterministicClassification(
+  dataset: DomainDataset,
+  account: Account,
   transaction: Transaction,
 ): DeterministicClassification | null {
   if (transaction.providerName !== "revolut_business") {
@@ -227,12 +230,23 @@ function buildRevolutDeterministicClassification(
   }
 
   const merchantName = readOptionalString(merchant?.name);
+  const merchantCategoryCode = readOptionalString(merchant?.categoryCode);
+  const allowedCategoryCodes = getAllowedCategoryCodesForAccount(
+    dataset,
+    account,
+  );
   const refundTypes = new Set([
     "refund",
     "card_refund",
     "charge_refund",
     "tax_refund",
   ]);
+  const travelMerchantCategoryCodes = new Set(["3001", "4722"]);
+  const canApplyTravelCategory =
+    allowedCategoryCodes.has("travel") &&
+    travelMerchantCategoryCodes.has(merchantCategoryCode ?? "") &&
+    (transaction.categoryCode === null ||
+      isUncategorizedCategoryCode(transaction.categoryCode));
 
   if (revolutType === "exchange") {
     return buildDeterministicResult(transaction, {
@@ -268,16 +282,35 @@ function buildRevolutDeterministicClassification(
     });
   }
 
+  if (canApplyTravelCategory && revolutType === "card_payment") {
+    return buildDeterministicResult(transaction, {
+      transactionClass: "expense",
+      categoryCode: "travel",
+      merchantNormalized: merchantName,
+      classificationStatus: "rule",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.97",
+      explanation:
+        "Revolut supplied a travel-related merchant category code, so this card payment is categorized as travel.",
+      needsReview: false,
+      reviewReason: null,
+      quantity: null,
+      unitPriceOriginal: null,
+    });
+  }
+
   if (refundTypes.has(revolutType)) {
     return buildDeterministicResult(transaction, {
       transactionClass: "refund",
-      categoryCode: transaction.categoryCode ?? null,
+      categoryCode: canApplyTravelCategory ? "travel" : (transaction.categoryCode ?? null),
       merchantNormalized: merchantName,
       classificationStatus: "rule",
       classificationSource: "system_fallback",
       classificationConfidence: "0.96",
       explanation:
-        "Revolut marks this transaction as a refund, so it is treated as money returning from a prior charge.",
+        canApplyTravelCategory
+          ? "Revolut marks this transaction as a refund and the merchant category code indicates travel, so the refund stays in travel."
+          : "Revolut marks this transaction as a refund, so it is treated as money returning from a prior charge.",
       needsReview: false,
       reviewReason: null,
       quantity: null,
@@ -412,7 +445,7 @@ export function buildDeterministicClassification(
   }
 
   const revolutDeterministic =
-    buildRevolutDeterministicClassification(transaction);
+    buildRevolutDeterministicClassification(dataset, account, transaction);
   if (revolutDeterministic) {
     return revolutDeterministic;
   }

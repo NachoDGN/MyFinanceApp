@@ -16,8 +16,10 @@ import {
   buildAllowedCategoriesForAccount,
   buildAllowedTransactionClassesForAccount,
   getAllowedCategoryCodesForAccount,
+  isUncategorizedCategoryCode,
   normalizeInvestmentMatchingText,
   resolveConstrainedEconomicEntityId,
+  UNCATEGORIZED_TRANSACTION_REVIEW_REASON,
 } from "@myfinance/domain";
 
 import {
@@ -309,6 +311,24 @@ export function getTransactionClassifierConfig() {
 
 function getResolvedTransactionReviewModel() {
   return process.env.RESOLVED_TRANSACTION_REVIEW_LLM?.trim() || "gpt-5.4-mini";
+}
+
+function normalizeCashCategoryCode(
+  transactionClass: string,
+  categoryCode: string | null,
+  allowedCategoryCodes: Set<string>,
+) {
+  if (
+    ["loan_inflow", "loan_principal_payment", "loan_interest_payment"].includes(
+      transactionClass,
+    ) &&
+    allowedCategoryCodes.has("debt") &&
+    (categoryCode === null || isUncategorizedCategoryCode(categoryCode))
+  ) {
+    return "debt";
+  }
+
+  return categoryCode;
 }
 
 export function getInvestmentTransactionClassifierConfig(
@@ -633,9 +653,11 @@ export async function enrichImportedTransaction(
         : deterministic.categoryCode;
 
     const deterministicWins =
-      new Set(["user_rule", "transfer_matcher"]).has(
+      !deterministic.needsReview &&
+      (new Set(["user_rule", "transfer_matcher"]).has(
         deterministic.classificationSource,
-      ) && !deterministic.needsReview;
+      ) ||
+        deterministic.classificationStatus === "rule");
     const shouldApplyLlm =
       !deterministicWins &&
       (deterministic.classificationSource !== "investment_parser" ||
@@ -721,6 +743,17 @@ export async function enrichImportedTransaction(
   ) {
     needsReview = true;
     reviewReason = reviewReason ?? "Quantity still needs to be derived.";
+  }
+
+  categoryCode = normalizeCashCategoryCode(
+    transactionClass,
+    categoryCode,
+    allowedCategoryCodes,
+  );
+
+  if (isUncategorizedCategoryCode(categoryCode)) {
+    needsReview = true;
+    reviewReason = reviewReason ?? UNCATEGORIZED_TRANSACTION_REVIEW_REASON;
   }
 
   return {

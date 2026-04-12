@@ -129,6 +129,7 @@ export default async function TransactionsPage({
             <ReviewEditorCell
               transactionId={row.id}
               needsReview={row.needsReview}
+              categoryCode={row.categoryCode}
               reviewReason={row.reviewReason}
               manualNotes={row.manualNotes}
               transactionClass={row.transactionClass}

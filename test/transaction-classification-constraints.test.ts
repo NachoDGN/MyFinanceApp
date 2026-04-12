@@ -84,12 +84,32 @@ function buildScopedDataset() {
           metadataJson: {},
         },
         {
+          code: "travel",
+          displayName: "Travel",
+          parentCode: null,
+          scopeKind: "both",
+          directionKind: "expense",
+          sortOrder: 4,
+          active: true,
+          metadataJson: {},
+        },
+        {
+          code: "debt",
+          displayName: "Debt",
+          parentCode: null,
+          scopeKind: "both",
+          directionKind: "neutral",
+          sortOrder: 5,
+          active: true,
+          metadataJson: {},
+        },
+        {
           code: "salary",
           displayName: "Salary",
           parentCode: null,
           scopeKind: "system",
           directionKind: "income",
-          sortOrder: 4,
+          sortOrder: 6,
           active: true,
           metadataJson: {},
         },
@@ -99,7 +119,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "system",
           directionKind: "expense",
-          sortOrder: 5,
+          sortOrder: 7,
           active: true,
           metadataJson: {},
         },
@@ -161,8 +181,24 @@ test("personal cash accounts only expose personal and system categories", () => 
   assert.equal(allowedCategoryCodes.has("subscriptions"), true);
   assert.equal(allowedCategoryCodes.has("business_income"), true);
   assert.equal(allowedCategoryCodes.has("salary"), true);
+  assert.equal(allowedCategoryCodes.has("travel"), true);
+  assert.equal(allowedCategoryCodes.has("debt"), true);
   assert.equal(allowedCategoryCodes.has("software"), false);
   assert.equal(allowedTransactionClasses.has("investment_trade_buy"), false);
+});
+
+test("company cash accounts expose both-scope travel and debt categories", () => {
+  const { dataset, companyAccount } = buildScopedDataset();
+
+  const allowedCategoryCodes = new Set(
+    buildAllowedCategoriesForAccount(dataset, companyAccount).map(
+      (category) => category.code,
+    ),
+  );
+
+  assert.equal(allowedCategoryCodes.has("travel"), true);
+  assert.equal(allowedCategoryCodes.has("debt"), true);
+  assert.equal(allowedCategoryCodes.has("subscriptions"), false);
 });
 
 test("personal-only rule outputs must be scoped away from company cash accounts", () => {
@@ -295,6 +331,235 @@ test("cash enrichment keeps personal-account entity attribution locked and rejec
     assert.equal(decision.categoryCode, "uncategorized_expense");
     assert.equal(decision.economicEntityId, personalEntity.id);
     assert.equal(decision.counterpartyName, "Company A");
+    assert.equal(decision.needsReview, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+    } else {
+      process.env.GEMINI_API_KEY = previousApiKey;
+    }
+    if (previousLlmModel === undefined) {
+      delete process.env.LLM_TRANSACTION_MODEL;
+    } else {
+      process.env.LLM_TRANSACTION_MODEL = previousLlmModel;
+    }
+  }
+});
+
+test("loan cash flows default to debt when the classifier leaves them uncategorized", async () => {
+  const previousApiKey = process.env.GEMINI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const previousLlmModel = process.env.LLM_TRANSACTION_MODEL;
+
+  process.env.GEMINI_API_KEY = "test-key";
+  delete process.env.LLM_TRANSACTION_MODEL;
+
+  globalThis.fetch = async (_input, init) => {
+    const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+      generationConfig?: { responseMimeType?: string };
+    };
+    assert.equal(
+      requestBody.generationConfig?.responseMimeType,
+      "application/json",
+    );
+
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    transaction_class: "loan_principal_payment",
+                    category_code: "uncategorized_expense",
+                    merchant_normalized: "Santander",
+                    counterparty_name: null,
+                    economic_entity_override: null,
+                    security_hint: null,
+                    quantity: null,
+                    unit_price_original: null,
+                    resolved_instrument_name: null,
+                    resolved_instrument_isin: null,
+                    resolved_instrument_ticker: null,
+                    resolved_instrument_exchange: null,
+                    current_price: null,
+                    current_price_currency: null,
+                    current_price_timestamp: null,
+                    current_price_source: null,
+                    current_price_type: null,
+                    resolution_process: null,
+                    confidence: 0.92,
+                    explanation: "Recurring loan principal settlement.",
+                    reason: "Recurring loan principal settlement.",
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const { dataset, personalAccount, personalEntity } = buildScopedDataset();
+    const transaction = createTransaction({
+      id: "loan-payment-row",
+      accountId: personalAccount.id,
+      accountEntityId: personalEntity.id,
+      economicEntityId: personalEntity.id,
+      descriptionRaw: "Liquidacion Periodica Prestamo 0049 4748 103 0633537",
+      descriptionClean: "LIQUIDACION PERIODICA PRESTAMO 0049 4748 103 0633537",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_expense",
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+    });
+
+    const decision = await enrichImportedTransaction(
+      {
+        ...dataset,
+        transactions: [transaction],
+      },
+      personalAccount,
+      transaction,
+    );
+
+    assert.equal(decision.transactionClass, "loan_principal_payment");
+    assert.equal(decision.categoryCode, "debt");
+    assert.equal(decision.needsReview, false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+    } else {
+      process.env.GEMINI_API_KEY = previousApiKey;
+    }
+    if (previousLlmModel === undefined) {
+      delete process.env.LLM_TRANSACTION_MODEL;
+    } else {
+      process.env.LLM_TRANSACTION_MODEL = previousLlmModel;
+    }
+  }
+});
+
+test("revolut travel merchant codes resolve to travel before llm fallback", async () => {
+  const previousApiKey = process.env.GEMINI_API_KEY;
+  const previousFetch = globalThis.fetch;
+  const previousLlmModel = process.env.LLM_TRANSACTION_MODEL;
+
+  process.env.GEMINI_API_KEY = "test-key";
+  delete process.env.LLM_TRANSACTION_MODEL;
+
+  globalThis.fetch = async (_input, _init) =>
+    new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    transaction_class: "expense",
+                    category_code: "uncategorized_expense",
+                    merchant_normalized: "Booking.com",
+                    counterparty_name: "Booking.com",
+                    economic_entity_override: null,
+                    security_hint: null,
+                    quantity: null,
+                    unit_price_original: null,
+                    resolved_instrument_name: null,
+                    resolved_instrument_isin: null,
+                    resolved_instrument_ticker: null,
+                    resolved_instrument_exchange: null,
+                    current_price: null,
+                    current_price_currency: null,
+                    current_price_timestamp: null,
+                    current_price_source: null,
+                    current_price_type: null,
+                    resolution_process: null,
+                    confidence: 0.97,
+                    explanation: "Booking merchant detected, but no category chosen.",
+                    reason: "Booking merchant detected, but no category chosen.",
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+  try {
+    const { dataset, companyAccount, companyEntity } = buildScopedDataset();
+    const transaction = createTransaction({
+      id: "company-booking-row",
+      accountId: companyAccount.id,
+      accountEntityId: companyEntity.id,
+      economicEntityId: companyEntity.id,
+      providerName: "revolut_business",
+      providerRecordId: "revolut-booking-1:leg-1",
+      descriptionRaw: "Booking.com",
+      descriptionClean: "BOOKING.COM",
+      merchantNormalized: "Booking.com",
+      transactionClass: "unknown",
+      categoryCode: "uncategorized_expense",
+      classificationStatus: "unknown",
+      classificationSource: "system_fallback",
+      classificationConfidence: "0.00",
+      needsReview: true,
+      reviewReason: "Needs LLM enrichment.",
+      rawPayload: {
+        provider: "revolut_business",
+        providerContext: {
+          provider: "revolut_business",
+          transaction: {
+            id: "revolut-booking-1",
+            type: "card_payment",
+            state: "completed",
+          },
+          merchant: {
+            id: "merchant-booking",
+            name: "Booking.com",
+            country: "NLD",
+            categoryCode: "4722",
+          },
+          leg: {
+            legId: "leg-1",
+            amount: -652.78,
+            currency: "EUR",
+            accountId: "revolut-company-account",
+          },
+          expense: null,
+        },
+      },
+    });
+
+    const decision = await enrichImportedTransaction(
+      {
+        ...dataset,
+        transactions: [transaction],
+      },
+      companyAccount,
+      transaction,
+    );
+
+    assert.equal(decision.transactionClass, "expense");
+    assert.equal(decision.categoryCode, "travel");
+    assert.equal(decision.classificationSource, "system_fallback");
     assert.equal(decision.needsReview, false);
   } finally {
     globalThis.fetch = previousFetch;

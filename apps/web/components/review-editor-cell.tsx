@@ -15,6 +15,7 @@ const WORKER_QUEUE_WARNING_MS = 20_000;
 type ReviewEditorCellProps = {
   transactionId: string;
   needsReview: boolean;
+  categoryCode?: string | null;
   reviewReason?: string | null;
   manualNotes?: string | null;
   transactionClass?: string | null;
@@ -58,6 +59,7 @@ type ReviewJobStatusPayload = {
 export function ReviewEditorCell({
   transactionId,
   needsReview,
+  categoryCode,
   reviewReason,
   manualNotes,
   transactionClass,
@@ -89,6 +91,7 @@ export function ReviewEditorCell({
   const trimmedDraft = draft.trim();
   const reviewState = getTransactionReviewState({
     needsReview,
+    categoryCode,
     llmPayload,
     creditCardStatementStatus,
     descriptionRaw,
@@ -96,6 +99,7 @@ export function ReviewEditorCell({
   });
   const effectiveReviewReason = getTransactionReviewReason({
     reviewReason,
+    categoryCode,
     creditCardStatementStatus,
     descriptionRaw,
     descriptionClean,
@@ -350,6 +354,7 @@ export function ReviewEditorCell({
     >
       <ReviewStateCell
         needsReview={needsReview}
+        categoryCode={categoryCode}
         reviewReason={effectiveReviewReason}
         transactionClass={transactionClass}
         classificationSource={classificationSource}

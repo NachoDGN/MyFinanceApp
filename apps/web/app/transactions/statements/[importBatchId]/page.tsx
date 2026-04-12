@@ -183,6 +183,7 @@ export default async function CreditCardStatementPage({
                         <ReviewEditorCell
                           transactionId={row.id}
                           needsReview={row.needsReview}
+                          categoryCode={row.categoryCode}
                           reviewReason={row.reviewReason}
                           manualNotes={row.manualNotes}
                           transactionClass={row.transactionClass}

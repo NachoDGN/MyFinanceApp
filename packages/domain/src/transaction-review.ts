@@ -15,6 +15,8 @@ const TRANSACTION_ANALYSIS_STATUSES = [
 
 const CREDIT_CARD_STATEMENT_REVIEW_REASON =
   "Upload the matching credit-card statement to resolve category KPIs.";
+export const UNCATEGORIZED_TRANSACTION_REVIEW_REASON =
+  "Assign a category before this transaction can be treated as resolved.";
 
 type SettlementLikeTransaction = Pick<
   Transaction,
@@ -112,6 +114,20 @@ export function needsCreditCardStatementUpload(
   );
 }
 
+export function isUncategorizedCategoryCode(
+  categoryCode: string | null | undefined,
+) {
+  if (typeof categoryCode !== "string") {
+    return false;
+  }
+
+  const normalized = categoryCode.trim().toLowerCase();
+  return (
+    normalized === "uncategorized_expense" ||
+    normalized === "uncategorized_income"
+  );
+}
+
 export function getTransactionReviewReason(
   transaction: Pick<
     Transaction,
@@ -119,12 +135,18 @@ export function getTransactionReviewReason(
     | "creditCardStatementStatus"
     | "descriptionRaw"
     | "descriptionClean"
-  >,
+  > & { categoryCode?: Transaction["categoryCode"] },
 ) {
   if (needsCreditCardStatementUpload(transaction)) {
     return CREDIT_CARD_STATEMENT_REVIEW_REASON;
   }
-  return transaction.reviewReason ?? null;
+  if (transaction.reviewReason) {
+    return transaction.reviewReason;
+  }
+  if (isUncategorizedCategoryCode(transaction.categoryCode)) {
+    return UNCATEGORIZED_TRANSACTION_REVIEW_REASON;
+  }
+  return null;
 }
 
 export function needsTransactionManualReview(
@@ -134,11 +156,15 @@ export function needsTransactionManualReview(
     | "creditCardStatementStatus"
     | "descriptionRaw"
     | "descriptionClean"
-  > & { llmPayload?: unknown },
+  > & {
+    categoryCode?: Transaction["categoryCode"];
+    llmPayload?: unknown;
+  },
 ) {
   return (
     !isTransactionPendingEnrichment(transaction) &&
     (transaction.needsReview === true ||
+      isUncategorizedCategoryCode(transaction.categoryCode) ||
       needsCreditCardStatementUpload(transaction))
   );
 }
@@ -150,7 +176,10 @@ export function getTransactionReviewState(
     | "creditCardStatementStatus"
     | "descriptionRaw"
     | "descriptionClean"
-  > & { llmPayload?: unknown },
+  > & {
+    categoryCode?: Transaction["categoryCode"];
+    llmPayload?: unknown;
+  },
 ): TransactionReviewState {
   if (isTransactionPendingEnrichment(transaction)) {
     return "pending_enrichment";
@@ -169,6 +198,7 @@ export function isTransactionResolvedForAnalytics(
     | "descriptionRaw"
     | "descriptionClean"
   > & {
+    categoryCode?: Transaction["categoryCode"];
     excludeFromAnalytics?: boolean;
     voidedAt?: string | null;
     llmPayload?: unknown;

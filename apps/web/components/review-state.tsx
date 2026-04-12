@@ -60,6 +60,7 @@ function formatReviewReason(value: unknown): string | null {
 
 export function ReviewStateCell({
   needsReview,
+  categoryCode,
   reviewReason,
   transactionClass,
   classificationSource,
@@ -72,6 +73,7 @@ export function ReviewStateCell({
   variant = "default",
 }: {
   needsReview: boolean;
+  categoryCode?: string | null;
   reviewReason?: unknown;
   transactionClass?: string | null;
   classificationSource?: string | null;
@@ -85,6 +87,7 @@ export function ReviewStateCell({
 }) {
   const reviewState = getTransactionReviewState({
     needsReview,
+    categoryCode,
     llmPayload,
     creditCardStatementStatus,
     descriptionRaw,
@@ -93,6 +96,7 @@ export function ReviewStateCell({
   const normalizedReviewReason = formatReviewReason(
     getTransactionReviewReason({
       reviewReason: typeof reviewReason === "string" ? reviewReason : null,
+      categoryCode,
       creditCardStatementStatus,
       descriptionRaw,
       descriptionClean,

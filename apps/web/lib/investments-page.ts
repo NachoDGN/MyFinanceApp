@@ -76,6 +76,7 @@ export type InvestmentsPageTransactionRow = {
   dateBottom: string;
   descriptionRaw: string;
   transactionClass: string;
+  categoryCode: string | null;
   quantity: string | null;
   quantityDisplay: string;
   securityLabel: string;
@@ -631,6 +632,7 @@ export function buildInvestmentsPageModel(
       dateBottom,
       descriptionRaw: row.descriptionRaw,
       transactionClass: row.transactionClass,
+      categoryCode: row.categoryCode ?? null,
       quantity: row.quantity ?? null,
       quantityDisplay: formatQuantity(row.quantity),
       securityLabel,
@@ -656,6 +658,7 @@ export function buildInvestmentsPageModel(
       dateBottom,
       descriptionRaw: row.descriptionRaw,
       transactionClass: row.transactionClass,
+      categoryCode: row.categoryCode ?? null,
       quantity: row.quantity ?? null,
       quantityDisplay: formatQuantity(row.quantity),
       securityLabel,

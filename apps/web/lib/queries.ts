@@ -304,7 +304,7 @@ export async function getCreditCardStatementModel(
       (account) => account.id === importBatch.accountId,
     ) ?? null;
   const unresolvedCount = statementTransactions.filter(
-    (transaction) => transaction.needsReview,
+    (transaction) => needsTransactionManualReview(transaction),
   ).length;
   const llmResolvedCount = statementTransactions.filter(
     (transaction) => transaction.classificationSource === "llm",

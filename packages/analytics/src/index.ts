@@ -1345,7 +1345,7 @@ export function buildInvestmentsReadModel(
       return (
         account?.assetDomain === "investment" &&
         transaction.transactionDate <= context.referenceDate &&
-        transaction.needsReview
+        needsTransactionManualReview(transaction)
       );
     }),
   );
@@ -1355,7 +1355,7 @@ export function buildInvestmentsReadModel(
       return (
         account?.assetDomain === "investment" &&
         transaction.transactionDate <= context.referenceDate &&
-        !transaction.needsReview &&
+        !needsTransactionManualReview(transaction) &&
         processedInvestmentLedgerClasses.includes(transaction.transactionClass)
       );
     }),

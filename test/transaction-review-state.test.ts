@@ -50,6 +50,7 @@ test("failed or unresolved analysis remains manual review", () => {
 test("resolved transactions stay analytics-safe", () => {
   const transaction = {
     needsReview: false,
+    categoryCode: "salary",
     creditCardStatementStatus: "not_applicable",
     descriptionRaw: "Salary",
     descriptionClean: "SALARY",
@@ -62,6 +63,30 @@ test("resolved transactions stay analytics-safe", () => {
 
   assert.equal(getTransactionReviewState(transaction), "resolved");
   assert.equal(isTransactionResolvedForAnalytics(transaction), true);
+});
+
+test("uncategorized transactions remain in manual review until a category is assigned", () => {
+  const transaction = {
+    needsReview: false,
+    categoryCode: "uncategorized_expense",
+    creditCardStatementStatus: "not_applicable",
+    descriptionRaw: "Booking.com",
+    descriptionClean: "BOOKING.COM",
+    excludeFromAnalytics: false,
+    voidedAt: null,
+    llmPayload: {
+      analysisStatus: "done",
+    },
+    reviewReason: null,
+  } as const;
+
+  assert.equal(needsTransactionManualReview(transaction), true);
+  assert.equal(getTransactionReviewState(transaction), "needs_review");
+  assert.equal(
+    getTransactionReviewReason(transaction),
+    "Assign a category before this transaction can be treated as resolved.",
+  );
+  assert.equal(isTransactionResolvedForAnalytics(transaction), false);
 });
 
 test("credit-card settlements stay in manual review until the statement is uploaded", () => {
