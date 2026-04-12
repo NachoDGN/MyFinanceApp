@@ -3,6 +3,8 @@ import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
   convertBaseEurToDisplayAmount,
+  convertBaseEurToDisplayAmountWithFallback,
+  endOfMonthIso,
   formatBaseEurAmountForDisplay,
 } from "../../lib/currency";
 import { formatCurrency } from "../../lib/formatters";
@@ -18,6 +20,26 @@ function formatMonthRange(start: string, end: string) {
   return `${formatMonthLabel(start)} ${start.slice(0, 4)} — ${formatMonthLabel(end)} ${end.slice(0, 4)}`;
 }
 
+function getPeriodLabel(period: {
+  preset: string;
+  start: string;
+  end: string;
+}) {
+  if (period.preset === "mtd") {
+    return "Month to Date";
+  }
+  if (period.preset === "ytd") {
+    return "Year to Date";
+  }
+  if (period.preset === "week") {
+    return "Week to Date";
+  }
+  if (period.preset === "24m") {
+    return "Trailing 24 Months";
+  }
+  return `${formatMonthLabel(period.start)} ${period.start.slice(0, 4)} — ${formatMonthLabel(period.end)} ${period.end.slice(0, 4)}`;
+}
+
 function formatPercentLabel(value: string | null | undefined) {
   return `${Number(value ?? 0).toFixed(2)}%`;
 }
@@ -29,41 +51,46 @@ export default async function IncomePage({
 }) {
   const model = await getIncomeModel(searchParams);
   const chartRows = model.monthlyIncomeComposition.map((row) => {
-    const operatingIncomeDisplayRaw = convertBaseEurToDisplayAmount(
+    const effectiveDate =
+      endOfMonthIso(row.month) <= model.referenceDate
+        ? endOfMonthIso(row.month)
+        : model.referenceDate;
+    const operatingIncomeDisplay = convertBaseEurToDisplayAmountWithFallback(
       model.dataset,
       row.operatingIncomeEur,
       model.currency,
-      row.month,
+      effectiveDate,
+      { fallbackDate: model.referenceDate },
     );
-    const investmentIncomeDisplayRaw = convertBaseEurToDisplayAmount(
+    const investmentIncomeDisplay = convertBaseEurToDisplayAmountWithFallback(
       model.dataset,
       row.investmentIncomeEur,
       model.currency,
-      row.month,
+      effectiveDate,
+      { fallbackDate: model.referenceDate },
     );
 
     return {
       ...row,
-      operatingIncomeDisplay: Number(operatingIncomeDisplayRaw ?? 0),
-      investmentIncomeDisplay: Number(investmentIncomeDisplayRaw ?? 0),
-      missingDisplayFx:
+      operatingIncomeDisplay: Number(operatingIncomeDisplay.amount ?? 0),
+      investmentIncomeDisplay: Number(investmentIncomeDisplay.amount ?? 0),
+      usedFallbackFx:
         model.currency !== "EUR" &&
-        ((row.operatingIncomeEur !== "0.00" && operatingIncomeDisplayRaw === null) ||
-          (row.investmentIncomeEur !== "0.00" &&
-            investmentIncomeDisplayRaw === null)),
+        (operatingIncomeDisplay.usedFallbackFx ||
+          investmentIncomeDisplay.usedFallbackFx),
       totalIncomeDisplay:
-        Number(operatingIncomeDisplayRaw ?? 0) +
-        Number(investmentIncomeDisplayRaw ?? 0),
+        Number(operatingIncomeDisplay.amount ?? 0) +
+        Number(investmentIncomeDisplay.amount ?? 0),
     };
   });
-  const missingFxMonths = chartRows
-    .filter((row) => row.missingDisplayFx)
+  const fallbackFxMonths = chartRows
+    .filter((row) => row.usedFallbackFx)
     .map((row) => formatMonthLabel(row.month));
-  const missingFxRangeLabel =
-    missingFxMonths.length > 0
-      ? missingFxMonths.length === 1
-        ? missingFxMonths[0]
-        : `${missingFxMonths[0]}-${missingFxMonths[missingFxMonths.length - 1]}`
+  const fallbackFxRangeLabel =
+    fallbackFxMonths.length > 0
+      ? fallbackFxMonths.length === 1
+        ? fallbackFxMonths[0]
+        : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
       : null;
   const chartMax = Math.max(
     ...chartRows.map((row) => row.totalIncomeDisplay),
@@ -178,11 +205,11 @@ export default async function IncomePage({
             </div>
             <div className="income-kpi-badge neutral">{chartRangeLabel}</div>
           </div>
-          {missingFxRangeLabel ? (
+          {fallbackFxRangeLabel ? (
             <div className="status-note" style={{ marginTop: 16 }}>
-              Historical {model.currency} conversion is unavailable for{" "}
-              {missingFxRangeLabel}, so those months cannot be rendered
-              accurately in the selected display currency.
+              Historical {model.currency} conversion was unavailable for{" "}
+              {fallbackFxRangeLabel}, so the latest available FX up to{" "}
+              {model.referenceDate} is used to keep the full trend visible.
             </div>
           ) : null}
 
@@ -236,11 +263,18 @@ export default async function IncomePage({
           <article className="income-breakdown-card">
             <div className="income-chart-header">
               <h2 className="income-chart-title">Income Source Breakdown</h2>
+              <div className="income-kpi-badge neutral">
+                {getPeriodLabel(model.period)}
+              </div>
+            </div>
+            <div className="muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
+              Grouped by normalized payer/counterparty names for the selected
+              period.
             </div>
 
             <div className="income-breakdown-table">
               <div className="income-breakdown-head">
-                <div>Source Entity</div>
+                <div>Source</div>
                 <div>Distribution</div>
                 <div className="amount">Volume</div>
                 <div className="amount">Share</div>
@@ -265,7 +299,14 @@ export default async function IncomePage({
 
                   return (
                     <div className="income-breakdown-row" key={row.label}>
-                      <div className="source-name">{row.label}</div>
+                      <div className="source-name">
+                        <div>{row.label}</div>
+                        {row.aliases.length > 1 ? (
+                          <div className="muted" style={{ marginTop: 4 }}>
+                            Merged aliases: {row.aliases.join(", ")}
+                          </div>
+                        ) : null}
+                      </div>
                       <div className="source-progress-track">
                         <div
                           className="source-progress-fill"

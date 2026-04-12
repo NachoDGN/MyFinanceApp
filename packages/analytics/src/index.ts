@@ -36,6 +36,7 @@ import {
   startOfTrailingMonthsIso,
   summarizeQuoteFreshness,
   todayIso,
+  normalizeMatcherText,
 } from "@myfinance/domain";
 import { metricRegistry } from "./registry";
 import { buildAnalyticsReadModelContext } from "./read-model-context";
@@ -1051,6 +1052,90 @@ function aggregateAmountRows<T>(
     .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
 }
 
+const SOURCE_LEGAL_SUFFIX_TOKENS = new Set([
+  "BV",
+  "CO",
+  "CORP",
+  "CORPORATION",
+  "GMBH",
+  "INC",
+  "LIMITED",
+  "LLC",
+  "LP",
+  "LTD",
+  "SA",
+  "SAU",
+  "SL",
+  "SRL",
+  "S",
+  "R",
+  "L",
+]);
+
+function resolveIncomeSourceLabel(transaction: Transaction) {
+  return (
+    transaction.counterpartyName ??
+    transaction.merchantNormalized ??
+    transaction.descriptionClean
+  );
+}
+
+function canonicalizeIncomeSourceLabel(label: string) {
+  const tokens = normalizeMatcherText(label)
+    .split(/[^A-Z0-9]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => !SOURCE_LEGAL_SUFFIX_TOKENS.has(token));
+
+  return tokens.join("");
+}
+
+function aggregateIncomeSourceRows(transactions: Transaction[]) {
+  const totals = new Map<
+    string,
+    {
+      amount: Decimal;
+      aliasTotals: Map<string, Decimal>;
+    }
+  >();
+
+  for (const transaction of transactions) {
+    const label = resolveIncomeSourceLabel(transaction);
+    const contribution = incomeContributionEur(transaction);
+    if (!label || !contribution) {
+      continue;
+    }
+
+    const key = canonicalizeIncomeSourceLabel(label) || normalizeMatcherText(label);
+    const existing = totals.get(key) ?? {
+      amount: new Decimal(0),
+      aliasTotals: new Map<string, Decimal>(),
+    };
+    existing.amount = existing.amount.plus(contribution);
+    existing.aliasTotals.set(
+      label,
+      (existing.aliasTotals.get(label) ?? new Decimal(0)).plus(contribution),
+    );
+    totals.set(key, existing);
+  }
+
+  return [...totals.values()]
+    .map((row) => {
+      const aliases = [...row.aliasTotals.entries()]
+        .sort(
+          (left, right) =>
+            right[1].cmp(left[1]) || left[0].localeCompare(right[0]),
+        )
+        .map(([alias]) => alias);
+      return {
+        label: aliases[0] ?? "Unknown Source",
+        aliases,
+        amountEur: row.amount.toFixed(2),
+      };
+    })
+    .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
+}
+
 function averageMonthlySeries(
   monthlySeries: DashboardSummaryResponse["monthlySeries"],
   key: "incomeEur" | "spendingEur",
@@ -1272,14 +1357,7 @@ export function buildIncomeReadModel(
     isIncomeTransaction,
   );
   const incomeMetric = findMetric(summary, "income_mtd_total");
-  const sourceRows = aggregateAmountRows(
-    resolvedTransactions,
-    (transaction) =>
-      transaction.counterpartyName ??
-      transaction.merchantNormalized ??
-      transaction.descriptionClean,
-    (transaction) => new Decimal(transaction.amountBaseEur),
-  );
+  const sourceRows = aggregateIncomeSourceRows(resolvedTransactions);
   const investmentIncomeRows = resolvedTransactions.filter((transaction) =>
     ["dividend", "interest"].includes(transaction.transactionClass),
   );

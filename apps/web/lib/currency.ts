@@ -60,6 +60,15 @@ function resolveStoredFxRate(
   return null;
 }
 
+export function endOfMonthIso(value: string) {
+  const [yearText, monthText] = value.slice(0, 7).split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const nextMonth = new Date(Date.UTC(year, month, 1));
+  nextMonth.setUTCDate(0);
+  return nextMonth.toISOString().slice(0, 10);
+}
+
 export function convertBaseEurToDisplayAmount(
   dataset: DomainDataset,
   amountBaseEur: string | null | undefined,
@@ -87,6 +96,51 @@ export function convertBaseEurToDisplayAmount(
   return new Decimal(amountBaseEur)
     .mul(rate)
     .toFixed(2);
+}
+
+export function convertBaseEurToDisplayAmountWithFallback(
+  dataset: DomainDataset,
+  amountBaseEur: string | null | undefined,
+  displayCurrency: string,
+  effectiveDate: string,
+  options: {
+    fallbackDate?: string;
+  } = {},
+) {
+  if (amountBaseEur === null || amountBaseEur === undefined) {
+    return {
+      amount: null,
+      usedFallbackFx: false,
+    };
+  }
+
+  if (displayCurrency === "EUR") {
+    return {
+      amount: new Decimal(amountBaseEur).toFixed(2),
+      usedFallbackFx: false,
+    };
+  }
+
+  const primaryRate = resolveStoredFxRate(
+    dataset,
+    "EUR",
+    displayCurrency,
+    effectiveDate,
+  );
+  if (primaryRate !== null) {
+    return {
+      amount: new Decimal(amountBaseEur).mul(primaryRate).toFixed(2),
+      usedFallbackFx: false,
+    };
+  }
+
+  const fallbackDate = options.fallbackDate ?? effectiveDate;
+  return {
+    amount: new Decimal(amountBaseEur)
+      .mul(resolveFxRate(dataset, "EUR", displayCurrency, fallbackDate))
+      .toFixed(2),
+    usedFallbackFx: true,
+  };
 }
 
 export function formatBaseEurAmountForDisplay(
