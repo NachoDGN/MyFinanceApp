@@ -169,6 +169,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Use null instead of guessing unsupported values.",
           "Keep the explanation to one short sentence.",
           "For cash accounts, keep economic_entity_override null unless the input explicitly proves the owning account entity is wrong; company names belong in counterparty_name, not economic_entity_override.",
+          "When an incoming payment is explicitly described as a tax rebate, tax relief, or tax credit, prefer tax_credit if it is among the allowed category codes.",
           "If the transaction is fully resolved, populate resolution_process with a concise evidence chain. If it remains unresolved, set resolution_process to null.",
           "Do not claim that quantity or price was derived from a later rebuild step unless that derivation is explicitly present in the transaction input.",
           "Never invent merchants, counterparties, or categories.",

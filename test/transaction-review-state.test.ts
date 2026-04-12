@@ -65,6 +65,24 @@ test("resolved transactions stay analytics-safe", () => {
   assert.equal(isTransactionResolvedForAnalytics(transaction), true);
 });
 
+test("specific income categories like tax_credit are treated as resolved", () => {
+  const transaction = {
+    needsReview: false,
+    categoryCode: "tax_credit",
+    creditCardStatementStatus: "not_applicable",
+    descriptionRaw: "Comunidad de Madrid tax credit",
+    descriptionClean: "COMUNIDAD DE MADRID TAX CREDIT",
+    excludeFromAnalytics: false,
+    voidedAt: null,
+    llmPayload: {
+      analysisStatus: "done",
+    },
+  } as const;
+
+  assert.equal(getTransactionReviewState(transaction), "resolved");
+  assert.equal(isTransactionResolvedForAnalytics(transaction), true);
+});
+
 test("uncategorized transactions remain in manual review until a category is assigned", () => {
   const transaction = {
     needsReview: false,

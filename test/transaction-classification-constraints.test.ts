@@ -74,12 +74,22 @@ function buildScopedDataset() {
           metadataJson: {},
         },
         {
+          code: "tax_credit",
+          displayName: "Tax Credit",
+          parentCode: null,
+          scopeKind: "personal",
+          directionKind: "income",
+          sortOrder: 3,
+          active: true,
+          metadataJson: {},
+        },
+        {
           code: "software",
           displayName: "Software",
           parentCode: null,
           scopeKind: "company",
           directionKind: "expense",
-          sortOrder: 3,
+          sortOrder: 4,
           active: true,
           metadataJson: {},
         },
@@ -89,7 +99,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "both",
           directionKind: "expense",
-          sortOrder: 4,
+          sortOrder: 5,
           active: true,
           metadataJson: {},
         },
@@ -99,7 +109,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "both",
           directionKind: "neutral",
-          sortOrder: 5,
+          sortOrder: 6,
           active: true,
           metadataJson: {},
         },
@@ -109,7 +119,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "system",
           directionKind: "income",
-          sortOrder: 6,
+          sortOrder: 7,
           active: true,
           metadataJson: {},
         },
@@ -119,7 +129,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "system",
           directionKind: "expense",
-          sortOrder: 7,
+          sortOrder: 8,
           active: true,
           metadataJson: {},
         },
@@ -339,6 +349,7 @@ test("personal cash accounts only expose personal and system categories", () => 
 
   assert.equal(allowedCategoryCodes.has("subscriptions"), true);
   assert.equal(allowedCategoryCodes.has("business_income"), true);
+  assert.equal(allowedCategoryCodes.has("tax_credit"), true);
   assert.equal(allowedCategoryCodes.has("salary"), true);
   assert.equal(allowedCategoryCodes.has("travel"), true);
   assert.equal(allowedCategoryCodes.has("debt"), true);
@@ -357,6 +368,7 @@ test("company cash accounts expose both-scope travel and debt categories", () =>
 
   assert.equal(allowedCategoryCodes.has("travel"), true);
   assert.equal(allowedCategoryCodes.has("debt"), true);
+  assert.equal(allowedCategoryCodes.has("tax_credit"), false);
   assert.equal(allowedCategoryCodes.has("subscriptions"), false);
 });
 
