@@ -927,6 +927,76 @@ async function collectTransactionSearchIndexWarnings(
   return warnings;
 }
 
+async function runTransactionSearchRetrieval(input: {
+  sql: SqlClient;
+  userId: string;
+  query: string;
+  filters: ResolvedTransactionSearchFilters;
+  warnings: Set<string>;
+}) {
+  let keywordCandidates: TransactionKeywordCandidate[] = [];
+  try {
+    keywordCandidates = await getKeywordCandidates(
+      input.sql,
+      input.userId,
+      input.query,
+      input.filters,
+    );
+  } catch {
+    input.warnings.add(
+      "Keyword retrieval is temporarily unavailable, so only semantic matches can be shown.",
+    );
+  }
+
+  let semanticCandidates: TransactionSemanticCandidate[] = [];
+  let rerankedSemantic: TransactionRerankedCandidate[] = [];
+  try {
+    const queryEmbedding = await embedTransactionSearchQuery(input.query);
+    const rawSemanticCandidates = await getSemanticCandidates(
+      input.sql,
+      input.userId,
+      queryEmbedding,
+      input.filters,
+    );
+    semanticCandidates = filterSemanticCandidatesByEvidence({
+      query: input.query,
+      semanticCandidates: rawSemanticCandidates,
+      keywordCandidates,
+    });
+  } catch {
+    input.warnings.add(
+      "Semantic retrieval is temporarily unavailable, so the finder is using keyword matches only.",
+    );
+    semanticCandidates = [];
+  }
+
+  if (semanticCandidates.length > 0) {
+    try {
+      rerankedSemantic = await rerankTransactionSemanticCandidates({
+        query: input.query,
+        candidates: semanticCandidates,
+      });
+    } catch {
+      rerankedSemantic = buildFallbackSemanticReranking(semanticCandidates);
+      input.warnings.add(
+        "Semantic reranking is temporarily unavailable, so semantic matches are using raw vector order.",
+      );
+    }
+  }
+
+  return {
+    keywordCandidates,
+    semanticCandidates,
+    rerankedSemantic,
+    fusedHits: fuseTransactionSearchResults({
+      semanticCandidates,
+      rerankedSemantic,
+      keywordCandidates,
+      limit: TRANSACTION_SEARCH_RESULT_LIMIT,
+    }),
+  };
+}
+
 function mapFusedHitsToRows(
   fusedHits: FusedTransactionSearchHit[],
   transactionsById: Map<string, Transaction>,
@@ -977,80 +1047,66 @@ export async function searchTransactions(
     throw new Error("Transaction search query is required.");
   }
 
-  const warnings = await collectTransactionSearchIndexWarnings(sql, userId);
+  const warnings = new Set(
+    await collectTransactionSearchIndexWarnings(sql, userId),
+  );
   const parsedQuery = understandTransactionSearchQuery({
     dataset: input.dataset,
     query,
     referenceDate: input.referenceDate,
   });
-  const filters = resolveTransactionSearchFilters({
+  let filters = resolveTransactionSearchFilters({
     parsedQuery,
     scope: input.scope,
     period: input.period,
   });
-  let keywordCandidates: TransactionKeywordCandidate[] = [];
-  try {
-    keywordCandidates = await getKeywordCandidates(sql, userId, query, filters);
-  } catch {
-    warnings.push(
-      "Keyword retrieval is temporarily unavailable, so only semantic matches can be shown.",
-    );
-  }
+  let retrieval = await runTransactionSearchRetrieval({
+    sql,
+    userId,
+    query,
+    filters,
+    warnings,
+  });
 
-  let semanticCandidates: TransactionSemanticCandidate[] = [];
-  let rerankedSemantic: TransactionRerankedCandidate[] = [];
-  try {
-    const queryEmbedding = await embedTransactionSearchQuery(query);
-    const rawSemanticCandidates = await getSemanticCandidates(
+  if (
+    retrieval.fusedHits.length === 0 &&
+    !parsedQuery.hasExplicitTimeConstraint &&
+    filters.usedPeriodFallback
+  ) {
+    const broadenedFilters: ResolvedTransactionSearchFilters = {
+      ...filters,
+      dateStart: null,
+      dateEnd: null,
+      usedPeriodFallback: false,
+    };
+    const broadenedRetrieval = await runTransactionSearchRetrieval({
       sql,
       userId,
-      queryEmbedding,
-      filters,
-    );
-    semanticCandidates = filterSemanticCandidatesByEvidence({
       query,
-      semanticCandidates: rawSemanticCandidates,
-      keywordCandidates,
+      filters: broadenedFilters,
+      warnings,
     });
-  } catch {
-    warnings.push(
-      "Semantic retrieval is temporarily unavailable, so the finder is using keyword matches only.",
-    );
-    semanticCandidates = [];
-  }
-
-  if (semanticCandidates.length > 0) {
-    try {
-      rerankedSemantic = await rerankTransactionSemanticCandidates({
-        query,
-        candidates: semanticCandidates,
-      });
-    } catch {
-      rerankedSemantic = buildFallbackSemanticReranking(semanticCandidates);
-      warnings.push(
-        "Semantic reranking is temporarily unavailable, so semantic matches are using raw vector order.",
+    if (broadenedRetrieval.fusedHits.length > 0) {
+      warnings.add(
+        "No matches fell inside the current page period, so the finder broadened to all indexed dates.",
       );
+      filters = broadenedFilters;
+      retrieval = broadenedRetrieval;
     }
   }
 
-  const fusedHits = fuseTransactionSearchResults({
-    semanticCandidates,
-    rerankedSemantic,
-    keywordCandidates,
-    limit: TRANSACTION_SEARCH_RESULT_LIMIT,
-  });
   const transactionsById = await selectTransactionsByIds(
     sql,
     userId,
-    fusedHits.map((hit) => hit.transactionId),
+    retrieval.fusedHits.map((hit) => hit.transactionId),
   );
 
   return {
     query,
-    rows: mapFusedHitsToRows(fusedHits, transactionsById),
-    semanticCandidateCount: semanticCandidates.length,
-    keywordCandidateCount: keywordCandidates.length,
+    rows: mapFusedHitsToRows(retrieval.fusedHits, transactionsById),
+    semanticCandidateCount: retrieval.semanticCandidates.length,
+    keywordCandidateCount: retrieval.keywordCandidates.length,
     filters,
-    warnings,
+    warnings: [...warnings],
   };
 }

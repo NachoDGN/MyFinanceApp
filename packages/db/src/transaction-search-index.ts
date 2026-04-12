@@ -23,6 +23,10 @@ const TRANSACTION_SEARCH_EMBEDDING_BATCH_SIZE = 8;
 const TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY = 4;
 const TRANSACTION_SEARCH_SUMMARY_WINDOW_CHAR_LIMIT = 18_000;
 const EMPTY_UUID = "00000000-0000-0000-0000-000000000000";
+const TRANSACTION_SEARCH_EMBEDDING_ZERO_VECTOR = Array.from(
+  { length: TRANSACTION_SEARCH_EMBEDDING_DIMENSIONS },
+  () => 0,
+);
 
 const transactionBatchSummarySchema = z.object({
   summary: z.string().min(1),
@@ -78,6 +82,15 @@ type TransactionSearchBatchGroup = {
   periodStart: string | null;
   periodEnd: string | null;
   rows: TransactionSearchSourceRow[];
+};
+
+type TransactionSearchContextualizedRow = {
+  reviewState: string;
+  direction: "debit" | "credit" | "neutral";
+  contextualNote: string;
+  contextualizedText: string;
+  contextualizationModel: string;
+  contextualizationPayload: Record<string, unknown>;
 };
 
 export type QueueTransactionSearchIndexInput = {
@@ -207,6 +220,22 @@ function buildContextualizedTransactionText(input: {
   originalText: string;
 }) {
   return `${input.contextualNote.trim()}\n\n${input.originalText.trim()}`.trim();
+}
+
+function isRecoverableTransactionSearchProviderError(error: unknown) {
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+  return (
+    message.includes("gemini") ||
+    message.includes("resource_exhausted") ||
+    message.includes("monthly spending cap") ||
+    message.includes("status 429") ||
+    message.includes("service is currently unavailable") ||
+    message.includes("timed out") ||
+    message.includes("api key") ||
+    message.includes("credentials")
+  );
 }
 
 function buildBatchStats(rows: TransactionSearchSourceRow[]) {
@@ -424,6 +453,49 @@ ${partialSummaries.map((summary, index) => `[${index + 1}] ${summary}`).join("\n
   };
 }
 
+function buildDeterministicTransactionBatchSummary(
+  group: TransactionSearchBatchGroup,
+) {
+  const stats = buildBatchStats(group.rows);
+  const accountLabel =
+    group.accountName && group.institutionName
+      ? `${group.accountName} at ${group.institutionName}`
+      : (group.accountName ?? group.institutionName ?? "unknown account");
+  const periodLabel =
+    group.periodStart && group.periodEnd
+      ? group.periodStart === group.periodEnd
+        ? `covering ${group.periodStart}`
+        : `covering ${group.periodStart} to ${group.periodEnd}`
+      : "with an unknown period";
+  const topMerchants =
+    stats.topMerchants
+      .slice(0, 5)
+      .map((entry) => `${entry.value} (${entry.count})`)
+      .join(", ") || "none";
+  const recurringMerchants =
+    stats.recurringMerchants
+      .slice(0, 5)
+      .map((entry) => `${entry.value} (${entry.count})`)
+      .join(", ") || "none";
+  const topCategories =
+    stats.topCategories
+      .slice(0, 5)
+      .map((entry) => `${entry.value} (${entry.count})`)
+      .join(", ") || "none";
+
+  return {
+    batchSummary: `${accountLabel} ${periodLabel}. ${stats.transactionCount} transactions with ${stats.creditCount} credits and ${stats.debitCount} debits. Top merchants: ${topMerchants}. Recurring merchants: ${recurringMerchants}. Top categories: ${topCategories}.`,
+    extractedMetadata: {
+      accountLabel,
+      ...stats,
+      sourceBatchKey: group.sourceBatchKey,
+      summaryWindowCount: 0,
+      modelName: "deterministic_fallback",
+      summaryStrategy: "deterministic_fallback",
+    },
+  };
+}
+
 async function contextualizeTransactionRow(
   input: {
     row: TransactionSearchSourceRow;
@@ -511,6 +583,72 @@ ${input.row.descriptionRaw}
     }),
     reviewState,
     direction,
+    contextualizationModel: modelName,
+    contextualizationPayload: {
+      strategy: "llm",
+      contextualNote,
+    },
+  };
+}
+
+function buildDeterministicTransactionContextualization(input: {
+  row: TransactionSearchSourceRow;
+  batchSummary: string;
+  recurringMerchantLabels: string[];
+}): TransactionSearchContextualizedRow {
+  const reviewState = getTransactionReviewState({
+    needsReview: input.row.needsReview,
+    categoryCode: input.row.categoryCode,
+    llmPayload: input.row.llmPayload,
+    creditCardStatementStatus: input.row.creditCardStatementStatus,
+    descriptionRaw: input.row.descriptionRaw,
+    descriptionClean: input.row.descriptionClean,
+  });
+  const direction = getDirection(input.row.amountOriginal);
+  const accountBits = [
+    input.row.accountName,
+    input.row.institutionName,
+    input.row.accountType,
+    input.row.economicEntityKind,
+    input.row.economicEntityName,
+  ].filter((value): value is string => Boolean(value));
+  const recurringContext =
+    input.row.merchantNormalized &&
+    input.recurringMerchantLabels.includes(input.row.merchantNormalized)
+      ? `${input.row.merchantNormalized} is recurring in this batch.`
+      : input.recurringMerchantLabels.length > 0
+        ? `Recurring merchants in this batch include ${input.recurringMerchantLabels.slice(0, 3).join(", ")}.`
+        : null;
+  const contextualNote = [
+    `${direction === "credit" ? "Credit" : direction === "debit" ? "Debit" : "Transaction"} ${formatSignedAmount(input.row.amountOriginal, input.row.currencyOriginal)} on ${formatDateLong(input.row.postedDate ?? input.row.transactionDate)} for ${accountBits.join(", ") || "an unknown account"}.`,
+    input.row.counterpartyName
+      ? `Counterparty ${input.row.counterpartyName}.`
+      : input.row.merchantNormalized
+        ? `Merchant ${input.row.merchantNormalized}.`
+        : null,
+    input.row.categoryCode
+      ? `Category ${input.row.categoryCode}, review state ${reviewState}.`
+      : `Review state ${reviewState}.`,
+    recurringContext,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ")
+    .trim();
+
+  return {
+    reviewState,
+    direction,
+    contextualNote,
+    contextualizedText: buildContextualizedTransactionText({
+      contextualNote,
+      originalText: input.row.descriptionRaw,
+    }),
+    contextualizationModel: "deterministic_fallback",
+    contextualizationPayload: {
+      strategy: "deterministic_fallback",
+      batchSummary: input.batchSummary,
+      recurringMerchantLabels: input.recurringMerchantLabels,
+    },
   };
 }
 
@@ -761,12 +899,14 @@ async function upsertTransactionSearchRows(
       contextualizedText: string;
       batchSummary: string;
       embedding: number[];
+      embeddingStatus: "ready" | "missing";
+      embeddingModel: string;
+      contextualizationModel: string;
+      contextualizationPayload: Record<string, unknown>;
     }>;
   },
 ) {
   for (const row of input.rows) {
-    const embeddingModel = getTransactionSearchEmbeddingModel();
-    const contextualizationModel = getTransactionSearchGenerativeModel();
     await sql`
       insert into public.transaction_search_rows (
         transaction_id,
@@ -823,10 +963,10 @@ async function upsertTransactionSearchRows(
         ${row.contextualizedText},
         ${row.batchSummary},
         ${serializeVector(row.embedding)}::extensions.vector(3072),
-        ${embeddingModel},
-        ${"ready"},
+        ${row.embeddingModel},
+        ${row.embeddingStatus},
         ${"contextualized_text"},
-        ${contextualizationModel},
+        ${row.contextualizationModel},
         ${serializeJson(sql, {
           contextualNote: row.contextualNote,
           merchant: row.sourceRow.merchantNormalized,
@@ -839,6 +979,7 @@ async function upsertTransactionSearchRows(
           economicEntityKind: row.sourceRow.economicEntityKind,
           direction: row.direction,
           reviewState: row.reviewState,
+          ...row.contextualizationPayload,
         })}::jsonb
       )
       on conflict (transaction_id)
@@ -1062,10 +1203,21 @@ export async function syncTransactionSearchIndex(
   }
 
   const grouped = groupTransactionSearchRows(sourceRows);
-  const llm = createLLMClient();
-  const embeddingClient = createTextEmbeddingClient(
-    getTransactionSearchEmbeddingModel(),
-  );
+  let llm: ReturnType<typeof createLLMClient> | null = null;
+  try {
+    llm = createLLMClient();
+  } catch {
+    llm = null;
+  }
+
+  let embeddingClient: TextEmbeddingClient | null = null;
+  try {
+    embeddingClient = createTextEmbeddingClient(
+      getTransactionSearchEmbeddingModel(),
+    );
+  } catch {
+    embeddingClient = null;
+  }
   let processedTransactions = 0;
 
   for (const group of grouped) {
@@ -1085,8 +1237,33 @@ export async function syncTransactionSearchIndex(
         status: "processing",
       });
 
-      const { batchSummary, extractedMetadata } =
-        await summarizeTransactionBatch(group, llm);
+      let batchSummary: string;
+      let extractedMetadata: Record<string, unknown>;
+      if (llm) {
+        try {
+          const summaryResult = await summarizeTransactionBatch(group, llm);
+          batchSummary = summaryResult.batchSummary;
+          extractedMetadata = summaryResult.extractedMetadata;
+        } catch (error) {
+          if (!isRecoverableTransactionSearchProviderError(error)) {
+            throw error;
+          }
+          const fallbackSummary = buildDeterministicTransactionBatchSummary(group);
+          batchSummary = fallbackSummary.batchSummary;
+          extractedMetadata = {
+            ...fallbackSummary.extractedMetadata,
+            summaryFallbackReason:
+              error instanceof Error ? error.message : "unknown_error",
+          };
+        }
+      } else {
+        const fallbackSummary = buildDeterministicTransactionBatchSummary(group);
+        batchSummary = fallbackSummary.batchSummary;
+        extractedMetadata = {
+          ...fallbackSummary.extractedMetadata,
+          summaryFallbackReason: "llm_client_unavailable",
+        };
+      }
       const recurringMerchantLabels = Array.isArray(
         extractedMetadata.recurringMerchants,
       )
@@ -1100,27 +1277,85 @@ export async function syncTransactionSearchIndex(
           )
         : [];
 
-      const contextualizedRows = await mapWithConcurrency(
-        group.rows,
-        TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY,
-        async (row) =>
-          contextualizeTransactionRow(
-            {
+      const summaryUsedFallback =
+        String(extractedMetadata.summaryStrategy ?? "") ===
+        "deterministic_fallback";
+      const contextualizedRows = summaryUsedFallback || !llm
+        ? group.rows.map((row) =>
+            buildDeterministicTransactionContextualization({
               row,
               batchSummary,
               recurringMerchantLabels,
+            }),
+          )
+        : await mapWithConcurrency(
+            group.rows,
+            TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY,
+            async (row) => {
+              try {
+                return await contextualizeTransactionRow(
+                  {
+                    row,
+                    batchSummary,
+                    recurringMerchantLabels,
+                  },
+                  llm,
+                );
+              } catch (error) {
+                if (!isRecoverableTransactionSearchProviderError(error)) {
+                  throw error;
+                }
+                return buildDeterministicTransactionContextualization({
+                  row,
+                  batchSummary,
+                  recurringMerchantLabels,
+                });
+              }
             },
-            llm,
-          ),
-      );
-      const embeddings = await embedTransactionSearchTexts(
-        contextualizedRows.map((row) => row.contextualizedText),
-        embeddingClient,
-      );
-      if (embeddings.length !== group.rows.length) {
-        throw new Error(
-          `Transaction search embeddings were incomplete for batch ${group.sourceBatchKey}.`,
-        );
+          );
+      const contextualizationStrategy = contextualizedRows.some(
+        (row) => row.contextualizationModel === "deterministic_fallback",
+      )
+        ? "deterministic_fallback"
+        : "llm";
+
+      const embeddingModel = getTransactionSearchEmbeddingModel();
+      let embeddingStatus: "ready" | "missing" = "ready";
+      let embeddings: number[][] = [];
+      if (embeddingClient) {
+        try {
+          embeddings = await embedTransactionSearchTexts(
+            contextualizedRows.map((row) => row.contextualizedText),
+            embeddingClient,
+          );
+          if (embeddings.length !== group.rows.length) {
+            throw new Error(
+              `Transaction search embeddings were incomplete for batch ${group.sourceBatchKey}.`,
+            );
+          }
+        } catch (error) {
+          if (!isRecoverableTransactionSearchProviderError(error)) {
+            throw error;
+          }
+          embeddingStatus = "missing";
+          embeddings = group.rows.map(() => [
+            ...TRANSACTION_SEARCH_EMBEDDING_ZERO_VECTOR,
+          ]);
+          extractedMetadata = {
+            ...extractedMetadata,
+            embeddingFallbackReason:
+              error instanceof Error ? error.message : "unknown_error",
+          };
+        }
+      } else {
+        embeddingStatus = "missing";
+        embeddings = group.rows.map(() => [
+          ...TRANSACTION_SEARCH_EMBEDDING_ZERO_VECTOR,
+        ]);
+        extractedMetadata = {
+          ...extractedMetadata,
+          embeddingFallbackReason: "embedding_client_unavailable",
+        };
       }
 
       const batch = await upsertTransactionSearchBatch(sql, userId, {
@@ -1131,7 +1366,12 @@ export async function syncTransactionSearchIndex(
         periodStart: group.periodStart,
         periodEnd: group.periodEnd,
         batchSummary,
-        extractedMetadata,
+        extractedMetadata: {
+          ...extractedMetadata,
+          contextualizationStrategy,
+          embeddingStrategy:
+            embeddingStatus === "ready" ? "gemini_embeddings" : "missing_fallback",
+        },
         status: "ready",
       });
 
@@ -1145,6 +1385,12 @@ export async function syncTransactionSearchIndex(
           contextualizedText: contextualizedRows[index].contextualizedText,
           batchSummary,
           embedding: embeddings[index] ?? [],
+          embeddingStatus,
+          embeddingModel,
+          contextualizationModel:
+            contextualizedRows[index].contextualizationModel,
+          contextualizationPayload:
+            contextualizedRows[index].contextualizationPayload,
         })),
       });
       processedTransactions += group.rows.length;

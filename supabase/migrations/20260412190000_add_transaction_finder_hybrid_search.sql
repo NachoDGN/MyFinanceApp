@@ -363,7 +363,6 @@ begin
           on b.id = r.batch_id
         where r.user_id = p_user_id
           and b.status = 'ready'
-          and r.embedding_status = 'ready'
           and r.bm25_text is not null
           and (p_account_ids is null or cardinality(p_account_ids) = 0 or r.account_id = any(p_account_ids))
           and (p_entity_ids is null or cardinality(p_entity_ids) = 0 or r.economic_entity_id = any(p_entity_ids))
@@ -463,7 +462,6 @@ begin
         cross join keyword_query
         where r.user_id = p_user_id
           and b.status = 'ready'
-          and r.embedding_status = 'ready'
           and r.bm25_text is not null
           and numnode(keyword_query.ts_query) > 0
           and to_tsvector('english', r.bm25_text) @@ keyword_query.ts_query
