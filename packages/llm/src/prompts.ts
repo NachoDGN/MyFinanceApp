@@ -55,6 +55,15 @@ type TransactionPromptReviewContext = {
   resolvedSourcePrecedent: string;
 };
 
+type TransactionPromptBatchContext = {
+  phase: string;
+  sourceBatchKey: string;
+  batchSummary: string;
+  retrievalContext: string;
+  totalTransactions: string;
+  trustedResolvedCount: string;
+};
+
 const transactionPromptPlaceholders = [
   "institution_name",
   "account_display_name",
@@ -77,6 +86,7 @@ const transactionPromptPlaceholders = [
   "deterministic_hint",
   "portfolio_state",
   "similar_account_history",
+  "batch_context_section",
   "review_examples_section",
   "review_context_section",
 ] as const;
@@ -98,6 +108,15 @@ const reviewContextPlaceholders = [
   "propagated_contexts",
   "persisted_security_mappings",
   "resolved_source_precedent",
+] as const;
+
+const batchContextPlaceholders = [
+  "batch_phase",
+  "source_batch_key",
+  "batch_summary",
+  "retrieval_context",
+  "total_transactions",
+  "trusted_resolved_count",
 ] as const;
 
 const spreadsheetTableStartPlaceholders = [
@@ -186,10 +205,26 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Deterministic hint: {{deterministic_hint}}.",
           "Portfolio state: {{portfolio_state}}.",
           "Similar same-account resolved history: {{similar_account_history}}.",
+          "{{batch_context_section}}",
           "{{review_examples_section}}",
           "{{review_context_section}}",
         ].join("\n"),
         requiredPlaceholders: [...transactionPromptPlaceholders],
+      },
+      {
+        id: "batch_context_template",
+        label: "Batch Context",
+        description:
+          "Shared batch snapshot context used during parallel import processing.",
+        defaultValue: [
+          "Batch processing phase: {{batch_phase}}.",
+          "Batch source key: {{source_batch_key}}.",
+          "Batch summary: {{batch_summary}}.",
+          "Retriever context for this row: {{retrieval_context}}.",
+          "Batch transaction count: {{total_transactions}}.",
+          "Trusted resolved transactions already available: {{trusted_resolved_count}}.",
+        ].join("\n"),
+        requiredPlaceholders: [...batchContextPlaceholders],
       },
       {
         id: "review_examples_wrapper",
@@ -313,10 +348,26 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
           "Deterministic hint: {{deterministic_hint}}.",
           "Portfolio state: {{portfolio_state}}.",
           "Similar same-account resolved history: {{similar_account_history}}.",
+          "{{batch_context_section}}",
           "{{review_examples_section}}",
           "{{review_context_section}}",
         ].join("\n"),
         requiredPlaceholders: [...transactionPromptPlaceholders],
+      },
+      {
+        id: "batch_context_template",
+        label: "Batch Context",
+        description:
+          "Shared batch snapshot context used during parallel import processing.",
+        defaultValue: [
+          "Batch processing phase: {{batch_phase}}.",
+          "Batch source key: {{source_batch_key}}.",
+          "Batch summary: {{batch_summary}}.",
+          "Retriever context for this row: {{retrieval_context}}.",
+          "Batch transaction count: {{total_transactions}}.",
+          "Trusted resolved transactions already available: {{trusted_resolved_count}}.",
+        ].join("\n"),
+        requiredPlaceholders: [...batchContextPlaceholders],
       },
       {
         id: "review_examples_wrapper",
@@ -543,10 +594,21 @@ function renderTransactionPrompt(
   promptId: "cash_transaction_analyzer" | "investment_transaction_analyzer",
   overrides: Record<string, unknown> | null | undefined,
   variables: Record<string, string>,
+  batchContext: TransactionPromptBatchContext | null,
   reviewExamples: TransactionPromptExample[],
   reviewContext: TransactionPromptReviewContext | null,
 ): PromptPreview {
   const sections = resolveSections(promptId, overrides);
+  const batchContextBlock = batchContext
+    ? interpolateTemplate(sections.batch_context_template, {
+        batch_phase: batchContext.phase,
+        source_batch_key: batchContext.sourceBatchKey,
+        batch_summary: batchContext.batchSummary,
+        retrieval_context: batchContext.retrievalContext,
+        total_transactions: batchContext.totalTransactions,
+        trusted_resolved_count: batchContext.trustedResolvedCount,
+      })
+    : "";
   const reviewExamplesBlock =
     reviewExamples.length > 0
       ? interpolateTemplate(sections.review_examples_wrapper, {
@@ -580,6 +642,7 @@ function renderTransactionPrompt(
     systemPrompt: sections.system_prompt,
     userPrompt: interpolateTemplate(sections.user_prompt_template, {
       ...variables,
+      batch_context_section: batchContextBlock,
       review_examples_section: reviewExamplesBlock,
       review_context_section: reviewContextBlock,
     }),
@@ -709,6 +772,14 @@ export function buildPromptProfilePreview(
           portfolio_state: "{{portfolio_state}}",
           similar_account_history: "{{similar_account_history}}",
         },
+        {
+          phase: "{{batch_phase}}",
+          sourceBatchKey: "{{source_batch_key}}",
+          batchSummary: "{{batch_summary}}",
+          retrievalContext: "{{retrieval_context}}",
+          totalTransactions: "{{total_transactions}}",
+          trustedResolvedCount: "{{trusted_resolved_count}}",
+        },
         [
           {
             transaction: "{{example_transaction_metadata}}",
@@ -754,6 +825,14 @@ export function buildPromptProfilePreview(
           deterministic_hint: "{{deterministic_hint}}",
           portfolio_state: "{{portfolio_state}}",
           similar_account_history: "{{similar_account_history}}",
+        },
+        {
+          phase: "{{batch_phase}}",
+          sourceBatchKey: "{{source_batch_key}}",
+          batchSummary: "{{batch_summary}}",
+          retrievalContext: "{{retrieval_context}}",
+          totalTransactions: "{{total_transactions}}",
+          trustedResolvedCount: "{{trusted_resolved_count}}",
         },
         [
           {
@@ -833,6 +912,7 @@ export function renderTransactionAnalyzerPrompt(
     portfolioState: string;
     similarAccountHistory: string;
     reviewExamples: TransactionPromptExample[];
+    batchContext: TransactionPromptBatchContext | null;
     reviewContext: TransactionPromptReviewContext | null;
     promptOverrides?: Record<string, unknown> | null;
   },
@@ -864,7 +944,11 @@ export function renderTransactionAnalyzerPrompt(
       deterministic_hint: input.deterministicHint,
       portfolio_state: input.portfolioState,
       similar_account_history: input.similarAccountHistory,
+      batch_context_section: "",
+      review_examples_section: "",
+      review_context_section: "",
     },
+    input.batchContext,
     input.reviewExamples,
     input.reviewContext,
   );

@@ -82,6 +82,7 @@ import {
 } from "./job-state";
 import { loadPromptOverrides } from "./prompt-profiles";
 import { processRevolutSyncJob } from "./revolut-sync-job";
+import { processClassificationJob } from "./classification-batch-job";
 export {
   getPromptOverrides,
   listPromptProfiles,
@@ -169,6 +170,40 @@ import {
   normalizeStoredVectorLiteral,
   parseTransactionEmbeddingSeedRow,
 } from "./transaction-embedding-search";
+export {
+  fuseTransactionSearchResults,
+  TRANSACTION_SEARCH_KEYWORD_WEIGHT,
+  TRANSACTION_SEARCH_RRF_K,
+  TRANSACTION_SEARCH_SEMANTIC_WEIGHT,
+  type FusedTransactionSearchHit,
+  type TransactionKeywordCandidate,
+  type TransactionRerankedCandidate,
+  type TransactionSearchDirection,
+  type TransactionSearchReviewState,
+  type TransactionSemanticCandidate,
+} from "./transaction-search-fusion";
+import {
+  markTransactionSearchRowsStale,
+  processTransactionSearchIndexJob,
+  queueTransactionSearchIndexJob,
+} from "./transaction-search-index";
+export {
+  markTransactionSearchRowsStale,
+  processTransactionSearchIndexJob,
+  queueTransactionSearchIndexJob,
+  syncTransactionSearchIndex,
+  type QueueTransactionSearchIndexInput,
+  type SyncTransactionSearchIndexInput,
+} from "./transaction-search-index";
+import { searchTransactions } from "./transaction-search";
+export {
+  searchTransactions,
+  resolveTransactionSearchFilters,
+  type ParsedTransactionSearchQuery,
+  type ResolvedTransactionSearchFilters,
+  type SearchTransactionsResult,
+  type TransactionSearchResultRow,
+} from "./transaction-search";
 export {
   TRANSACTION_SELECT_COLUMN_NAMES,
   TRANSACTION_SELECT_COLUMNS,
@@ -488,6 +523,15 @@ export async function reanalyzeTransactionReview(
         beforeTransaction,
         afterTransaction,
       );
+      await markTransactionSearchRowsStale(sql, {
+        userId,
+        transactionIds: [afterTransaction.id],
+      });
+      await queueTransactionSearchIndexJob(sql, {
+        userId,
+        transactionIds: [afterTransaction.id],
+        trigger: reviewMode,
+      });
       auditEvent = createAuditEvent(
         input.sourceChannel,
         input.actorName,
@@ -564,6 +608,25 @@ class SqlFinanceRepository implements FinanceRepository {
 
   async getDataset(): Promise<DomainDataset> {
     return withSeededUserContext((sql) => loadDatasetForUser(sql, this.userId));
+  }
+
+  async searchTransactions(input: {
+    dataset: DomainDataset;
+    scope:
+      | { kind: "consolidated" }
+      | { kind: "entity"; entityId?: string }
+      | { kind: "account"; accountId?: string };
+    period: {
+      start: string;
+      end: string;
+      preset: "mtd" | "ytd" | "week" | "24m" | "custom";
+    };
+    referenceDate: string;
+    query: string;
+  }) {
+    return withSeededUserSession((sql) =>
+      searchTransactions(sql, this.userId, input),
+    );
   }
 
   async updateWorkspaceProfile(input: UpdateWorkspaceProfileInput) {
@@ -819,6 +882,15 @@ class SqlFinanceRepository implements FinanceRepository {
             notes: `Updated entity ${afterJson.displayName}.`,
           } as Record<string, unknown>)}
         `;
+        await markTransactionSearchRowsStale(sql, {
+          userId: this.userId,
+          entityIds: [input.entityId],
+        });
+        await queueTransactionSearchIndexJob(sql, {
+          userId: this.userId,
+          entityIds: [input.entityId],
+          trigger: "entity_update",
+        });
       }
 
       return {
@@ -1224,6 +1296,15 @@ class SqlFinanceRepository implements FinanceRepository {
             notes: `Updated account ${afterJson.displayName}.`,
           } as Record<string, unknown>)}
         `;
+        await markTransactionSearchRowsStale(sql, {
+          userId: this.userId,
+          accountIds: [input.accountId],
+        });
+        await queueTransactionSearchIndexJob(sql, {
+          userId: this.userId,
+          accountIds: [input.accountId],
+          trigger: "account_update",
+        });
       }
 
       return { applied: input.apply, accountId: input.accountId };
@@ -1626,6 +1707,15 @@ class SqlFinanceRepository implements FinanceRepository {
           trigger: "transaction_update",
           transactionId: afterTransaction.id,
           accountId: afterTransaction.accountId,
+        });
+        await markTransactionSearchRowsStale(sql, {
+          userId: this.userId,
+          transactionIds: [afterTransaction.id],
+        });
+        await queueTransactionSearchIndexJob(sql, {
+          userId: this.userId,
+          transactionIds: [afterTransaction.id],
+          trigger: "transaction_update",
         });
 
         if (input.createRuleFromTransaction) {
@@ -2803,128 +2893,28 @@ class SqlFinanceRepository implements FinanceRepository {
               if (!importBatchId) {
                 throw new Error("Classification job is missing importBatchId.");
               }
-
-              let latestDataset = await loadDatasetForUser(sql, this.userId);
               const promptOverrides = await getPromptOverridesCached();
-              const rows = await sql`
-                select ${transactionColumnsSql(sql)}
-                from public.transactions
-                where user_id = ${this.userId}
-                  and import_batch_id = ${importBatchId}
-                  and coalesce(llm_payload->>'analysisStatus', 'pending') = 'pending'
-                order by transaction_date asc, created_at asc
-              `;
-
-              let failedTransactions = 0;
-              let processedTransactions = 0;
-              const investmentAccountIds = new Set<string>();
               let currentJobPayload = { ...payloadJson };
-              const reportClassificationProgress = async (
-                transactionId: string | null,
-              ) => {
-                currentJobPayload = {
-                  ...currentJobPayload,
-                  progress: {
-                    totalTransactions: rows.length,
-                    processedTransactions,
-                    failedTransactions,
-                    lastTransactionId: transactionId,
-                    updatedAt: new Date().toISOString(),
-                  },
-                };
-                await updateRunningJobPayload(sql, job.id, currentJobPayload);
-              };
-
-              await reportClassificationProgress(null);
-              for (const row of rows) {
-                const transaction = mapFromSql<Transaction>(row);
-                const account = latestDataset.accounts.find(
-                  (candidate) => candidate.id === transaction.accountId,
-                );
-                if (!account) {
-                  throw new Error(
-                    `Account ${transaction.accountId} not found for classification.`,
-                  );
-                }
-                if (account.assetDomain === "investment") {
-                  investmentAccountIds.add(account.id);
-                }
-
-                try {
-                  const { afterTransaction } =
-                    await executeTransactionEnrichmentPipeline(
-                      sql,
-                      this.userId,
-                      {
-                        dataset: latestDataset,
-                        account,
-                        transaction,
-                        enrichmentOptions: { promptOverrides },
-                      },
-                    );
-                  latestDataset = replaceTransactionInDataset(
-                    latestDataset,
-                    afterTransaction,
-                  );
-                } catch (transactionError) {
-                  failedTransactions += 1;
-                  const failedUpdate = await sql`
-                    update public.transactions
-                    set needs_review = true,
-                        review_reason = ${
-                          transactionError instanceof Error
-                            ? transactionError.message
-                            : "Transaction enrichment failed."
-                        },
-                        llm_payload = ${serializeJson(sql, {
-                          ...(parseJsonColumn<Record<string, unknown>>(
-                            row.llm_payload ?? {},
-                          ) ?? {}),
-                          analysisStatus: "failed",
-                          explanation: null,
-                          model:
-                            account.assetDomain === "investment"
-                              ? getInvestmentTransactionClassifierConfig().model
-                              : getTransactionClassifierConfig().model,
-                          error:
-                            transactionError instanceof Error
-                              ? transactionError.message
-                              : "Transaction enrichment failed.",
-                          analyzedAt: new Date().toISOString(),
-                        })}::jsonb,
-                        updated_at = ${new Date().toISOString()}
-                    where id = ${transaction.id}
-                      and user_id = ${this.userId}
-                    returning ${transactionColumnsSql(sql)}
-                  `;
-                  latestDataset = replaceTransactionInDataset(
-                    latestDataset,
-                    mapFromSql<Transaction>(failedUpdate[0]),
-                  );
-                }
-
-                processedTransactions += 1;
-                await reportClassificationProgress(transaction.id);
-              }
-
-              await sql`
-                update public.import_batches
-                set classification_triggered_at = ${new Date().toISOString()}
-                where id = ${importBatchId}
-                  and user_id = ${this.userId}
-              `;
-              for (const accountId of investmentAccountIds) {
-                await queueJob(sql, "position_rebuild", {
+              const resultPayload = await processClassificationJob(
+                sql,
+                this.userId,
+                {
                   importBatchId,
-                  accountId,
-                  trigger: "classification_completion",
-                });
-              }
+                  payloadJson,
+                  promptOverrides,
+                  onProgress: async (nextPayloadJson) => {
+                    currentJobPayload = nextPayloadJson;
+                    await updateRunningJobPayload(
+                      sql,
+                      job.id,
+                      currentJobPayload,
+                    );
+                  },
+                },
+              );
               await completeJob(sql, job.id, startedAt, {
                 ...currentJobPayload,
-                processedTransactions: rows.length,
-                failedTransactions,
-                queuedFollowUpPositionRebuilds: investmentAccountIds.size,
+                ...resultPayload,
               });
               processedJobs.push({
                 id: job.id,
@@ -2947,6 +2937,24 @@ class SqlFinanceRepository implements FinanceRepository {
               processedJobs.push({
                 id: job.id,
                 jobType: "bank_sync",
+                status: "completed",
+              });
+              continue;
+            }
+
+            if (job.job_type === "transaction_search_index") {
+              const resultPayload = await processTransactionSearchIndexJob(
+                sql,
+                this.userId,
+                payloadJson,
+              );
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                ...resultPayload,
+              });
+              processedJobs.push({
+                id: job.id,
+                jobType: "transaction_search_index",
                 status: "completed",
               });
               continue;

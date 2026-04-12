@@ -27,6 +27,10 @@ import {
 } from "./revolut-sync-support";
 import { mapFromSql } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
+import {
+  markTransactionSearchRowsStale,
+  queueTransactionSearchIndexJob,
+} from "./transaction-search-index";
 import { transactionColumnsSql } from "./transaction-columns";
 import { updateTransactionRecord } from "./transaction-record";
 
@@ -239,6 +243,7 @@ export async function processRevolutSyncJob(
       const newTransactionsByAccount = new Map<string, Transaction[]>();
       let latestSeenCursor = lastCursorCreatedAt;
       let mutatedExistingRows = 0;
+      const mutatedExistingTransactionIds: string[] = [];
 
       const chronologicalTransactions = [...fetchedTransactions].sort(
         (left, right) => left.created_at.localeCompare(right.created_at),
@@ -303,6 +308,7 @@ export async function processRevolutSyncJob(
                 returning: false,
               });
               mutatedExistingRows += 1;
+              mutatedExistingTransactionIds.push(existingTransaction.id);
             } else {
               const accountTransactions =
                 newTransactionsByAccount.get(account.id) ?? [];
@@ -324,6 +330,7 @@ export async function processRevolutSyncJob(
               returning: false,
             });
             mutatedExistingRows += 1;
+            mutatedExistingTransactionIds.push(existingTransaction.id);
           }
         }
       }
@@ -363,6 +370,17 @@ export async function processRevolutSyncJob(
       if (mutatedExistingRows > 0 && insertedTransactions === 0) {
         await queueJob(sql, "metric_refresh", {
           connectionId,
+          trigger: "bank_sync_update",
+        });
+      }
+      if (mutatedExistingTransactionIds.length > 0) {
+        await markTransactionSearchRowsStale(sql, {
+          userId,
+          transactionIds: mutatedExistingTransactionIds,
+        });
+        await queueTransactionSearchIndexJob(sql, {
+          userId,
+          transactionIds: mutatedExistingTransactionIds,
           trigger: "bank_sync_update",
         });
       }

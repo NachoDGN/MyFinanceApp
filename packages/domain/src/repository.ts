@@ -34,6 +34,8 @@ import type {
   RecordManualInvestmentValuationInput,
   ResetWorkspaceInput,
   ResetWorkspaceResult,
+  PeriodSelection,
+  Scope,
   Transaction,
   UpdateAccountInput,
   UpdateManualInvestmentInput,
@@ -119,6 +121,62 @@ export interface SpreadsheetFileValidationResult {
 
 export interface FinanceRepository {
   getDataset(): Promise<DomainDataset>;
+  searchTransactions(input: {
+    dataset: DomainDataset;
+    scope: Scope;
+    period: PeriodSelection;
+    referenceDate: string;
+    query: string;
+  }): Promise<{
+    query: string;
+    rows: Array<{
+      transaction: Transaction;
+      originalText: string;
+      contextualizedText: string;
+      documentSummary: string;
+      searchDiagnostics: {
+        sourceBatchKey: string;
+        hybridScore: number;
+        semanticDistance: number | null;
+        rerankScore: number | null;
+        bm25Score: number | null;
+        semanticRank: number | null;
+        rerankRank: number | null;
+        keywordRank: number | null;
+        matchedBy: Array<"semantic" | "keyword">;
+        direction: "debit" | "credit" | "neutral";
+        reviewState: "pending_enrichment" | "needs_review" | "resolved";
+      } | null;
+    }>;
+    semanticCandidateCount: number;
+    keywordCandidateCount: number;
+    warnings: string[];
+    filters: {
+      accountIds: string[];
+      entityIds: string[];
+      accountTypes: Array<
+        | "checking"
+        | "savings"
+        | "company_bank"
+        | "brokerage_cash"
+        | "brokerage_account"
+        | "credit_card"
+        | "other"
+      >;
+      entityKinds: Array<"personal" | "company">;
+      reviewStates: Array<
+        "pending_enrichment" | "needs_review" | "resolved" | "unresolved"
+      >;
+      directions: Array<"credit" | "debit">;
+      dateStart: string | null;
+      dateEnd: string | null;
+      usedScopeFallback: boolean;
+      usedPeriodFallback: boolean;
+      hasExplicitScopeConstraint: boolean;
+      hasExplicitTimeConstraint: boolean;
+      explanation: string;
+    };
+  }>;
   updateWorkspaceProfile(
     input: UpdateWorkspaceProfileInput,
   ): Promise<{ applied: boolean; profileId: string }>;
