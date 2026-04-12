@@ -14,7 +14,15 @@ import {
 } from "./primitives";
 
 function describePeriodLabel(period: string) {
-  return period === "ytd" ? "YTD" : "MTD";
+  if (period === "ytd") return "YTD";
+  if (period === "custom") return "Custom Range";
+  return "MTD";
+}
+
+function describeComparisonLabel(period: string) {
+  if (period === "ytd") return "year-start";
+  if (period === "custom") return "prior window";
+  return "month-start";
 }
 
 function metricDirection(
@@ -55,11 +63,22 @@ export function DashboardView({
   const unrealizedMetric = metricMap.get("portfolio_unrealized_pnl_current");
   const netWorthMetric = metricMap.get("net_worth_current");
   const periodLabel = describePeriodLabel(state.period);
-  const comparisonLabel = state.period === "ytd" ? "year-start" : "month-start";
+  const comparisonLabel = describeComparisonLabel(state.period);
 
   const monthlySeries = model.summary.monthlySeries.slice(-5);
   const chartFrom = (key: "incomeEur" | "spendingEur" | "operatingNetEur") =>
-    monthlySeries.map((row) => Math.abs(Number(row[key])));
+    monthlySeries.map((row) =>
+      Math.abs(
+        Number(
+          convertBaseEurToDisplayAmount(
+            model.dataset,
+            row[key],
+            model.currency,
+            model.referenceDate,
+          ) ?? row[key],
+        ),
+      ),
+    );
   const metricCards: Array<{
     label: string;
     metric: DashboardModel["summary"]["metrics"][number] | undefined;
@@ -137,7 +156,7 @@ export function DashboardView({
         model.currency,
         model.referenceDate,
       ),
-      meta: "Current month uncategorized exposure",
+      meta: "Selected-period uncategorized exposure",
     },
     {
       label: "Stale accounts",

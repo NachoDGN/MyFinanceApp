@@ -14,6 +14,7 @@ import {
   buildCryptoBalanceRows,
   buildLiveHoldingRows,
   filterTransactionsByPeriod,
+  filterTransactionsByReferenceDate,
   filterTransactionsByScope,
   getLatestAccountBalances,
   getLatestInvestmentCashBalances,
@@ -27,11 +28,13 @@ import {
   isUnmatchedCreditCardSettlementTransaction,
   needsTransactionManualReview,
   resolveFxRate,
+  resolveScopeQuoteFreshness,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   shiftIsoDate,
   startOfMonthIso,
   startOfTrailingMonthsIso,
+  summarizeQuoteFreshness,
   todayIso,
 } from "@myfinance/domain";
 import { metricRegistry } from "./registry";
@@ -221,14 +224,14 @@ function shiftMonthIso(value: string, months: number) {
   return date.toISOString().slice(0, 10);
 }
 
-function buildTrailingMonthlyFlowSeries(
+function buildMonthlyFlowSeries(
   dataset: DomainDataset,
   scope: Scope,
-  referenceDate: string,
-  monthCount: number,
+  startDate: string,
+  endDate: string,
 ) {
-  const seriesStart = startOfTrailingMonthsIso(referenceDate, monthCount);
-  const seriesEnd = startOfMonthIso(referenceDate);
+  const seriesStart = startOfMonthIso(startDate);
+  const seriesEnd = startOfMonthIso(endDate);
   const monthRows = new Map<
     string,
     {
@@ -250,11 +253,13 @@ function buildTrailingMonthlyFlowSeries(
     });
   }
 
-  const resolvedTransactions = filterTransactionsByScope(dataset, scope).filter(
+  const resolvedTransactions = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(dataset, scope),
+    endDate,
+  ).filter(
     (transaction) =>
       isTransactionResolvedForAnalytics(transaction) &&
-      transaction.transactionDate >= seriesStart &&
-      transaction.transactionDate <= referenceDate,
+      transaction.transactionDate >= startDate,
   );
 
   for (const transaction of resolvedTransactions) {
@@ -281,14 +286,28 @@ function buildTrailingMonthlyFlowSeries(
   }));
 }
 
-function buildTrailingMonthlyIncomeComposition(
+function buildTrailingMonthlyFlowSeries(
   dataset: DomainDataset,
   scope: Scope,
   referenceDate: string,
   monthCount: number,
 ) {
-  const seriesStart = startOfTrailingMonthsIso(referenceDate, monthCount);
-  const seriesEnd = startOfMonthIso(referenceDate);
+  return buildMonthlyFlowSeries(
+    dataset,
+    scope,
+    startOfTrailingMonthsIso(referenceDate, monthCount),
+    referenceDate,
+  );
+}
+
+function buildMonthlyIncomeComposition(
+  dataset: DomainDataset,
+  scope: Scope,
+  startDate: string,
+  endDate: string,
+) {
+  const seriesStart = startOfMonthIso(startDate);
+  const seriesEnd = startOfMonthIso(endDate);
   const monthRows = new Map<
     string,
     {
@@ -310,11 +329,13 @@ function buildTrailingMonthlyIncomeComposition(
     });
   }
 
-  const resolvedTransactions = filterTransactionsByScope(dataset, scope).filter(
+  const resolvedTransactions = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(dataset, scope),
+    endDate,
+  ).filter(
     (transaction) =>
       isTransactionResolvedForAnalytics(transaction) &&
-      transaction.transactionDate >= seriesStart &&
-      transaction.transactionDate <= referenceDate,
+      transaction.transactionDate >= startDate,
   );
 
   for (const transaction of resolvedTransactions) {
@@ -341,6 +362,20 @@ function buildTrailingMonthlyIncomeComposition(
       .plus(row.investmentIncomeEur)
       .toFixed(2),
   }));
+}
+
+function buildTrailingMonthlyIncomeComposition(
+  dataset: DomainDataset,
+  scope: Scope,
+  referenceDate: string,
+  monthCount: number,
+) {
+  return buildMonthlyIncomeComposition(
+    dataset,
+    scope,
+    startOfTrailingMonthsIso(referenceDate, monthCount),
+    referenceDate,
+  );
 }
 
 function currentCashTotal(
@@ -479,7 +514,10 @@ function qualitySummary(
     referenceDate,
   }),
 ): QualitySummary {
-  const scopedTransactions = filterTransactionsByScope(dataset, scope);
+  const scopedTransactions = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(dataset, scope),
+    referenceDate,
+  );
   const scopedAccounts =
     scope.kind === "consolidated"
       ? dataset.accounts
@@ -538,9 +576,7 @@ function qualitySummary(
       latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
     })),
     latestDataDateByScope: getScopeLatestDate(dataset, scope, referenceDate),
-    priceFreshness: dataset.securityPrices.every((price) => price.isDelayed)
-      ? "delayed"
-      : "fresh",
+    priceFreshness: resolveScopeQuoteFreshness(dataset, scope, referenceDate),
   };
 }
 
@@ -848,13 +884,15 @@ export function buildDashboardSummary(
     }),
   );
 
-  const monthLimit = period.preset === "24m" ? 24 : 6;
-  const monthlySeries = buildTrailingMonthlyFlowSeries(
-    dataset,
-    input.scope,
-    referenceDate,
-    monthLimit,
-  );
+  const monthlySeries =
+    period.preset === "custom"
+      ? buildMonthlyFlowSeries(dataset, input.scope, period.start, period.end)
+      : buildTrailingMonthlyFlowSeries(
+          dataset,
+          input.scope,
+          referenceDate,
+          period.preset === "24m" ? 24 : 6,
+        );
 
   const scopedTransactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, input.scope),
@@ -1063,13 +1101,10 @@ function buildHoldingsSnapshot(
     scope,
     holdings,
     cryptoBalances,
-    quoteFreshness: quoteStates.includes("fresh")
-      ? ("fresh" as const)
-      : quoteStates.includes("delayed")
-        ? ("delayed" as const)
-        : quoteStates.includes("stale")
-          ? ("stale" as const)
-          : ("missing" as const),
+    quoteFreshness:
+      quoteStates.length === 0
+        ? ("fresh" as const)
+        : summarizeQuoteFreshness(quoteStates),
     brokerageCashEur,
     generatedAt: new Date().toISOString(),
   };
@@ -1281,12 +1316,20 @@ export function buildIncomeReadModel(
     sourceRows,
     investmentIncomeRows,
     trailingThreeMonthAverage,
-    monthlyIncomeComposition: buildTrailingMonthlyIncomeComposition(
-      dataset,
-      input.scope,
-      context.referenceDate,
-      6,
-    ),
+    monthlyIncomeComposition:
+      summary.period.preset === "custom"
+        ? buildMonthlyIncomeComposition(
+            dataset,
+            input.scope,
+            summary.period.start,
+            summary.period.end,
+          )
+        : buildTrailingMonthlyIncomeComposition(
+            dataset,
+            input.scope,
+            context.referenceDate,
+            summary.monthlySeries.length,
+          ),
     topSourceShare,
     activeSourceCount: sourceRows.length,
     ytdIncomeTotal: flowMetric(dataset, input.scope, ytdPeriod, "income"),

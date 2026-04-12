@@ -128,6 +128,12 @@ function formatStatementDateParts(value: string) {
   };
 }
 
+function describePeriodPill(period: string) {
+  if (period === "ytd") return "Year to date";
+  if (period === "custom") return "Custom range";
+  return "Month to date";
+}
+
 export default async function SpendingPage({
   searchParams,
 }: {
@@ -137,8 +143,18 @@ export default async function SpendingPage({
   const trendRows = model.trendSeries;
   const chartWidth = 920;
   const chartHeight = 260;
+  const trendValues = trendRows.map((row) =>
+    Number(
+      convertBaseEurToDisplayAmount(
+        model.dataset,
+        row.spendingEur,
+        model.currency,
+        model.referenceDate,
+      ) ?? row.spendingEur,
+    ),
+  );
   const chartPoints = buildTrendPoints(
-    trendRows.map((row) => Number(row.spendingEur)),
+    trendValues,
     chartWidth,
     chartHeight,
   );
@@ -206,9 +222,7 @@ export default async function SpendingPage({
           </div>
           <div className="spending-hero-meta">
             <span className="spending-hero-pill">
-              {model.navigationState.period === "ytd"
-                ? "Year to date"
-                : "Month to date"}
+              {describePeriodPill(model.navigationState.period)}
             </span>
             <span className="spending-hero-note">
               {trendRows.length > 0

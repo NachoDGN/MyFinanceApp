@@ -7,6 +7,7 @@ import type {
   DomainDataset,
   HoldingRow,
   PeriodSelection,
+  PriceFreshness,
   SecurityPrice,
   Scope,
   Transaction,
@@ -398,6 +399,13 @@ export function filterTransactionsByPeriod(
     (row) =>
       row.transactionDate >= period.start && row.transactionDate <= period.end,
   );
+}
+
+export function filterTransactionsByReferenceDate(
+  transactions: Transaction[],
+  referenceDate: string,
+) {
+  return transactions.filter((row) => row.transactionDate <= referenceDate);
 }
 
 export function resolveFxRate(
@@ -858,6 +866,36 @@ export function buildCryptoBalanceRows(
       (left, right) =>
         Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
     );
+}
+
+export function summarizeQuoteFreshness(
+  states: PriceFreshness[],
+): PriceFreshness {
+  if (states.includes("missing")) return "missing";
+  if (states.includes("stale")) return "stale";
+  if (states.includes("delayed")) return "delayed";
+  return "fresh";
+}
+
+export function resolveScopeQuoteFreshness(
+  dataset: DomainDataset,
+  scope: Scope,
+  asOfDate = todayIso(),
+) {
+  const quoteStates = [
+    ...buildLiveHoldingRows(dataset, scope, asOfDate).map(
+      (row) => row.quoteFreshness,
+    ),
+    ...buildCryptoBalanceRows(dataset, scope, asOfDate).map(
+      (row) => row.quoteFreshness,
+    ),
+  ];
+
+  if (quoteStates.length === 0) {
+    return "fresh" as const;
+  }
+
+  return summarizeQuoteFreshness(quoteStates);
 }
 
 function latestSecurityPrice(

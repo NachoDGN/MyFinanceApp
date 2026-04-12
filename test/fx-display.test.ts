@@ -90,6 +90,15 @@ test("historical transaction display conversion uses the transaction date instea
     ),
     null,
   );
+  assert.equal(
+    formatBaseEurAmountForDisplay(
+      sparseDataset,
+      "2598.00",
+      "USD",
+      "2026-03-04",
+    ),
+    "$2,598.00",
+  );
 });
 
 test("display conversion prefers the freshest reverse FX quote when the direct pair is stale", () => {
@@ -238,6 +247,101 @@ test("investments page unrealized KPI uses the canonical metric display amount",
 
   assert.equal(model.metrics.unrealized.valueDisplay, "100.00");
   assert.equal(unrealizedCard?.value, "$100.00");
+});
+
+test("investment KPI spark bars use display-currency magnitudes", () => {
+  const account = createInvestmentAccount({
+    id: "brokerage-fx-spark",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createInvestmentTransaction(account, {
+        id: "buy-spark",
+        transactionDate: "2026-04-01",
+        postedDate: "2026-04-01",
+        amountOriginal: "-100.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-100.00",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-spark",
+        quantity: "1.00000000",
+        needsReview: false,
+        reviewReason: null,
+        classificationStatus: "rule",
+        classificationSource: "user_rule",
+        classificationConfidence: "1.00",
+        descriptionRaw: "Buy Spark",
+        descriptionClean: "BUY SPARK",
+      }),
+    ],
+    securities: [
+      createSecurity({
+        id: "security-spark",
+        displaySymbol: "SPRK",
+        providerSymbol: "SPRK",
+        canonicalSymbol: "SPRK",
+        quoteCurrency: "USD",
+      }),
+    ],
+    securityPrices: [
+      createSecurityPrice({
+        securityId: "security-spark",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T15:00:00Z",
+        price: "300.00",
+        currency: "USD",
+      }),
+    ],
+    fxRates: [
+      createFxRate({
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T12:00:00Z",
+        rate: "0.500000",
+        sourceName: "ecb",
+      }),
+    ],
+  });
+
+  const period = resolvePeriodSelection({
+    preset: "mtd",
+    referenceDate: "2026-04-03",
+  });
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "USD",
+    period,
+    referenceDate: "2026-04-03",
+  });
+  const pageModel = buildInvestmentsPageModel(
+    {
+      ...model,
+      dataset,
+      scopeParam: "consolidated",
+      currency: "USD",
+      referenceDate: "2026-04-03",
+      period,
+      navigationState: {
+        scopeParam: "consolidated",
+        currency: "USD",
+        period: "mtd",
+        referenceDate: "2026-04-03",
+      },
+      scopeOptions: [{ value: "consolidated", label: "Consolidated" }],
+    },
+    {},
+  );
+  const marketValueCard = pageModel.metricCards.find(
+    (card) => card.label === "Portfolio Market Value",
+  );
+  const unrealizedCard = pageModel.metricCards.find(
+    (card) => card.label === "Unrealized Gain",
+  );
+
+  assert.deepEqual(marketValueCard?.chartValues, [300]);
+  assert.deepEqual(unrealizedCard?.chartValues, [100]);
 });
 
 test("holding display metrics preserve canonical unrealized returns across display currencies", () => {

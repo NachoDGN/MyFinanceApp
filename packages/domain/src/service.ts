@@ -34,10 +34,12 @@ import {
   buildCryptoBalanceRows,
   buildLiveHoldingRows,
   filterTransactionsByPeriod,
+  filterTransactionsByReferenceDate,
   filterTransactionsByScope,
   getLatestAccountBalances,
   getLatestInvestmentCashBalances,
   getScopeLatestDate,
+  resolveScopeQuoteFreshness,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   todayIso,
@@ -76,7 +78,10 @@ function buildQualitySummary(
   const referenceDate = options.referenceDate ?? todayIso();
   const period =
     options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
-  const scopedTransactions = filterTransactionsByScope(dataset, scope);
+  const scopedTransactions = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(dataset, scope),
+    referenceDate,
+  );
   const scopedAccounts =
     scope.kind === "consolidated"
       ? dataset.accounts
@@ -127,9 +132,7 @@ function buildQualitySummary(
       latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
     })),
     latestDataDateByScope: getScopeLatestDate(dataset, scope, referenceDate),
-    priceFreshness: dataset.securityPrices.every((row) => row.isDelayed)
-      ? "delayed"
-      : "fresh",
+    priceFreshness: resolveScopeQuoteFreshness(dataset, scope, referenceDate),
   } as const;
 }
 
@@ -174,11 +177,15 @@ export class FinanceDomainService {
     const referenceDate = options.referenceDate ?? todayIso();
     const period =
       options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
-    const transactions = [...filterTransactionsByScope(dataset, scope)].sort(
-      (a, b) =>
-        `${b.transactionDate}${b.createdAt}`.localeCompare(
-          `${a.transactionDate}${a.createdAt}`,
-        ),
+    const transactions = [
+      ...filterTransactionsByReferenceDate(
+        filterTransactionsByScope(dataset, scope),
+        referenceDate,
+      ),
+    ].sort((a, b) =>
+      `${b.transactionDate}${b.createdAt}`.localeCompare(
+        `${a.transactionDate}${a.createdAt}`,
+      ),
     );
     return {
       schemaVersion: "v1",

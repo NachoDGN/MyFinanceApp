@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildDashboardReadModel,
   buildDashboardSummary,
+  buildIncomeReadModel,
   buildInvestmentsReadModel,
   buildMetricResult,
   buildSpendingReadModel,
@@ -6968,6 +6969,224 @@ test("transaction list quality respects the supplied reference date and period",
 
   assert.deepEqual(ledger.period, period);
   assert.deepEqual(ledger.quality, summary.quality);
+});
+
+test("historical ledger excludes future transactions and review counts beyond the as-of date", async () => {
+  const account = createAccount({
+    id: "historical-ledger-cutoff-account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "past-review-row",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-120.00",
+        amountBaseEur: "-120.00",
+        categoryCode: "uncategorized_expense",
+        needsReview: true,
+        reviewReason: "Needs review.",
+      }),
+      createTransaction({
+        id: "future-review-row",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-04-09",
+        postedDate: "2026-04-09",
+        amountOriginal: "-80.00",
+        amountBaseEur: "-80.00",
+        categoryCode: "uncategorized_expense",
+        needsReview: true,
+        reviewReason: "Future review row.",
+      }),
+    ],
+  });
+  const service = new FinanceDomainService({
+    getDataset: async () => dataset,
+  });
+  const referenceDate = "2026-04-03";
+  const period = resolvePeriodSelection({
+    preset: "mtd",
+    referenceDate,
+  });
+  const summary = buildDashboardSummary(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period,
+    referenceDate,
+  });
+  const ledger = await service.listTransactions(
+    { kind: "consolidated" },
+    {
+      referenceDate,
+      period,
+    },
+  );
+
+  assert.equal(ledger.totalCount, 1);
+  assert.equal(ledger.transactions[0]?.id, "past-review-row");
+  assert.equal(ledger.quality.pendingReviewCount, 1);
+  assert.equal(summary.quality.pendingReviewCount, 1);
+  assert.equal(summary.quality.unclassifiedAmountMtdEur, "120.00");
+  assert.deepEqual(ledger.quality, summary.quality);
+});
+
+test("custom dashboard and income series stay inside the requested custom range", () => {
+  const account = createAccount({
+    id: "custom-range-series-account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "custom-jan-income",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-01-10",
+        postedDate: "2026-01-10",
+        amountOriginal: "100.00",
+        amountBaseEur: "100.00",
+        transactionClass: "income",
+        categoryCode: "salary",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "custom-feb-income",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-02-10",
+        postedDate: "2026-02-10",
+        amountOriginal: "200.00",
+        amountBaseEur: "200.00",
+        transactionClass: "income",
+        categoryCode: "salary",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "custom-mar-income",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-10",
+        postedDate: "2026-03-10",
+        amountOriginal: "300.00",
+        amountBaseEur: "300.00",
+        transactionClass: "income",
+        categoryCode: "salary",
+        needsReview: false,
+      }),
+    ],
+  });
+  const period = resolvePeriodSelection({
+    preset: "custom",
+    start: "2026-01-01",
+    end: "2026-02-28",
+    referenceDate: "2026-04-11",
+  });
+  const summary = buildDashboardSummary(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period,
+    referenceDate: "2026-04-11",
+  });
+  const incomeModel = buildIncomeReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period,
+    referenceDate: "2026-04-11",
+  });
+
+  assert.deepEqual(
+    summary.monthlySeries.map((row) => row.month),
+    ["2026-01-01", "2026-02-01"],
+  );
+  assert.deepEqual(
+    incomeModel.monthlyIncomeComposition.map((row) => row.month),
+    ["2026-01-01", "2026-02-01"],
+  );
+});
+
+test("quote freshness follows the scoped holdings state instead of the global price table", () => {
+  const investmentAccount = createInvestmentAccount({
+    id: "freshness-scope-broker",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    transactions: [
+      createInvestmentTransaction(investmentAccount, {
+        id: "stale-priced-buy",
+        transactionDate: "2026-03-15",
+        postedDate: "2026-03-15",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-100.00",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId: "security-stale-scope",
+        quantity: "1.00000000",
+        unitPriceOriginal: "100.00000000",
+        needsReview: false,
+        reviewReason: null,
+        classificationStatus: "rule",
+        classificationSource: "user_rule",
+        classificationConfidence: "1.00",
+      }),
+    ],
+    securities: [
+      createSecurity({
+        id: "security-stale-scope",
+        displaySymbol: "STALE",
+        providerSymbol: "STALE",
+        canonicalSymbol: "STALE",
+        quoteCurrency: "EUR",
+      }),
+      createSecurity({
+        id: "security-fresh-unscoped",
+        displaySymbol: "FRESH",
+        providerSymbol: "FRESH",
+        canonicalSymbol: "FRESH",
+        quoteCurrency: "EUR",
+      }),
+    ],
+    securityPrices: [
+      createSecurityPrice({
+        securityId: "security-stale-scope",
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T15:00:00Z",
+        price: "90.00",
+        currency: "EUR",
+        isDelayed: true,
+      }),
+      createSecurityPrice({
+        securityId: "security-fresh-unscoped",
+        priceDate: "2026-04-11",
+        quoteTimestamp: "2026-04-11T15:00:00Z",
+        price: "50.00",
+        currency: "EUR",
+        isDelayed: false,
+      }),
+    ],
+  });
+
+  const summary = buildDashboardSummary(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    referenceDate: "2026-04-11",
+  });
+  const investments = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    referenceDate: "2026-04-11",
+  });
+
+  assert.equal(summary.quality.priceFreshness, "stale");
+  assert.equal(investments.holdings.quoteFreshness, "stale");
 });
 
 test("account list balances respect the supplied reference date", async () => {

@@ -1,6 +1,6 @@
 import { Decimal } from "decimal.js";
 
-import type { DomainDataset } from "@myfinance/domain";
+import { resolveFxRate, type DomainDataset } from "@myfinance/domain";
 import { formatCurrency } from "./formatters";
 
 function resolveStoredFxRate(
@@ -95,13 +95,19 @@ export function formatBaseEurAmountForDisplay(
   displayCurrency: string,
   effectiveDate: string,
 ) {
+  if (amountBaseEur === null || amountBaseEur === undefined) {
+    return formatCurrency(null, displayCurrency);
+  }
+
+  const converted =
+    displayCurrency === "EUR"
+      ? new Decimal(amountBaseEur).toFixed(2)
+      : new Decimal(amountBaseEur)
+          .mul(resolveFxRate(dataset, "EUR", displayCurrency, effectiveDate))
+          .toFixed(2);
+
   return formatCurrency(
-    convertBaseEurToDisplayAmount(
-      dataset,
-      amountBaseEur,
-      displayCurrency,
-      effectiveDate,
-    ),
+    converted,
     displayCurrency,
   );
 }

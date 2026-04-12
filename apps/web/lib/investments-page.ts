@@ -348,6 +348,19 @@ function toDisplayAmount(
   );
 }
 
+function toDisplayChartValue(
+  model: InvestmentsModel,
+  amount: string | null | undefined,
+  effectiveDate = model.referenceDate,
+) {
+  return Number(
+    toDisplayAmount(model, amount, effectiveDate) ??
+      toDisplayAmount(model, amount) ??
+      amount ??
+      0,
+  );
+}
+
 function safePercent(numerator: Decimal, denominator: Decimal) {
   return denominator.eq(0) ? null : numerator.div(denominator).mul(100).toFixed(2);
 }
@@ -763,10 +776,10 @@ export function buildInvestmentsPageModel(
         subtitle: `${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs ${comparisonLabel}`,
         chartValues: [
           ...model.holdings.holdings.map((holding) =>
-            Number(holding.currentValueEur ?? 0),
+            toDisplayChartValue(model, holding.currentValueEur),
           ),
           ...cryptoBalances.map((balance) =>
-            Number(balance.currentValueEur ?? 0),
+            toDisplayChartValue(model, balance.currentValueEur),
           ),
         ],
       },
@@ -799,7 +812,7 @@ export function buildInvestmentsPageModel(
         )} interest`,
         chartValues: model.investmentRows
           .filter((row) => ["dividend", "interest"].includes(row.transactionClass))
-          .map((row) => Number(row.amountBaseEur)),
+          .map((row) => toDisplayChartValue(model, row.amountBaseEur, row.transactionDate)),
       },
       {
         label: "Brokerage Cash",
@@ -813,10 +826,10 @@ export function buildInvestmentsPageModel(
         ),
         subtitle: "Latest broker cash balance",
         chartValues: [
-          Number(model.holdings.brokerageCashEur),
-          Number(model.dividendsPeriod),
-          Number(model.interestPeriod),
-          Number(model.netContributionsPeriod),
+          toDisplayChartValue(model, model.holdings.brokerageCashEur),
+          toDisplayChartValue(model, model.dividendsPeriod),
+          toDisplayChartValue(model, model.interestPeriod),
+          toDisplayChartValue(model, model.netContributionsPeriod),
         ],
       },
     ],
