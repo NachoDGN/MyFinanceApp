@@ -240,7 +240,7 @@ test("investments page unrealized KPI uses the canonical metric display amount",
   assert.equal(unrealizedCard?.value, "$100.00");
 });
 
-test("holding display metrics replay open trade cost basis in the selected currency", () => {
+test("holding display metrics preserve canonical unrealized returns across display currencies", () => {
   const investmentAccount = createAccount({
     id: "broker-samsung-summary",
     assetDomain: "investment",
@@ -392,10 +392,10 @@ test("holding display metrics replay open trade cost basis in the selected curre
   );
   const samsung = metrics.values().next().value;
 
-  assert.equal(samsung?.avgCostDisplay, "2888.59");
+  assert.equal(samsung?.avgCostDisplay, "2679.54");
   assert.equal(samsung?.currentValueDisplay, "6044.00");
-  assert.equal(samsung?.unrealizedDisplay, "266.83");
-  assert.equal(samsung?.unrealizedDisplayPercent, "4.62");
+  assert.equal(samsung?.unrealizedDisplay, "684.94");
+  assert.equal(samsung?.unrealizedDisplayPercent, "12.78");
 });
 
 test("holding display metrics fall back to reference-date FX when historical trade FX is missing", () => {
@@ -513,10 +513,10 @@ test("holding display metrics fall back to reference-date FX when historical tra
   assert.equal(amd?.openCostBasisDisplay, "98.65");
   assert.equal(amd?.currentValueDisplay, "217.50");
   assert.equal(amd?.unrealizedDisplay, "118.85");
-  assert.equal(amd?.unrealizedDisplayPercent, "120.48");
+  assert.equal(amd?.unrealizedDisplayPercent, "120.47");
 });
 
-test("manual fund display metrics use matched funding transfers in the display currency", () => {
+test("manual fund display metrics preserve canonical unrealized returns across display currencies", () => {
   const cashAccount = createAccount({
     id: "revolut-company-usd",
     accountType: "company_bank",
@@ -537,8 +537,8 @@ test("manual fund display metrics use matched funding transfers in the display c
         postedDate: "2025-10-14",
         amountOriginal: "-2500.00",
         currencyOriginal: "USD",
-        amountBaseEur: "-2180.00",
-        fxRateToEur: "0.87200000",
+        amountBaseEur: "-2426.88",
+        fxRateToEur: "0.97075200",
         descriptionRaw: "To USD SP:b9611010-6e70-49bd-b353-0f959610715d",
         descriptionClean: "TO USD SP:B9611010-6E70-49BD-B353-0F959610715D",
         transactionClass: "transfer_internal",
@@ -552,8 +552,8 @@ test("manual fund display metrics use matched funding transfers in the display c
         postedDate: "2026-03-31",
         amountOriginal: "-20000.00",
         currencyOriginal: "USD",
-        amountBaseEur: "-17097.60",
-        fxRateToEur: "0.85488000",
+        amountBaseEur: "-19415.00",
+        fxRateToEur: "0.97075000",
         descriptionRaw: "To Inversión riesgo bajo",
         descriptionClean: "TO INVERSION RIESGO BAJO",
         transactionClass: "transfer_internal",
@@ -621,8 +621,129 @@ test("manual fund display metrics use matched funding transfers in the display c
   );
   const fund = metrics.values().next().value;
 
-  assert.equal(fund?.openCostBasisDisplay, "22500.00");
+  assert.equal(fund?.openCostBasisDisplay, "25609.56");
   assert.equal(fund?.currentValueDisplay, "22765.66");
-  assert.equal(fund?.unrealizedDisplay, "265.66");
-  assert.equal(fund?.unrealizedDisplayPercent, "1.18");
+  assert.equal(fund?.unrealizedDisplay, "-2843.89");
+  assert.equal(fund?.unrealizedDisplayPercent, "-11.10");
+});
+
+test("manual fund unrealized return direction stays the same across EUR and USD display modes", () => {
+  const cashAccount = createAccount({
+    id: "revolut-company-usd-parity",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    institutionName: "Revolut Business",
+    displayName: "Revolut USD Main",
+    defaultCurrency: "USD",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount],
+    transactions: [
+      createTransaction({
+        id: "fund-october-parity",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2025-10-14",
+        postedDate: "2025-10-14",
+        amountOriginal: "-2500.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-2426.88",
+        fxRateToEur: "0.97075200",
+        descriptionRaw: "To USD SP:b9611010-6e70-49bd-b353-0f959610715d",
+        descriptionClean: "TO USD SP:B9611010-6E70-49BD-B353-0F959610715D",
+        transactionClass: "transfer_internal",
+      }),
+      createTransaction({
+        id: "fund-march-parity",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-03-31",
+        postedDate: "2026-03-31",
+        amountOriginal: "-20000.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-19415.00",
+        fxRateToEur: "0.97075000",
+        descriptionRaw: "To Inversión riesgo bajo",
+        descriptionClean: "TO INVERSION RIESGO BAJO",
+        transactionClass: "transfer_internal",
+      }),
+    ],
+    manualInvestments: [
+      {
+        id: "manual-bond-fund-parity",
+        userId: cashAccount.userId,
+        entityId: cashAccount.entityId,
+        fundingAccountId: cashAccount.id,
+        label: "Inversión en bonos",
+        matcherText:
+          "Inversión riesgo bajo, SP:b9611010-6e70-49bd-b353-0f959610715d",
+        note: null,
+        createdAt: "2026-04-11T08:00:00Z",
+        updatedAt: "2026-04-11T08:00:00Z",
+      },
+    ],
+    manualInvestmentValuations: [
+      {
+        id: "manual-bond-fund-valuation-parity",
+        userId: cashAccount.userId,
+        manualInvestmentId: "manual-bond-fund-parity",
+        snapshotDate: "2026-04-11",
+        currentValueOriginal: "22765.66",
+        currentValueCurrency: "USD",
+        note: "Manual mark-to-market",
+        createdAt: "2026-04-11T09:00:00Z",
+        updatedAt: "2026-04-11T09:00:00Z",
+      },
+    ],
+    fxRates: [
+      {
+        baseCurrency: "EUR",
+        quoteCurrency: "USD",
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T16:00:00Z",
+        rate: "1.08695700",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-11",
+        asOfTimestamp: "2026-04-11T16:00:00Z",
+        rate: "0.85288000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+  });
+
+  const eurModel = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    referenceDate: "2026-04-11",
+  });
+  const usdModel = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "USD",
+    referenceDate: "2026-04-11",
+  });
+  const eurFund = buildHoldingDisplayMetricsMap(
+    dataset,
+    eurModel.holdings.holdings,
+    "EUR",
+    "2026-04-11",
+  ).values().next().value;
+  const usdFund = buildHoldingDisplayMetricsMap(
+    dataset,
+    usdModel.holdings.holdings,
+    "USD",
+    "2026-04-11",
+  ).values().next().value;
+
+  assert.equal(eurFund?.unrealizedDisplay, "-2425.50");
+  assert.equal(eurFund?.unrealizedDisplayPercent, "-11.10");
+  assert.equal(usdFund?.unrealizedDisplayPercent, "-11.10");
+  assert.equal(Number(usdFund?.unrealizedDisplay ?? "0") < 0, true);
 });

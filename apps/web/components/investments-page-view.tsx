@@ -443,21 +443,21 @@ export function InvestmentsPageView({
 
         <PositionListSection
           title="Funds"
-          subtitle="Current value, unrealized EUR, and return %"
+          subtitle="Current value, unrealized P/L, and return %"
           rows={model.fundRows}
           emptyMessage="No funds are available for this scope."
         />
 
         <PositionListSection
           title="Stocks & ETF"
-          subtitle="Current value, unrealized EUR, and return %"
+          subtitle="Current value, unrealized P/L, and return %"
           rows={model.stockRows}
           emptyMessage="No stocks or ETFs are available for this scope."
         />
 
         <SectionCard
           title="Crypto Treasury"
-          subtitle="Current EUR value of BTC and ETH balances"
+          subtitle="Current value of BTC and ETH balances"
           span="span-4"
         >
           <div className="investment-position-list">

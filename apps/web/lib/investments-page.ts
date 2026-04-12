@@ -914,7 +914,10 @@ export function buildInvestmentsPageModel(
         model.currency,
       ),
       fallbackNote: balance.currentPriceEur
-        ? `${formatCurrency(balance.currentPriceEur, "EUR")} per ${balance.currency}`
+        ? `${formatCurrency(
+            toDisplayAmount(model, balance.currentPriceEur),
+            model.currency,
+          )} per ${balance.currency}`
         : "Current quote unavailable",
     })),
     accountAllocationRows: model.accountAllocation.map((row) => ({

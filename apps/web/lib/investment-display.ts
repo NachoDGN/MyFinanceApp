@@ -1,21 +1,8 @@
 import { Decimal } from "decimal.js";
 
-import {
-  isTransactionResolvedForAnalytics,
-  type DomainDataset,
-  type HoldingRow,
-} from "@myfinance/domain";
+import { type DomainDataset, type HoldingRow } from "@myfinance/domain";
 
 import { convertBaseEurToDisplayAmount } from "./currency";
-import {
-  buildManualInvestmentMatchHaystack,
-  parseManualInvestmentMatcherTerms,
-} from "./manual-investment-matching";
-
-type MutableHoldingDisplayMetric = {
-  quantity: Decimal;
-  openCostBasisDisplay: Decimal | null;
-};
 
 export type HoldingDisplayMetric = {
   avgCostDisplay: string | null;
@@ -24,108 +11,6 @@ export type HoldingDisplayMetric = {
   unrealizedDisplay: string | null;
   unrealizedDisplayPercent: string | null;
 };
-
-function buildHoldingCostBasisDisplayFallback(
-  dataset: DomainDataset,
-  holding: HoldingRow,
-  displayCurrency: string,
-  referenceDate: string,
-) {
-  const quantity = new Decimal(holding.quantity);
-  if (quantity.lte(0)) {
-    return null;
-  }
-
-  const openCostBasisEur = new Decimal(holding.avgCostEur).mul(quantity);
-  return convertBaseEurToDisplayAmount(
-    dataset,
-    openCostBasisEur.toFixed(8),
-    displayCurrency,
-    referenceDate,
-  );
-}
-
-function buildManualHoldingCostBasisDisplay(
-  dataset: DomainDataset,
-  holding: HoldingRow,
-  displayCurrency: string,
-  referenceDate: string,
-) {
-  if (holding.holdingSource !== "manual_valuation") {
-    return null;
-  }
-
-  const investment = dataset.manualInvestments.find(
-    (candidate) => candidate.id === holding.securityId,
-  );
-  if (!investment) {
-    return null;
-  }
-
-  const latestValuation = [...dataset.manualInvestmentValuations]
-    .filter(
-      (valuation) =>
-        valuation.manualInvestmentId === investment.id &&
-        valuation.snapshotDate <= referenceDate,
-    )
-    .sort(
-      (left, right) =>
-        right.snapshotDate.localeCompare(left.snapshotDate) ||
-        right.updatedAt.localeCompare(left.updatedAt) ||
-        right.createdAt.localeCompare(left.createdAt),
-    )[0];
-  if (!latestValuation) {
-    return null;
-  }
-
-  const matcherTerms = parseManualInvestmentMatcherTerms(investment.matcherText);
-  if (matcherTerms.length === 0) {
-    return "0.00";
-  }
-
-  let openCostBasisDisplay = new Decimal(0);
-  for (const transaction of dataset.transactions) {
-    if (
-      transaction.accountId !== investment.fundingAccountId ||
-      transaction.economicEntityId !== investment.entityId ||
-      transaction.transactionDate > latestValuation.snapshotDate ||
-      transaction.voidedAt !== null
-    ) {
-      continue;
-    }
-
-    const haystack = buildManualInvestmentMatchHaystack(transaction);
-    if (!matcherTerms.some((term) => haystack.includes(term))) {
-      continue;
-    }
-
-    if (
-      transaction.currencyOriginal === displayCurrency &&
-      transaction.amountOriginal !== null
-    ) {
-      openCostBasisDisplay = openCostBasisDisplay.plus(
-        new Decimal(transaction.amountOriginal).abs(),
-      );
-      continue;
-    }
-
-    const converted = convertBaseEurToDisplayAmount(
-      dataset,
-      transaction.amountBaseEur,
-      displayCurrency,
-      transaction.transactionDate,
-    );
-    if (converted === null) {
-      return null;
-    }
-
-    openCostBasisDisplay = openCostBasisDisplay.plus(
-      new Decimal(converted).abs(),
-    );
-  }
-
-  return openCostBasisDisplay.toFixed(2);
-}
 
 export function getHoldingDisplayMetricKey(holding: {
   entityId: string;
@@ -142,22 +27,19 @@ function safeDividePercent(numerator: Decimal, denominator: Decimal) {
   return numerator.div(denominator).mul(100).toFixed(2);
 }
 
-function addDisplayCost(
-  state: MutableHoldingDisplayMetric,
-  amountDisplay: string | null,
-  options?: { absolute?: boolean },
-) {
-  if (amountDisplay === null) {
-    state.openCostBasisDisplay = null;
-    return;
+function resolveOpenCostBasisEur(holding: HoldingRow) {
+  if (holding.currentValueEur !== null && holding.unrealizedPnlEur !== null) {
+    return new Decimal(holding.currentValueEur)
+      .minus(holding.unrealizedPnlEur)
+      .toFixed(8);
   }
-  if (state.openCostBasisDisplay === null) {
-    return;
+
+  const quantity = new Decimal(holding.quantity);
+  if (quantity.lte(0)) {
+    return null;
   }
-  const amount = new Decimal(amountDisplay);
-  state.openCostBasisDisplay = state.openCostBasisDisplay.plus(
-    options?.absolute === false ? amount : amount.abs(),
-  );
+
+  return new Decimal(holding.avgCostEur).mul(quantity).toFixed(8);
 }
 
 export function buildHoldingDisplayMetricsMap(
@@ -166,205 +48,47 @@ export function buildHoldingDisplayMetricsMap(
   displayCurrency: string,
   referenceDate: string,
 ) {
-  const holdingKeys = new Set(
-    holdings.map((holding) => getHoldingDisplayMetricKey(holding)),
-  );
-  const investmentAccountsById = new Map(
-    dataset.accounts
-      .filter((account) => account.assetDomain === "investment")
-      .map((account) => [account.id, account]),
-  );
-  const stateByKey = new Map<string, MutableHoldingDisplayMetric>();
-
-  const ensureState = (key: string) => {
-    const existing = stateByKey.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    const created: MutableHoldingDisplayMetric = {
-      quantity: new Decimal(0),
-      openCostBasisDisplay: new Decimal(0),
-    };
-    stateByKey.set(key, created);
-    return created;
-  };
-
-  const events = [
-    ...dataset.transactions
-      .filter((transaction) => {
-        if (transaction.transactionDate > referenceDate) {
-          return false;
-        }
-        if (!transaction.securityId) {
-          return false;
-        }
-        if (!isTransactionResolvedForAnalytics(transaction)) {
-          return false;
-        }
-        if (!investmentAccountsById.has(transaction.accountId)) {
-          return false;
-        }
-
-        const key = getHoldingDisplayMetricKey({
-          entityId: transaction.economicEntityId,
-          accountId: transaction.accountId,
-          securityId: transaction.securityId,
-        });
-        if (!holdingKeys.has(key)) {
-          return false;
-        }
-
-        return (
-          transaction.transactionClass === "investment_trade_buy" ||
-          transaction.transactionClass === "investment_trade_sell"
-        );
-      })
-      .map((transaction) => ({
-        type: "transaction" as const,
-        sortKey: `${transaction.transactionDate}:1:${transaction.createdAt}`,
-        transaction,
-      })),
-    ...dataset.holdingAdjustments
-      .filter((adjustment) => {
-        if (adjustment.effectiveDate > referenceDate) {
-          return false;
-        }
-        const key = getHoldingDisplayMetricKey({
-          entityId: adjustment.entityId,
-          accountId: adjustment.accountId,
-          securityId: adjustment.securityId,
-        });
-        return holdingKeys.has(key);
-      })
-      .map((adjustment) => ({
-        type: "adjustment" as const,
-        sortKey: `${adjustment.effectiveDate}:0:${adjustment.createdAt}`,
-        adjustment,
-      })),
-  ].sort((left, right) => left.sortKey.localeCompare(right.sortKey));
-
-  for (const event of events) {
-    if (event.type === "adjustment") {
-      const adjustment = event.adjustment;
-      const state = ensureState(
-        getHoldingDisplayMetricKey({
-          entityId: adjustment.entityId,
-          accountId: adjustment.accountId,
-          securityId: adjustment.securityId,
-        }),
-      );
-      state.quantity = state.quantity.plus(adjustment.shareDelta);
-      addDisplayCost(
-        state,
-        adjustment.costBasisDeltaEur
-          ? convertBaseEurToDisplayAmount(
-              dataset,
-              adjustment.costBasisDeltaEur,
-              displayCurrency,
-              adjustment.effectiveDate,
-            )
-          : "0.00",
-        { absolute: false },
-      );
-      continue;
-    }
-
-    const transaction = event.transaction;
-    const state = ensureState(
-      getHoldingDisplayMetricKey({
-        entityId: transaction.economicEntityId,
-        accountId: transaction.accountId,
-        securityId: transaction.securityId!,
-      }),
-    );
-    const absoluteQuantity = new Decimal(transaction.quantity ?? 0).abs();
-    if (absoluteQuantity.lte(0)) {
-      continue;
-    }
-
-    if (transaction.transactionClass === "investment_trade_buy") {
-      state.quantity = state.quantity.plus(absoluteQuantity);
-      addDisplayCost(
-        state,
-        convertBaseEurToDisplayAmount(
-          dataset,
-          transaction.amountBaseEur,
-          displayCurrency,
-          transaction.transactionDate,
-        ),
-      );
-      continue;
-    }
-
-    if (
-      transaction.transactionClass === "investment_trade_sell" &&
-      state.quantity.gt(0)
-    ) {
-      const sellQuantity = Decimal.min(state.quantity, absoluteQuantity);
-      if (state.openCostBasisDisplay !== null) {
-        const averageDisplayCost = state.quantity.eq(0)
-          ? new Decimal(0)
-          : state.openCostBasisDisplay.div(state.quantity);
-        state.openCostBasisDisplay = Decimal.max(
-          new Decimal(0),
-          state.openCostBasisDisplay.minus(averageDisplayCost.mul(sellQuantity)),
-        );
-      }
-      state.quantity = state.quantity.minus(sellQuantity);
-    }
-  }
-
   return new Map(
     holdings.map((holding) => {
-      const key = getHoldingDisplayMetricKey(holding);
-      const state = stateByKey.get(key);
+      const openCostBasisEur = resolveOpenCostBasisEur(holding);
       const currentValueDisplay = convertBaseEurToDisplayAmount(
         dataset,
         holding.currentValueEur,
         displayCurrency,
         referenceDate,
       );
-      const replayedOpenCostBasisDisplay =
-        state && state.quantity.gt(0) && state.openCostBasisDisplay !== null
-          ? state.openCostBasisDisplay.toFixed(2)
-          : null;
       const openCostBasisDisplay =
-        replayedOpenCostBasisDisplay ??
-        buildManualHoldingCostBasisDisplay(
-          dataset,
-          holding,
-          displayCurrency,
-          referenceDate,
-        ) ??
-        buildHoldingCostBasisDisplayFallback(
-          dataset,
-          holding,
-          displayCurrency,
-          referenceDate,
-        );
+        openCostBasisEur === null
+          ? null
+          : convertBaseEurToDisplayAmount(
+              dataset,
+              openCostBasisEur,
+              displayCurrency,
+              referenceDate,
+            );
       const avgCostDisplay =
         openCostBasisDisplay !== null && new Decimal(holding.quantity).gt(0)
           ? new Decimal(openCostBasisDisplay)
               .div(holding.quantity)
               .toFixed(2)
           : null;
-      const unrealizedDisplay =
-        currentValueDisplay !== null && openCostBasisDisplay !== null
-          ? new Decimal(currentValueDisplay)
-              .minus(openCostBasisDisplay)
-              .toFixed(2)
-          : null;
+      const unrealizedDisplay = convertBaseEurToDisplayAmount(
+        dataset,
+        holding.unrealizedPnlEur,
+        displayCurrency,
+        referenceDate,
+      );
       const unrealizedDisplayPercent =
-        unrealizedDisplay !== null && openCostBasisDisplay !== null
+        holding.unrealizedPnlPercent ??
+        (unrealizedDisplay !== null && openCostBasisDisplay !== null
           ? safeDividePercent(
               new Decimal(unrealizedDisplay),
               new Decimal(openCostBasisDisplay),
             )
-          : null;
+          : null);
 
       return [
-        key,
+        getHoldingDisplayMetricKey(holding),
         {
           avgCostDisplay,
           openCostBasisDisplay,
