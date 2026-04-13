@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import { buildRevolutSyncFeedback } from "../lib/revolut-sync-feedback";
 import { SectionCard } from "./primitives";
 
 type EntityOption = {
@@ -24,22 +25,44 @@ type ManagedRevolutConnection = {
 export function RevolutConnectionsCard({
   configured,
   missingEnvKeys,
+  autoSyncConnectionId,
   entities,
   connections,
 }: {
   configured: boolean;
   missingEnvKeys: string[];
+  autoSyncConnectionId: string | null;
   entities: EntityOption[];
   connections: ManagedRevolutConnection[];
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [selectedEntityId, setSelectedEntityId] = useState(entities[0]?.id ?? "");
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [autoSyncStarted, setAutoSyncStarted] = useState(false);
   const [isPending, startTransition] = useTransition();
 
-  function handleSync(connectionId: string) {
+  function clearAutoSyncQuery() {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete("revolut");
+    nextParams.delete("connectionId");
+    const nextQuery = nextParams.toString();
+    router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, {
+      scroll: false,
+    });
+  }
+
+  function handleSync(
+    connectionId: string,
+    options?: { source?: "auto" | "manual" },
+  ) {
     startTransition(async () => {
-      setFeedback(null);
+      setFeedback(
+        options?.source === "auto"
+          ? "Revolut connected. Importing and analyzing transactions now."
+          : null,
+      );
       try {
         const response = await fetch("/api/bank/revolut/sync", {
           method: "POST",
@@ -57,20 +80,35 @@ export function RevolutConnectionsCard({
         const payload = (await response.json()) as {
           queued: boolean;
           jobId: string | null;
+          inlineJobRun?: {
+            processedJobs: Array<{
+              id: string;
+              jobType: string;
+              status: string;
+            }>;
+          };
         };
-        setFeedback(
-          payload.queued
-            ? "Revolut sync queued."
-            : "A Revolut sync is already queued or running.",
-        );
+        setFeedback(buildRevolutSyncFeedback(payload));
         router.refresh();
       } catch (error) {
         setFeedback(
           error instanceof Error ? error.message : "Failed to queue the Revolut sync.",
         );
+      } finally {
+        if (options?.source === "auto") {
+          clearAutoSyncQuery();
+        }
       }
     });
   }
+
+  useEffect(() => {
+    if (!autoSyncConnectionId || autoSyncStarted) {
+      return;
+    }
+    setAutoSyncStarted(true);
+    handleSync(autoSyncConnectionId, { source: "auto" });
+  }, [autoSyncConnectionId, autoSyncStarted]);
 
   return (
     <SectionCard
@@ -149,7 +187,7 @@ export function RevolutConnectionsCard({
                   className="btn-pill"
                   type="button"
                   disabled={isPending}
-                  onClick={() => handleSync(connection.id)}
+                  onClick={() => handleSync(connection.id, { source: "manual" })}
                 >
                   Sync now
                 </button>

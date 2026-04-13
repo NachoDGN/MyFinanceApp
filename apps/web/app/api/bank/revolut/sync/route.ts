@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { queueRevolutConnectionSync } from "@myfinance/db";
 import { createApiErrorResponse } from "../../../../../lib/api-errors";
 import { revalidateFinanceReadPaths } from "../../../../../lib/api-revalidate";
+import { queueAndRunRevolutSync } from "../../../../../lib/revolut-sync";
 
 const syncSchema = z.object({
   connectionId: z.string().uuid(),
@@ -12,7 +12,7 @@ const syncSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const body = syncSchema.parse(await request.json());
-    const result = await queueRevolutConnectionSync({
+    const result = await queueAndRunRevolutSync({
       connectionId: body.connectionId,
       trigger: "manual_sync",
     });

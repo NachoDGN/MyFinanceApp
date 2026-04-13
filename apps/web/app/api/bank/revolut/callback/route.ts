@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { completeRevolutAuthorization } from "@myfinance/db";
 import { createApiErrorResponse } from "../../../../../lib/api-errors";
 import { revalidateFinanceReadPaths } from "../../../../../lib/api-revalidate";
+import { completeRevolutAuthorization } from "@myfinance/db";
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code") ?? "";
@@ -16,10 +16,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    await completeRevolutAuthorization({ code, state });
+    const result = await completeRevolutAuthorization({ code, state });
     revalidateFinanceReadPaths();
     return NextResponse.redirect(
-      new URL("/accounts?revolut=connected", request.url),
+      new URL(
+        `/accounts?revolut=connected&connectionId=${encodeURIComponent(result.connectionId)}`,
+        request.url,
+      ),
     );
   } catch (error) {
     return createApiErrorResponse(error);
