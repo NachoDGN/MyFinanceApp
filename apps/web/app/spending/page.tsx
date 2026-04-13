@@ -4,15 +4,10 @@ import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
   convertBaseEurToDisplayAmount,
+  convertBaseEurToDisplayAmountWithFallback,
+  endOfMonthIso,
   formatBaseEurAmountForDisplay,
 } from "../../lib/currency";
-import {
-  buildAreaPath,
-  buildLinePath,
-  buildTrendPoints,
-  formatDeltaBadge,
-  formatMonthLabel,
-} from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
 import { getSpendingModel } from "../../lib/queries";
 
@@ -89,18 +84,57 @@ function formatStatementDateParts(value: string) {
   };
 }
 
-function describePeriodPill(period: string) {
-  if (period === "ytd") return "Year to date";
-  if (period === "custom") return "Custom range";
-  return "Month to date";
+function formatMonthLabel(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+  }).format(new Date(`${value}T00:00:00Z`));
 }
 
-function formatPercentLabel(value: number) {
-  if (!Number.isFinite(value)) {
+function formatMonthRange(start: string, end: string) {
+  return `${formatMonthLabel(start)} ${start.slice(0, 4)} — ${formatMonthLabel(end)} ${end.slice(0, 4)}`;
+}
+
+function getPeriodLabel(period: {
+  preset: string;
+  start: string;
+  end: string;
+}) {
+  if (period.preset === "mtd") {
+    return "Month to Date";
+  }
+  if (period.preset === "ytd") {
+    return "Year to Date";
+  }
+  if (period.preset === "week") {
+    return "Week to Date";
+  }
+  if (period.preset === "24m") {
+    return "Trailing 24 Months";
+  }
+  return `${formatMonthLabel(period.start)} ${period.start.slice(0, 4)} — ${formatMonthLabel(period.end)} ${period.end.slice(0, 4)}`;
+}
+
+function formatPercentLabel(value: number | string | null | undefined) {
+  const numeric =
+    typeof value === "number" ? value : Number(value ?? 0);
+  if (!Number.isFinite(numeric)) {
     return "0.00%";
   }
 
-  return `${value.toFixed(2)}%`;
+  return `${numeric.toFixed(2)}%`;
+}
+
+function formatDeltaBadge(deltaPercent: string | null | undefined) {
+  if (!deltaPercent) {
+    return "0.00%";
+  }
+
+  const numeric = Number(deltaPercent);
+  if (!Number.isFinite(numeric)) {
+    return "0.00%";
+  }
+
+  return `${numeric.toFixed(2)}%`;
 }
 
 export default async function SpendingPage({
@@ -109,23 +143,53 @@ export default async function SpendingPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const model = await getSpendingModel(searchParams);
-  const trendRows = model.trendSeries;
-  const chartWidth = 920;
-  const chartHeight = 260;
-  const trendValues = trendRows.map((row) =>
-    Number(
-      convertBaseEurToDisplayAmount(
-        model.dataset,
-        row.spendingEur,
-        model.currency,
-        model.referenceDate,
-      ) ?? row.spendingEur,
-    ),
+  const chartRows = model.trendSeries.map((row) => {
+    const effectiveDate =
+      endOfMonthIso(row.month) <= model.referenceDate
+        ? endOfMonthIso(row.month)
+        : model.referenceDate;
+    const spendingDisplay = convertBaseEurToDisplayAmountWithFallback(
+      model.dataset,
+      row.spendingEur,
+      model.currency,
+      effectiveDate,
+      { fallbackDate: model.referenceDate },
+    );
+
+    return {
+      ...row,
+      spendingDisplay: Number(spendingDisplay.amount ?? 0),
+      usedFallbackFx:
+        model.currency !== "EUR" && spendingDisplay.usedFallbackFx,
+    };
+  });
+  const fallbackFxMonths = chartRows
+    .filter((row) => row.usedFallbackFx)
+    .map((row) => formatMonthLabel(row.month));
+  const fallbackFxRangeLabel =
+    fallbackFxMonths.length > 0
+      ? fallbackFxMonths.length === 1
+        ? fallbackFxMonths[0]
+        : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
+      : null;
+  const chartMax = Math.max(
+    ...chartRows.map((row) => row.spendingDisplay),
+    1,
   );
-  const chartPoints = buildTrendPoints(trendValues, chartWidth, chartHeight);
+  const chartAxisValues = [1, 0.66, 0.33, 0].map((step) =>
+    formatCurrency((chartMax * step).toFixed(2), model.currency),
+  );
+  const chartRangeLabel =
+    chartRows.length > 0
+      ? formatMonthRange(chartRows[0].month, chartRows[chartRows.length - 1].month)
+      : "No spending data";
   const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
   const coveragePercent = Number(model.coverage);
   const uncategorizedShare = Math.max(100 - coveragePercent, 0);
+  const completenessLabel =
+    coveragePercent >= 100
+      ? "Fully categorized"
+      : `${uncategorizedShare.toFixed(2)}% uncategorized`;
   const topCategoryShare =
     model.topCategory && spendTotal > 0
       ? (Number(model.topCategory.amountEur) / spendTotal) * 100
@@ -149,6 +213,10 @@ export default async function SpendingPage({
         Math.abs(Number(left.amountBaseEur)),
     )
     .slice(0, 12);
+  const scopeDescription =
+    model.scope.kind === "consolidated"
+      ? "Global view across your personal and company entities. Use the scope pills above to isolate any one of them without losing the consolidated total."
+      : "Scoped view of the selected entity. Switch back to the consolidated pill above to see the full outflow picture that rolls everything up together.";
 
   return (
     <AppShell
@@ -157,16 +225,19 @@ export default async function SpendingPage({
       state={model.navigationState}
     >
       <div className="dashboard-grid income-editorial-shell">
-        <div className="income-editorial-watermark">SPEND</div>
+        <div className="income-editorial-watermark spending-editorial-watermark">
+          SPENDING
+        </div>
 
         <div className="income-page-header span-12">
           <div>
             <h1 className="page-title">Spending Overview</h1>
             <p className="page-subtitle">
-              Personal cash spending stays personal. Company cash spending stays
-              company. Credit-card statement liquidations are excluded from
-              spend until the related card ledger is imported, because they
-              represent prior-period purchases rather than fresh April spending.
+              Primary spend KPIs exclude internal transfers and defer
+              credit-card settlement liquidations until the matching card
+              statement ledger is imported, so the dashboard reflects real
+              merchant outflows instead of duplicate settlement payments.{" "}
+              {scopeDescription}
             </p>
             {model.excludedCreditCardSettlementCount > 0 ? (
               <div className="status-note">
@@ -191,7 +262,11 @@ export default async function SpendingPage({
         <div className="income-kpi-grid span-12">
           <article className="income-kpi-card income-kpi-card-accent">
             <div className="income-kpi-title">
-              <span>Current-Period Spend</span>
+              <span>
+                {model.period.preset === "ytd"
+                  ? "Current-Year Spend"
+                  : "Current-Period Spend"}
+              </span>
               <span className="income-kpi-icon">i</span>
             </div>
             <div className="income-kpi-value">
@@ -231,21 +306,19 @@ export default async function SpendingPage({
 
           <article className="income-kpi-card income-kpi-card-accent">
             <div className="income-kpi-title">
-              <span>Categorized Spend Share</span>
+              <span>Coverage / Completeness</span>
             </div>
             <div className="income-kpi-value">
               {Number.isFinite(coveragePercent)
                 ? `${coveragePercent.toFixed(0)}%`
                 : "N/A"}
             </div>
-            <div className="income-kpi-badge neutral">
-              {formatBaseEurAmountForDisplay(
-                model.dataset,
-                model.uncategorizedSpendEur,
-                model.currency,
-                model.referenceDate,
-              )}{" "}
-              uncategorized
+            <div
+              className={`income-kpi-badge ${
+                coveragePercent >= 100 ? "accent" : "neutral"
+              }`}
+            >
+              {completenessLabel}
             </div>
           </article>
         </div>
@@ -255,62 +328,50 @@ export default async function SpendingPage({
             <div>
               <h2 className="income-chart-title">Monthly Spend Trend</h2>
             </div>
-            <div className="income-kpi-badge neutral">
-              {trendRows.length > 0
-                ? `Trend through ${formatDate(trendRows[trendRows.length - 1]!.month)}`
-                : "Trend unavailable"}
-            </div>
+            <div className="income-kpi-badge neutral">{chartRangeLabel}</div>
           </div>
+          {fallbackFxRangeLabel ? (
+            <div className="status-note" style={{ marginTop: 16 }}>
+              Historical {model.currency} conversion was unavailable for{" "}
+              {fallbackFxRangeLabel}, so the latest available FX up to{" "}
+              {model.referenceDate} is used to keep the full trend visible.
+            </div>
+          ) : null}
 
-          <div className="spending-trend-chart spending-trend-chart-editorial">
-            <svg
-              viewBox={`0 0 ${chartWidth} ${chartHeight + 40}`}
-              preserveAspectRatio="none"
-            >
-              <defs>
-                <linearGradient
-                  id="spendingAreaGradient"
-                  x1="0%"
-                  y1="0%"
-                  x2="0%"
-                  y2="100%"
-                >
-                  <stop offset="0%" stopColor="rgba(255,75,43,0.34)" />
-                  <stop offset="100%" stopColor="rgba(255,75,43,0)" />
-                </linearGradient>
-              </defs>
-              {[0.2, 0.4, 0.6, 0.8].map((ratio) => (
-                <line
-                  key={ratio}
-                  x1="0"
-                  x2={chartWidth}
-                  y1={chartHeight * ratio}
-                  y2={chartHeight * ratio}
-                  className="spending-grid-line"
-                />
+          <div className="income-chart-body">
+            <div className="income-y-axis">
+              {chartAxisValues.map((label) => (
+                <span key={label}>{label}</span>
               ))}
-              <path
-                d={buildAreaPath(chartPoints, chartWidth, chartHeight)}
-                className="spending-area-path"
-              />
-              <path
-                d={buildLinePath(chartPoints)}
-                className="spending-line-path"
-              />
-              {chartPoints.map((point, index) => (
-                <circle
-                  key={`${trendRows[index]?.month ?? index}`}
-                  cx={point.x}
-                  cy={point.y}
-                  r="5"
-                  className="spending-line-dot"
-                />
+            </div>
+            <div className="income-grid-lines" aria-hidden="true">
+              {chartAxisValues.map((label) => (
+                <div className="income-grid-line" key={label} />
               ))}
-            </svg>
-            <div className="spending-trend-labels">
-              {trendRows.map((row) => (
-                <span key={row.month}>{formatMonthLabel(row.month)}</span>
-              ))}
+            </div>
+            <div className="income-chart-bars">
+              {chartRows.map((row, index) => {
+                const height = Math.max(
+                  0,
+                  (row.spendingDisplay / chartMax) * 100,
+                );
+
+                return (
+                  <div className="income-bar-group" key={row.month}>
+                    <div
+                      className="income-bar-segment income-bar-segment-operating"
+                      style={{ height: `${height}%` }}
+                    />
+                    <div
+                      className={`income-bar-label ${
+                        index === chartRows.length - 1 ? "active" : ""
+                      }`}
+                    >
+                      {formatMonthLabel(row.month)}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </section>
@@ -322,7 +383,7 @@ export default async function SpendingPage({
                 Spending Category Breakdown
               </h2>
               <div className="income-kpi-badge neutral">
-                {describePeriodPill(model.navigationState.period)}
+                {getPeriodLabel(model.period)}
               </div>
             </div>
             <div className="muted" style={{ marginTop: 8, lineHeight: 1.5 }}>

@@ -2504,6 +2504,13 @@ textarea {
   user-select: none;
 }
 
+.spending-editorial-watermark {
+  top: -28px;
+  right: -28px;
+  font-size: clamp(96px, 13vw, 220px);
+  letter-spacing: -0.06em;
+}
+
 .income-page-header {
   grid-column: 1 / -1;
   position: relative;
