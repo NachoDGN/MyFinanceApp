@@ -9,7 +9,14 @@ export default async function AccountsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const model = await getAccountsModel(searchParams);
+  const resolvedSearchParams = await searchParams;
+  const model = await getAccountsModel(resolvedSearchParams);
+  const revolutParam = Array.isArray(resolvedSearchParams.revolut)
+    ? resolvedSearchParams.revolut[0]
+    : resolvedSearchParams.revolut;
+  const autoSyncConnectionId = Array.isArray(resolvedSearchParams.connectionId)
+    ? resolvedSearchParams.connectionId[0]
+    : resolvedSearchParams.connectionId;
   const snapshots = new Map(
     model.accounts.balances.map((row) => [row.accountId, row]),
   );
@@ -66,6 +73,13 @@ export default async function AccountsPage({
         <RevolutConnectionsCard
           configured={model.revolutRuntime.configured}
           missingEnvKeys={model.revolutRuntime.missingEnvKeys}
+          autoSyncConnectionId={
+            revolutParam === "connected" &&
+            typeof autoSyncConnectionId === "string" &&
+            autoSyncConnectionId.trim() !== ""
+              ? autoSyncConnectionId
+              : null
+          }
           entities={model.dataset.entities
             .filter((entity) => entity.active && entity.entityKind === "company")
             .map((entity) => ({
