@@ -5,6 +5,13 @@ import {
   convertBaseEurToDisplayAmount,
   formatBaseEurAmountForDisplay,
 } from "../../lib/currency";
+import {
+  buildAreaPath,
+  buildLinePath,
+  buildTrendPoints,
+  formatDeltaBadge,
+  formatMonthLabel,
+} from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
 import { getSpendingModel } from "../../lib/queries";
 
@@ -27,40 +34,6 @@ function formatDisplayAmount(
     ),
     currency,
   );
-}
-
-function buildTrendPoints(values: number[], width: number, height: number) {
-  const safeValues = values.length > 0 ? values : [0];
-  const max = Math.max(...safeValues, 1);
-
-  return safeValues.map((value, index) => {
-    const x =
-      safeValues.length === 1
-        ? width / 2
-        : (index / (safeValues.length - 1)) * width;
-    const y = height - (Math.max(value, 0) / max) * height;
-    return { x, y };
-  });
-}
-
-function buildLinePath(points: Array<{ x: number; y: number }>) {
-  if (points.length === 0) return "";
-  return points
-    .map(
-      (point, index) =>
-        `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`,
-    )
-    .join(" ");
-}
-
-function buildAreaPath(
-  points: Array<{ x: number; y: number }>,
-  width: number,
-  height: number,
-) {
-  if (points.length === 0) return "";
-  const line = buildLinePath(points);
-  return `${line} L ${width} ${height} L 0 ${height} Z`;
 }
 
 function formatCategoryLabel(
@@ -102,19 +75,6 @@ function formatCategoryLabel(
   return "Uncategorized";
 }
 
-function formatDeltaBadge(deltaPercent: string | null | undefined) {
-  if (!deltaPercent) {
-    return "0.00%";
-  }
-
-  const numeric = Number(deltaPercent);
-  if (!Number.isFinite(numeric)) {
-    return "0.00%";
-  }
-
-  return `${numeric.toFixed(2)}%`;
-}
-
 function formatStatementDateParts(value: string) {
   const date = new Date(`${value}T00:00:00Z`);
   return {
@@ -153,11 +113,7 @@ export default async function SpendingPage({
       ) ?? row.spendingEur,
     ),
   );
-  const chartPoints = buildTrendPoints(
-    trendValues,
-    chartWidth,
-    chartHeight,
-  );
+  const chartPoints = buildTrendPoints(trendValues, chartWidth, chartHeight);
   const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
   const topCategoryShare =
     model.topCategory && spendTotal > 0
@@ -190,6 +146,278 @@ export default async function SpendingPage({
       state={model.navigationState}
     >
       <div className="spending-page">
+        <div className="spending-layout">
+          <aside className="spending-sidebar">
+            <article className="spending-primary-card">
+              <div className="spending-primary-header">
+                <span className="spending-card-label">Current period</span>
+                <span className="spending-card-badge">
+                  {formatDeltaBadge(model.spendMetric?.deltaPercent)}
+                </span>
+              </div>
+              <div className="spending-primary-value">
+                {formatCurrency(
+                  model.spendMetric?.valueDisplay,
+                  model.currency,
+                )}
+              </div>
+              <div className="spending-primary-footer">
+                <span>
+                  {formatCurrency(
+                    model.spendMetric?.deltaDisplay,
+                    model.currency,
+                  )}{" "}
+                  from prior pace
+                </span>
+              </div>
+            </article>
+
+            <article className="spending-coverage-card">
+              <div className="spending-card-header">
+                <div>
+                  <span className="spending-card-label">Coverage</span>
+                  <h2 className="spending-card-title">
+                    Categorized spend share
+                  </h2>
+                </div>
+                <span className="spending-inline-pill">
+                  {formatBaseEurAmountForDisplay(
+                    model.dataset,
+                    model.uncategorizedSpendEur,
+                    model.currency,
+                    model.referenceDate,
+                  )}
+                </span>
+              </div>
+              <div className="spending-coverage-value">{model.coverage}%</div>
+              <p className="spending-card-note">
+                Amount still sitting in uncategorized or proxy buckets this
+                period.
+              </p>
+            </article>
+
+            <article className="spending-breakdown-card">
+              <div className="spending-card-header">
+                <div>
+                  <span className="spending-card-label">Distribution</span>
+                  <h2 className="spending-card-title">
+                    Top spending categories
+                  </h2>
+                </div>
+              </div>
+              <div className="spending-breakdown-list">
+                {model.summary.spendingByCategory.slice(0, 6).map((row) => {
+                  const share =
+                    spendTotal > 0
+                      ? (Number(row.amountEur) / spendTotal) * 100
+                      : 0;
+                  return (
+                    <div
+                      className="spending-breakdown-row"
+                      key={row.categoryCode}
+                    >
+                      <div className="spending-breakdown-head">
+                        <div>
+                          <div className="spending-breakdown-label">
+                            {row.label}
+                          </div>
+                          <div className="spending-breakdown-share">
+                            {share.toFixed(0)}% of total
+                          </div>
+                        </div>
+                        <span className="spending-breakdown-amount">
+                          {formatBaseEurAmountForDisplay(
+                            model.dataset,
+                            row.amountEur,
+                            model.currency,
+                            model.referenceDate,
+                          )}
+                        </span>
+                      </div>
+                      <div className="spending-breakdown-track">
+                        <div
+                          className="spending-breakdown-fill"
+                          style={{
+                            width: `${Math.min(share, 100).toFixed(2)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+                {model.summary.spendingByCategory.length === 0 ? (
+                  <div className="spending-empty-state">
+                    No resolved spending categories are available for the
+                    selected scope.
+                  </div>
+                ) : null}
+              </div>
+            </article>
+          </aside>
+
+          <div className="spending-main">
+            <article className="spending-trend-card">
+              <div className="spending-card-header">
+                <div>
+                  <span className="spending-card-label accent">
+                    Trend analysis
+                  </span>
+                  <h2 className="spending-trend-title">Monthly spend trend</h2>
+                </div>
+                <span className="spending-inline-pill">
+                  {trendRows.length} months
+                </span>
+              </div>
+              <div className="spending-trend-chart">
+                <svg
+                  viewBox={`0 0 ${chartWidth} ${chartHeight + 40}`}
+                  preserveAspectRatio="none"
+                >
+                  <defs>
+                    <linearGradient
+                      id="spendingAreaGradient"
+                      x1="0%"
+                      y1="0%"
+                      x2="0%"
+                      y2="100%"
+                    >
+                      <stop offset="0%" stopColor="rgba(255,75,43,0.34)" />
+                      <stop offset="100%" stopColor="rgba(255,75,43,0)" />
+                    </linearGradient>
+                  </defs>
+                  {[0.2, 0.4, 0.6, 0.8].map((ratio) => (
+                    <line
+                      key={ratio}
+                      x1="0"
+                      x2={chartWidth}
+                      y1={chartHeight * ratio}
+                      y2={chartHeight * ratio}
+                      className="spending-grid-line"
+                    />
+                  ))}
+                  <path
+                    d={buildAreaPath(chartPoints, chartWidth, chartHeight)}
+                    className="spending-area-path"
+                  />
+                  <path
+                    d={buildLinePath(chartPoints)}
+                    className="spending-line-path"
+                  />
+                  {chartPoints.map((point, index) => (
+                    <circle
+                      key={`${trendRows[index]?.month ?? index}`}
+                      cx={point.x}
+                      cy={point.y}
+                      r="5"
+                      className="spending-line-dot"
+                    />
+                  ))}
+                </svg>
+                <div className="spending-trend-labels">
+                  {trendRows.map((row) => (
+                    <span key={row.month}>{formatMonthLabel(row.month)}</span>
+                  ))}
+                </div>
+              </div>
+            </article>
+
+            <div className="spending-stat-grid">
+              <article className="spending-stat-card">
+                <span className="spending-card-label">Trailing 3-mo avg</span>
+                <div className="spending-stat-value">
+                  {formatBaseEurAmountForDisplay(
+                    model.dataset,
+                    model.trailingThreeMonthAverage,
+                    model.currency,
+                    model.referenceDate,
+                  )}
+                </div>
+                <p className="spending-card-note">
+                  Average monthly spend based on the latest trend window.
+                </p>
+              </article>
+
+              <article className="spending-stat-card">
+                <span className="spending-card-label">Top category</span>
+                <div className="spending-stat-value">
+                  {model.topCategory?.label ?? "N/A"}
+                </div>
+                <p className="spending-card-note">
+                  {model.topCategory
+                    ? `${formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        model.topCategory.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )} · ${topCategoryShare.toFixed(0)}% of current-period spend`
+                    : "No categorized spend available."}
+                </p>
+              </article>
+
+              <article className="spending-stat-card">
+                <span className="spending-card-label">Top merchant bucket</span>
+                <div className="spending-stat-value">
+                  {model.topMerchant?.label ?? "N/A"}
+                </div>
+                <p className="spending-card-note">
+                  {model.topMerchant
+                    ? `${formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        model.topMerchant.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )} · ${topMerchantShare.toFixed(0)}% of current-period spend`
+                    : "No merchant totals available."}
+                </p>
+              </article>
+            </div>
+
+            <article className="spending-merchants-card">
+              <div className="spending-card-header">
+                <div>
+                  <span className="spending-card-label">Detailed view</span>
+                  <h2 className="spending-card-title">
+                    Largest current-period merchant buckets
+                  </h2>
+                </div>
+              </div>
+              <div className="spending-merchant-list">
+                {model.merchantRows.slice(0, 6).map((row, index) => (
+                  <div
+                    className="spending-merchant-row"
+                    key={`${row.label}-${index}`}
+                  >
+                    <div className="spending-merchant-icon">
+                      {row.label.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="spending-merchant-copy">
+                      <p className="spending-merchant-name">{row.label}</p>
+                      <p className="spending-merchant-meta">
+                        {spendTotal > 0
+                          ? `${((Number(row.amountEur) / spendTotal) * 100).toFixed(0)}% of spend`
+                          : "No share available"}
+                      </p>
+                    </div>
+                    <div className="spending-merchant-amount">
+                      {formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        row.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {model.merchantRows.length === 0 ? (
+                  <div className="spending-empty-state">
+                    No merchant totals are available for the selected period.
+                  </div>
+                ) : null}
+              </div>
+            </article>
+          </div>
+        </div>
+
         <section className="spending-hero">
           <div className="spending-hero-copy">
             <span className="spending-kicker">Spending overview</span>
@@ -359,282 +587,6 @@ export default async function SpendingPage({
             </div>
           </section>
         ) : null}
-
-        <div className="spending-layout">
-          <aside className="spending-sidebar">
-            <article className="spending-primary-card">
-              <div className="spending-primary-header">
-                <span className="spending-card-label">Current period</span>
-                <span className="spending-card-badge">
-                  {formatDeltaBadge(model.spendMetric?.deltaPercent)}
-                </span>
-              </div>
-              <div className="spending-primary-value">
-                {formatCurrency(
-                  model.spendMetric?.valueDisplay,
-                  model.currency,
-                )}
-              </div>
-              <div className="spending-primary-footer">
-                <span>
-                  {formatCurrency(
-                    model.spendMetric?.deltaDisplay,
-                    model.currency,
-                  )}{" "}
-                  from prior pace
-                </span>
-              </div>
-            </article>
-
-            <article className="spending-coverage-card">
-              <div className="spending-card-header">
-                <div>
-                  <span className="spending-card-label">Coverage</span>
-                  <h2 className="spending-card-title">
-                    Categorized spend share
-                  </h2>
-                </div>
-                <span className="spending-inline-pill">
-                  {formatBaseEurAmountForDisplay(
-                    model.dataset,
-                    model.uncategorizedSpendEur,
-                    model.currency,
-                    model.referenceDate,
-                  )}
-                </span>
-              </div>
-              <div className="spending-coverage-value">{model.coverage}%</div>
-              <p className="spending-card-note">
-                Amount still sitting in uncategorized or proxy buckets this
-                period.
-              </p>
-            </article>
-
-            <article className="spending-breakdown-card">
-              <div className="spending-card-header">
-                <div>
-                  <span className="spending-card-label">Distribution</span>
-                  <h2 className="spending-card-title">
-                    Top spending categories
-                  </h2>
-                </div>
-              </div>
-              <div className="spending-breakdown-list">
-                {model.summary.spendingByCategory.slice(0, 6).map((row) => {
-                  const share =
-                    spendTotal > 0
-                      ? (Number(row.amountEur) / spendTotal) * 100
-                      : 0;
-                  return (
-                    <div
-                      className="spending-breakdown-row"
-                      key={row.categoryCode}
-                    >
-                      <div className="spending-breakdown-head">
-                        <div>
-                          <div className="spending-breakdown-label">
-                            {row.label}
-                          </div>
-                        <div className="spending-breakdown-share">
-                          {share.toFixed(0)}% of total
-                        </div>
-                      </div>
-                      <span className="spending-breakdown-amount">
-                          {formatBaseEurAmountForDisplay(
-                            model.dataset,
-                            row.amountEur,
-                            model.currency,
-                            model.referenceDate,
-                          )}
-                      </span>
-                    </div>
-                      <div className="spending-breakdown-track">
-                        <div
-                          className="spending-breakdown-fill"
-                          style={{
-                            width: `${Math.min(share, 100).toFixed(2)}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-                {model.summary.spendingByCategory.length === 0 ? (
-                  <div className="spending-empty-state">
-                    No resolved spending categories are available for the
-                    selected scope.
-                  </div>
-                ) : null}
-              </div>
-            </article>
-          </aside>
-
-          <div className="spending-main">
-            <article className="spending-trend-card">
-              <div className="spending-card-header">
-                <div>
-                  <span className="spending-card-label accent">
-                    Trend analysis
-                  </span>
-                  <h2 className="spending-trend-title">Monthly spend trend</h2>
-                </div>
-                <span className="spending-inline-pill">
-                  {trendRows.length} months
-                </span>
-              </div>
-              <div className="spending-trend-chart">
-                <svg
-                  viewBox={`0 0 ${chartWidth} ${chartHeight + 40}`}
-                  preserveAspectRatio="none"
-                >
-                  <defs>
-                    <linearGradient
-                      id="spendingAreaGradient"
-                      x1="0%"
-                      y1="0%"
-                      x2="0%"
-                      y2="100%"
-                    >
-                      <stop offset="0%" stopColor="rgba(255,75,43,0.34)" />
-                      <stop offset="100%" stopColor="rgba(255,75,43,0)" />
-                    </linearGradient>
-                  </defs>
-                  {[0.2, 0.4, 0.6, 0.8].map((ratio) => (
-                    <line
-                      key={ratio}
-                      x1="0"
-                      x2={chartWidth}
-                      y1={chartHeight * ratio}
-                      y2={chartHeight * ratio}
-                      className="spending-grid-line"
-                    />
-                  ))}
-                  <path
-                    d={buildAreaPath(chartPoints, chartWidth, chartHeight)}
-                    className="spending-area-path"
-                  />
-                  <path
-                    d={buildLinePath(chartPoints)}
-                    className="spending-line-path"
-                  />
-                  {chartPoints.map((point, index) => (
-                    <circle
-                      key={`${trendRows[index]?.month ?? index}`}
-                      cx={point.x}
-                      cy={point.y}
-                      r="5"
-                      className="spending-line-dot"
-                    />
-                  ))}
-                </svg>
-                <div className="spending-trend-labels">
-                  {trendRows.map((row) => (
-                    <span key={row.month}>
-                      {new Intl.DateTimeFormat("en-US", {
-                        month: "short",
-                      }).format(new Date(`${row.month}T00:00:00Z`))}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </article>
-
-            <div className="spending-stat-grid">
-              <article className="spending-stat-card">
-                <span className="spending-card-label">Trailing 3-mo avg</span>
-                <div className="spending-stat-value">
-                  {formatBaseEurAmountForDisplay(
-                    model.dataset,
-                    model.trailingThreeMonthAverage,
-                    model.currency,
-                    model.referenceDate,
-                  )}
-                </div>
-                <p className="spending-card-note">
-                  Average monthly spend based on the latest trend window.
-                </p>
-              </article>
-
-              <article className="spending-stat-card">
-                <span className="spending-card-label">Top category</span>
-                <div className="spending-stat-value">
-                  {model.topCategory?.label ?? "N/A"}
-                </div>
-                <p className="spending-card-note">
-                  {model.topCategory
-                    ? `${formatBaseEurAmountForDisplay(
-                        model.dataset,
-                        model.topCategory.amountEur,
-                        model.currency,
-                        model.referenceDate,
-                      )} · ${topCategoryShare.toFixed(0)}% of current-period spend`
-                    : "No categorized spend available."}
-                </p>
-              </article>
-
-              <article className="spending-stat-card">
-                <span className="spending-card-label">Top merchant bucket</span>
-                <div className="spending-stat-value">
-                  {model.topMerchant?.label ?? "N/A"}
-                </div>
-                <p className="spending-card-note">
-                  {model.topMerchant
-                    ? `${formatBaseEurAmountForDisplay(
-                        model.dataset,
-                        model.topMerchant.amountEur,
-                        model.currency,
-                        model.referenceDate,
-                      )} · ${topMerchantShare.toFixed(0)}% of current-period spend`
-                    : "No merchant totals available."}
-                </p>
-              </article>
-            </div>
-
-            <article className="spending-merchants-card">
-              <div className="spending-card-header">
-                <div>
-                  <span className="spending-card-label">Detailed view</span>
-                  <h2 className="spending-card-title">
-                    Largest current-period merchant buckets
-                  </h2>
-                </div>
-              </div>
-              <div className="spending-merchant-list">
-                {model.merchantRows.slice(0, 6).map((row, index) => (
-                  <div
-                    className="spending-merchant-row"
-                    key={`${row.label}-${index}`}
-                  >
-                    <div className="spending-merchant-icon">
-                      {row.label.slice(0, 1).toUpperCase()}
-                    </div>
-                    <div className="spending-merchant-copy">
-                      <p className="spending-merchant-name">{row.label}</p>
-                      <p className="spending-merchant-meta">
-                        {spendTotal > 0
-                          ? `${((Number(row.amountEur) / spendTotal) * 100).toFixed(0)}% of spend`
-                          : "No share available"}
-                      </p>
-                    </div>
-                    <div className="spending-merchant-amount">
-                      {formatBaseEurAmountForDisplay(
-                        model.dataset,
-                        row.amountEur,
-                        model.currency,
-                        model.referenceDate,
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {model.merchantRows.length === 0 ? (
-                  <div className="spending-empty-state">
-                    No merchant totals are available for the selected period.
-                  </div>
-                ) : null}
-              </div>
-            </article>
-          </div>
-        </div>
 
         <section className="spending-transactions-card">
           <div className="spending-card-header">
