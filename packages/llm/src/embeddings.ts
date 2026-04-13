@@ -1,4 +1,8 @@
 import { getProviderApiKey, getRequestTimeoutMs } from "./config";
+import {
+  parseProviderResponseJson,
+  ProviderApiError,
+} from "./provider-api-error";
 
 export type GeminiEmbeddingTaskType =
   | "TASK_TYPE_UNSPECIFIED"
@@ -101,15 +105,20 @@ class GeminiTextEmbeddingClient implements TextEmbeddingClient {
         },
       );
 
-      const payload = (await response.json()) as {
+      const responseBody = await response.text();
+      const payload = parseProviderResponseJson(responseBody) as {
         embeddings?: Array<{ values?: number[] }>;
-        error?: { message?: string };
-      };
+      } | null;
       if (!response.ok) {
-        throw new Error(
-          payload.error?.message ??
-            `Gemini embeddings request failed with status ${response.status}.`,
-        );
+        throw new ProviderApiError({
+          provider: "gemini",
+          statusCode: response.status,
+          responseBody,
+        });
+      }
+
+      if (!payload) {
+        throw new Error("Gemini embeddings response was not valid JSON.");
       }
 
       const batchEmbeddings = payload.embeddings ?? [];

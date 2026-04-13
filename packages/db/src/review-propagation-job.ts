@@ -2,7 +2,10 @@ import {
   type DomainDataset,
   type Transaction,
 } from "@myfinance/domain";
-import { type PromptProfileOverrides } from "@myfinance/llm";
+import {
+  ProviderApiError,
+  type PromptProfileOverrides,
+} from "@myfinance/llm";
 
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
 import { loadDatasetForUser } from "./dataset-loader";
@@ -294,6 +297,13 @@ export async function processReviewPropagationJob(
         embeddingError instanceof Error
           ? embeddingError.message
           : "Embedding generation failed.",
+      ...(embeddingError instanceof ProviderApiError &&
+      (embeddingError.providerError || embeddingError.responseJson)
+        ? {
+            embeddingErrorResponse:
+              embeddingError.providerError ?? embeddingError.responseJson,
+          }
+        : {}),
     };
   }
 

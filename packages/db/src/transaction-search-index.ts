@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   createLLMClient,
   createTextEmbeddingClient,
+  ProviderApiError,
   type TextEmbeddingClient,
 } from "@myfinance/llm";
 import {
@@ -1345,6 +1346,13 @@ export async function syncTransactionSearchIndex(
             ...extractedMetadata,
             embeddingFallbackReason:
               error instanceof Error ? error.message : "unknown_error",
+            ...(error instanceof ProviderApiError &&
+            (error.providerError || error.responseJson)
+              ? {
+                  embeddingFallbackResponse:
+                    error.providerError ?? error.responseJson,
+                }
+              : {}),
           };
         }
       } else {

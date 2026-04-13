@@ -52,6 +52,7 @@ export interface LLMErrorMetadata {
   attempts: number;
   statusCode?: number;
   rawOutput?: string | null;
+  providerError?: Record<string, unknown> | null;
 }
 
 export class LLMError extends Error {
@@ -61,6 +62,7 @@ export class LLMError extends Error {
   readonly attempts: number;
   readonly statusCode?: number;
   readonly rawOutput?: string | null;
+  readonly providerError?: Record<string, unknown> | null;
 
   constructor(message: string, metadata: LLMErrorMetadata) {
     super(message);
@@ -71,6 +73,7 @@ export class LLMError extends Error {
     this.attempts = metadata.attempts;
     this.statusCode = metadata.statusCode;
     this.rawOutput = metadata.rawOutput ?? null;
+    this.providerError = metadata.providerError ?? null;
   }
 }
 

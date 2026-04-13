@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { getProviderRequestConfig } from "./config";
+import { ProviderApiError, truncateForLog } from "./provider-api-error";
 import type {
   GenerateJsonParams,
   GenerateTextParams,
@@ -10,17 +11,6 @@ import type {
   LLMProviderName,
 } from "./types";
 import { LLMUnavailableError, LLMValidationError } from "./types";
-
-class ProviderApiError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode?: number,
-    readonly responseBody?: string | null,
-  ) {
-    super(message);
-    this.name = "ProviderApiError";
-  }
-}
 
 class EmptyTextError extends Error {
   constructor(message = "The model returned an empty text response.") {
@@ -74,14 +64,6 @@ function getAbortSignal(timeoutMs: number) {
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function truncateForLog(value: string | null | undefined, maxLength = 240) {
-  if (!value) return null;
-  const collapsed = value.replace(/\s+/g, " ").trim();
-  return collapsed.length <= maxLength
-    ? collapsed
-    : `${collapsed.slice(0, maxLength)}...`;
 }
 
 function toErrorMessage(error: unknown) {
@@ -288,11 +270,11 @@ class OpenAIProvider implements ProviderAdapter {
 
     if (!response.ok) {
       const responseBody = await response.text();
-      throw new ProviderApiError(
-        `OpenAI request failed with status ${response.status}.${responseBody ? ` ${truncateForLog(responseBody, 600)}` : ""}`,
-        response.status,
+      throw new ProviderApiError({
+        provider: "openai",
+        statusCode: response.status,
         responseBody,
-      );
+      });
     }
 
     const payload = (await response.json()) as Record<string, unknown>;
@@ -356,11 +338,11 @@ class GeminiProvider implements ProviderAdapter {
 
     if (!response.ok) {
       const responseBody = await response.text();
-      throw new ProviderApiError(
-        `Gemini request failed with status ${response.status}.${responseBody ? ` ${truncateForLog(responseBody, 600)}` : ""}`,
-        response.status,
+      throw new ProviderApiError({
+        provider: "gemini",
+        statusCode: response.status,
         responseBody,
-      );
+      });
     }
 
     const payload = (await response.json()) as Record<string, unknown>;
@@ -445,25 +427,29 @@ export class LLMClient {
         lastError = error;
         lastKind =
           error instanceof EmptyTextError ? "empty_text" : "api_exception";
+        const rawOutput =
+          error instanceof ProviderApiError ? error.responseBody : null;
         this.logFailure(
           adapter.provider,
           params.modelName,
           attempt,
           lastKind,
           error,
+          rawOutput,
         );
       }
     }
 
+    const providerError =
+      lastError instanceof ProviderApiError ? lastError : null;
     throw new LLMUnavailableError(toErrorMessage(lastError), {
       provider: adapter.provider,
       modelName: params.modelName,
       kind: lastKind,
       attempts: maxRetries,
-      statusCode:
-        lastError instanceof ProviderApiError
-          ? lastError.statusCode
-          : undefined,
+      statusCode: providerError?.statusCode,
+      rawOutput: providerError?.responseBody,
+      providerError: providerError?.providerError,
     });
   }
 
@@ -529,13 +515,19 @@ export class LLMClient {
         if (error instanceof JsonOutputError) {
           lastRawOutput = error.rawOutput;
         }
+        const rawOutput =
+          error instanceof JsonOutputError
+            ? error.rawOutput
+            : error instanceof ProviderApiError
+              ? error.responseBody
+              : lastRawOutput;
         this.logFailure(
           adapter.provider,
           params.modelName,
           attempt,
           lastKind,
           error,
-          lastRawOutput,
+          rawOutput,
         );
       }
     }
@@ -550,16 +542,16 @@ export class LLMClient {
       });
     }
 
+    const providerError =
+      lastError instanceof ProviderApiError ? lastError : null;
     throw new LLMUnavailableError(toErrorMessage(lastError), {
       provider: adapter.provider,
       modelName: params.modelName,
       kind: lastKind,
       attempts: maxRetries,
-      statusCode:
-        lastError instanceof ProviderApiError
-          ? lastError.statusCode
-          : undefined,
-      rawOutput: lastRawOutput,
+      statusCode: providerError?.statusCode,
+      rawOutput: lastRawOutput ?? providerError?.responseBody,
+      providerError: providerError?.providerError,
     });
   }
 }

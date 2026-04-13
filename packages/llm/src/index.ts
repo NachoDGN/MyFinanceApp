@@ -1,6 +1,7 @@
 export * from "./client";
 export * from "./config";
 export * from "./embeddings";
+export * from "./provider-api-error";
 export * from "./prompts";
 export * from "./types";
 export * from "./tasks/analyze-bank-transaction";

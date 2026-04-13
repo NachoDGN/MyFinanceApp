@@ -471,8 +471,9 @@ export async function analyzeBankTransaction(
           ? error.message
           : "Unknown LLM classification failure.",
       rawOutput:
-        error instanceof LLMError && error.rawOutput
-          ? { invalidOutput: error.rawOutput }
+        error instanceof LLMError
+          ? error.providerError ??
+            (error.rawOutput ? { invalidOutput: error.rawOutput } : null)
           : null,
       provider:
         error instanceof LLMError

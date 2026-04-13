@@ -170,8 +170,9 @@ export async function lookupHistoricalFundPrice(
           ? error.message
           : "Unknown historical fund price lookup failure.",
       rawOutput:
-        error instanceof LLMError && error.rawOutput
-          ? { invalidOutput: error.rawOutput }
+        error instanceof LLMError
+          ? error.providerError ??
+            (error.rawOutput ? { invalidOutput: error.rawOutput } : null)
           : null,
     } satisfies LookupHistoricalFundPriceResult;
   }
