@@ -180,6 +180,7 @@ values
   ('cash_withdrawal', 'Cash Withdrawal', null, 'personal', 'neutral', 16, true, '{}'::jsonb),
   ('business_income', 'Business Income', null, 'personal', 'income', 17, true, '{}'::jsonb),
   ('tax_credit', 'Tax Credit', null, 'both', 'income', 18, true, '{}'::jsonb),
+  ('government_subsidy', 'Government Subsidy', null, 'both', 'income', 19, true, '{}'::jsonb),
   ('salary', 'Salary', null, 'system', 'income', 18, true, '{}'::jsonb),
   ('dividend_income', 'Dividend Income', null, 'system', 'income', 19, true, '{}'::jsonb),
   ('interest_income', 'Interest Income', null, 'system', 'income', 20, true, '{}'::jsonb),
