@@ -1766,6 +1766,76 @@ textarea {
   color: var(--color-text-muted);
 }
 
+.import-review-inline-note {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.import-review-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top, rgba(255, 75, 43, 0.12), transparent 30%),
+    rgba(10, 14, 22, 0.44);
+  backdrop-filter: blur(10px);
+}
+
+.import-review-modal-card {
+  width: min(780px, 100%);
+  display: grid;
+  gap: 20px;
+  padding: 32px;
+  border-radius: 30px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), #fff8f4 100%);
+  border: 1px solid rgba(255, 75, 43, 0.14);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.18);
+}
+
+.import-review-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.import-review-modal-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.import-review-transaction-card {
+  gap: 12px;
+}
+
+.import-review-description {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.import-review-textarea {
+  min-height: 150px;
+}
+
+.import-review-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .spending-page {
   display: grid;
   gap: 24px;
@@ -2895,7 +2965,8 @@ textarea {
   .prompt-profile-grid,
   .prompt-workbench-layout,
   .prompt-content-grid,
-  .spending-layout {
+  .spending-layout,
+  .import-review-modal-summary {
     grid-template-columns: 1fr;
   }
 
@@ -2927,6 +2998,11 @@ textarea {
   .investment-review-grid-head,
   .investment-review-grid-row {
     min-width: 980px;
+  }
+
+  .import-review-modal-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .prompt-sections-card,
@@ -3059,6 +3135,11 @@ textarea {
   .spending-transactions-card,
   .statement-resolution-card {
     padding: 24px;
+  }
+
+  .import-review-modal-card {
+    padding: 24px;
+    border-radius: 24px;
   }
 
   .investment-review-section {

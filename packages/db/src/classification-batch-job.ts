@@ -18,7 +18,6 @@ import {
   replaceTransactionInDataset,
 } from "./review-propagation-support";
 import {
-  markTransactionSearchRowsStale,
   queueTransactionSearchIndexJob,
   syncTransactionSearchIndex,
 } from "./transaction-search-index";
@@ -61,7 +60,11 @@ type BatchClassificationProgress = {
   lastTransactionId: string | null;
   searchBootstrapStatus?: "completed" | "failed";
   searchBootstrapError?: string | null;
-  finalSearchRefreshStatus?: "completed" | "queued_retry" | "failed";
+  finalSearchRefreshStatus?:
+    | "completed"
+    | "queued_background"
+    | "queued_retry"
+    | "failed";
   finalSearchRefreshError?: string | null;
   updatedAt: string;
 };
@@ -761,29 +764,27 @@ export async function processClassificationJob(
   });
   try {
     if (touchedTransactionIds.length > 0) {
-      await markTransactionSearchRowsStale(sql, {
-        userId,
-        transactionIds: touchedTransactionIds,
-      });
-      await syncTransactionSearchIndex(sql, userId, {
-        transactionIds: touchedTransactionIds,
-        onlyStaleOrMissing: false,
-      });
+      if (await supportsJobType(sql, "transaction_search_index")) {
+        await queueTransactionSearchIndexJob(sql, {
+          userId,
+          importBatchIds: [input.importBatchId],
+          trigger: "classification_completion",
+        });
+        finalSearchRefreshStatus = "queued_background";
+      } else {
+        await syncTransactionSearchIndex(sql, userId, {
+          transactionIds: touchedTransactionIds,
+          onlyStaleOrMissing: false,
+        });
+        finalSearchRefreshStatus = "completed";
+      }
+    } else {
+      finalSearchRefreshStatus = "completed";
     }
-    finalSearchRefreshStatus = "completed";
   } catch (error) {
-    finalSearchRefreshStatus = "queued_retry";
+    finalSearchRefreshStatus = "failed";
     finalSearchRefreshError =
       error instanceof Error ? error.message : "Final search refresh failed.";
-    if (await supportsJobType(sql, "transaction_search_index")) {
-      await queueTransactionSearchIndexJob(sql, {
-        userId,
-        transactionIds: touchedTransactionIds,
-        trigger: "classification_final_refresh_retry",
-      });
-    } else {
-      finalSearchRefreshStatus = "failed";
-    }
   }
 
   await sql`

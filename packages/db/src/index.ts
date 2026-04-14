@@ -80,9 +80,28 @@ import {
   supportsJobType,
   updateRunningJobPayload,
 } from "./job-state";
+import {
+  deactivateLearnedReviewExample,
+  learnedReviewExamplesTableExists,
+  listLearnedReviewExamples,
+  resolveAnalyzerPromptProfileId,
+  upsertLearnedReviewExample,
+} from "./learned-review-examples";
+export {
+  getImportBatchReviewQueueState,
+  resolveImportReviewQueueReadiness,
+  type ImportBatchReviewQueueState,
+  type ImportBatchReviewQueueTransaction,
+  type ImportReviewQueueReadiness,
+} from "./import-review-queue";
 import { loadPromptOverrides } from "./prompt-profiles";
 import { processRevolutSyncJob } from "./revolut-sync-job";
 import { processClassificationJob } from "./classification-batch-job";
+export {
+  deactivateLearnedReviewExample,
+  listLearnedReviewExamples,
+  resolveAnalyzerPromptProfileId,
+} from "./learned-review-examples";
 export {
   getPromptOverrides,
   listPromptProfiles,
@@ -548,6 +567,17 @@ export async function reanalyzeTransactionReview(
           ? "Re-ran LLM classification for a previously resolved transaction from a clean baseline with similar resolved precedent context."
           : "Re-ran LLM classification for a single transaction with manual review context.",
       );
+      if (wasPendingReview && afterTransaction.needsReview === false) {
+        await upsertLearnedReviewExample(sql, {
+          userId,
+          accountId: beforeTransaction.accountId,
+          sourceTransaction: beforeTransaction,
+          correctedTransaction: afterTransaction,
+          sourceAuditEventId: auditEvent.id,
+          promptProfileId: resolveAnalyzerPromptProfileId(account.assetDomain),
+          userContext: normalizedReviewContext,
+        });
+      }
       if (
         wasPendingReview &&
         shouldQueueReviewPropagationAfterManualReview(
@@ -1471,6 +1501,14 @@ class SqlFinanceRepository implements FinanceRepository {
           `,
         ]);
 
+      const learnedReviewExamples = (await learnedReviewExamplesTableExists(sql))
+        ? await sql`
+            delete from public.learned_review_examples
+            where user_id = ${this.userId}
+            returning id
+          `
+        : [];
+
       const jobs = await sql`
           delete from public.jobs
           returning id
@@ -1495,6 +1533,7 @@ class SqlFinanceRepository implements FinanceRepository {
         portfolioSnapshots: portfolioSnapshots.length,
         rules: rules.length,
         jobs: jobs.length,
+        learnedReviewExamples: learnedReviewExamples.length,
       };
 
       if (input.apply) {

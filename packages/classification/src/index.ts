@@ -32,6 +32,7 @@ import {
 } from "./deterministic-classification";
 import {
   buildHistoricalReviewExamples,
+  buildReviewPromptExamples,
   buildInvestmentPortfolioState,
   buildPersistedInvestmentSecurityMappings,
   inferTradeQuantityFromUnitPrice,
@@ -534,7 +535,7 @@ async function requestLlmClassification(
     options?.reviewExamples ??
     (options?.skipHistoricalReviewExamples
       ? []
-      : buildHistoricalReviewExamples(dataset, account, transaction));
+      : buildReviewPromptExamples(dataset, account, transaction));
   const reviewExamplesUsed = buildReviewExamplesUsed(reviewExamples);
   const reviewContext = buildTransactionReviewContext(
     transaction,

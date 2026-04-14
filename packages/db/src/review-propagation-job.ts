@@ -2,10 +2,7 @@ import {
   type DomainDataset,
   type Transaction,
 } from "@myfinance/domain";
-import {
-  ProviderApiError,
-  type PromptProfileOverrides,
-} from "@myfinance/llm";
+import { type PromptProfileOverrides } from "@myfinance/llm";
 
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
 import { loadDatasetForUser } from "./dataset-loader";
@@ -28,11 +25,7 @@ import {
 } from "./sql-json";
 import { type SqlClient } from "./sql-runtime";
 import {
-  ensureTransactionDescriptionEmbeddings,
-  findSimilarUnresolvedTransactionsByDescriptionEmbedding,
   getReviewPropagationSimilarityThreshold,
-  normalizeStoredVectorLiteral,
-  parseTransactionEmbeddingSeedRow,
   readTransactionReviewContext,
 } from "./transaction-embedding-search";
 import { executeTransactionEnrichmentPipeline } from "./transaction-enrichment";
@@ -41,6 +34,8 @@ import { updateTransactionRecord } from "./transaction-record";
 type ReviewPropagationMode =
   | "unresolved_source_context"
   | "resolved_source_rereview";
+
+const REVIEW_PROPAGATION_CANDIDATE_LIMIT = 200;
 
 type ReviewPropagationCandidateResult = {
   afterTransaction: Transaction | null;
@@ -101,7 +96,7 @@ async function applyReviewPropagationToCandidate(
     await insertAuditEventRecord(
       sql,
       auditEvent,
-      "Appended propagated unresolved review context from a similar transaction in the same investment account.",
+      "Appended propagated unresolved review context from a similar transaction in the same account.",
     );
 
     return {
@@ -144,12 +139,12 @@ async function applyReviewPropagationToCandidate(
   await insertAuditEventRecord(
     sql,
     auditEvent,
-    "Re-ran LLM classification for a similar unresolved transaction using a resolved precedent from the same investment account.",
+    "Re-ran LLM classification for a similar unresolved transaction using a resolved precedent from the same account.",
   );
 
   return {
     afterTransaction,
-    shouldRunInvestmentRebuild: true,
+    shouldRunInvestmentRebuild: input.account.assetDomain === "investment",
     shouldQueueMetricRefresh: true,
   };
 }
@@ -191,7 +186,7 @@ export async function processReviewPropagationJob(
     );
   }
 
-  if (account.assetDomain !== "investment" || sourceTransaction.voidedAt) {
+  if (sourceTransaction.voidedAt) {
     return {
       sourceTransactionId,
       sourceAuditEventId,
@@ -211,16 +206,14 @@ export async function processReviewPropagationJob(
     sourceTransaction.needsReview === true
       ? "unresolved_source_context"
       : "resolved_source_rereview";
-  const candidateSeedRowsRaw = await sql`
-    select id, description_raw, description_embedding
-    from public.transactions
-    where user_id = ${userId}
-      and account_id = ${account.id}
-      and id <> ${sourceTransactionId}
-      and coalesce(needs_review, false) = true
-      and voided_at is null
-  `;
-  if (candidateSeedRowsRaw.length === 0) {
+  const candidateTransactions = dataset.transactions.filter(
+    (candidate) =>
+      candidate.accountId === account.id &&
+      candidate.id !== sourceTransactionId &&
+      candidate.needsReview === true &&
+      !candidate.voidedAt,
+  );
+  if (candidateTransactions.length === 0) {
     return {
       sourceTransactionId,
       sourceAuditEventId,
@@ -233,56 +226,15 @@ export async function processReviewPropagationJob(
     };
   }
 
-  const sourceSeedRowRaw = await sql`
-    select id, description_raw, description_embedding
-    from public.transactions
-    where id = ${sourceTransactionId}
+  const sourceSearchEmbeddingRows = await sql`
+    select embedding
+    from public.transaction_search_rows
+    where transaction_id = ${sourceTransactionId}
       and user_id = ${userId}
+      and embedding is not null
     limit 1
   `;
-  const sourceSeedRow = sourceSeedRowRaw[0]
-    ? parseTransactionEmbeddingSeedRow(
-        sourceSeedRowRaw[0] as Record<string, unknown>,
-      )
-    : null;
-  if (!sourceSeedRow) {
-    throw new Error(
-      `Source transaction ${sourceTransactionId} is missing description embedding context.`,
-    );
-  }
-
-  const candidateSeedRows = candidateSeedRowsRaw.map((row) =>
-    parseTransactionEmbeddingSeedRow(row as Record<string, unknown>),
-  );
-  let embeddingGeneration = {
-    generatedCount: 0,
-    skippedCount: 0,
-    skippedReason: null as string | null,
-  };
-  try {
-    const sourceEmbeddingResult = await ensureTransactionDescriptionEmbeddings(
-      sql,
-      userId,
-      [sourceSeedRow],
-    );
-    const candidateEmbeddingResult =
-      await ensureTransactionDescriptionEmbeddings(
-        sql,
-        userId,
-        candidateSeedRows,
-      );
-    embeddingGeneration = {
-      generatedCount:
-        sourceEmbeddingResult.generatedCount +
-        candidateEmbeddingResult.generatedCount,
-      skippedCount:
-        sourceEmbeddingResult.skippedCount +
-        candidateEmbeddingResult.skippedCount,
-      skippedReason:
-        sourceEmbeddingResult.skippedReason ??
-        candidateEmbeddingResult.skippedReason,
-    };
-  } catch (embeddingError) {
+  if (!sourceSearchEmbeddingRows[0]?.embedding) {
     return {
       sourceTransactionId,
       sourceAuditEventId,
@@ -292,55 +244,61 @@ export async function processReviewPropagationJob(
       attemptedCount: 0,
       appliedCount: 0,
       skippedCount: 0,
-      skippedReason: "embedding_generation_failed",
-      embeddingError:
-        embeddingError instanceof Error
-          ? embeddingError.message
-          : "Embedding generation failed.",
-      ...(embeddingError instanceof ProviderApiError &&
-      (embeddingError.providerError || embeddingError.responseJson)
-        ? {
-            embeddingErrorResponse:
-              embeddingError.providerError ?? embeddingError.responseJson,
-          }
-        : {}),
+      skippedReason: "source_embedding_unavailable",
     };
   }
 
-  const sourceEmbeddingRows = await sql`
-    select description_embedding
-    from public.transactions
-    where id = ${sourceTransactionId}
-      and user_id = ${userId}
-    limit 1
+  const candidateIds = candidateTransactions.map((candidate) => candidate.id);
+  const rows = await sql`
+    with source as (
+      select embedding
+      from public.transaction_search_rows
+      where transaction_id = ${sourceTransactionId}
+        and user_id = ${userId}
+        and embedding is not null
+      limit 1
+    ),
+    approximate_candidates as (
+      select
+        r.transaction_id,
+        r.embedding
+      from public.transaction_search_rows as r
+      join public.transactions as t
+        on t.id = r.transaction_id
+      join public.transaction_search_batches as b
+        on b.id = r.batch_id
+      cross join source
+      where r.user_id = ${userId}
+        and r.account_id = ${account.id}
+        and r.transaction_id in ${sql(candidateIds)}
+        and r.transaction_id <> ${sourceTransactionId}
+        and coalesce(t.needs_review, false) = true
+        and t.voided_at is null
+        and r.embedding_status in ('ready', 'stale')
+        and b.status in ('ready', 'processing', 'stale')
+      order by
+        r.embedding::halfvec(3072) <=>
+        source.embedding::halfvec(3072) asc
+      limit ${Math.max(REVIEW_PROPAGATION_CANDIDATE_LIMIT, candidateIds.length)}
+    )
+    select
+      candidate.transaction_id,
+      1 - (candidate.embedding <=> source.embedding) as similarity
+    from approximate_candidates as candidate
+    cross join source
+    where 1 - (candidate.embedding <=> source.embedding) >= ${getReviewPropagationSimilarityThreshold()}
+    order by candidate.embedding <=> source.embedding asc
   `;
-  const sourceEmbedding = normalizeStoredVectorLiteral(
-    sourceEmbeddingRows[0]?.description_embedding,
-  );
-  if (!sourceEmbedding) {
-    return {
-      sourceTransactionId,
-      sourceAuditEventId,
-      accountId: account.id,
-      mode,
-      candidateCount: 0,
-      attemptedCount: 0,
-      appliedCount: 0,
-      skippedCount: 0,
-      skippedReason:
-        embeddingGeneration.skippedReason ?? "source_embedding_unavailable",
-      embeddingGeneration,
-    };
-  }
+  const embeddingMatches = rows.flatMap((row) => {
+    const transactionId =
+      typeof row.transaction_id === "string" ? row.transaction_id : "";
+    const similarity = Number(row.similarity ?? 0);
+    if (!transactionId || !Number.isFinite(similarity)) {
+      return [];
+    }
 
-  const embeddingMatches =
-    await findSimilarUnresolvedTransactionsByDescriptionEmbedding(sql, {
-      userId,
-      sourceTransactionId,
-      accountId: account.id,
-      sourceEmbedding,
-      threshold: getReviewPropagationSimilarityThreshold(),
-    });
+    return [{ transactionId, similarity }];
+  });
   const candidateMatches = await selectReviewPropagationCandidateMatches({
     dataset,
     account,
@@ -465,7 +423,6 @@ export async function processReviewPropagationJob(
       appliedTransactionIds,
       failedTransactionIds,
       rebuilt,
-      embeddingGeneration,
     };
   });
 }

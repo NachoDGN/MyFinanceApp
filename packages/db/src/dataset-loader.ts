@@ -1,5 +1,6 @@
 import type { DomainDataset } from "@myfinance/domain";
 
+import { learnedReviewExamplesTableExists } from "./learned-review-examples";
 import { mapFromSql } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 import { transactionColumnsSql } from "./transaction-columns";
@@ -21,6 +22,7 @@ export async function loadDatasetForUser(
     rules,
     auditEvents,
     jobs,
+    learnedReviewExamples,
     accountBalanceSnapshots,
     securities,
     securityAliases,
@@ -76,6 +78,18 @@ export async function loadDatasetForUser(
     sql`select * from public.classification_rules where user_id = ${userId} order by priority`,
     sql`select * from public.audit_events order by created_at desc limit 200`,
     sql`select * from public.jobs order by created_at desc`,
+    (async () => {
+      if (!(await learnedReviewExamplesTableExists(sql))) {
+        return [];
+      }
+
+      return sql`
+        select *
+        from public.learned_review_examples
+        where user_id = ${userId}
+        order by updated_at desc, created_at desc
+      `;
+    })(),
     sql`select * from public.account_balance_snapshots where account_id in (select id from public.accounts where user_id = ${userId}) order by as_of_date desc`,
     sql`select * from public.securities order by display_symbol`,
     sql`select * from public.security_aliases order by created_at desc`,
@@ -139,6 +153,9 @@ export async function loadDatasetForUser(
     rules: mapFromSql<DomainDataset["rules"]>(rules),
     auditEvents: mapFromSql<DomainDataset["auditEvents"]>(auditEvents),
     jobs: mapFromSql<DomainDataset["jobs"]>(jobs),
+    learnedReviewExamples: mapFromSql<DomainDataset["learnedReviewExamples"]>(
+      learnedReviewExamples,
+    ),
     accountBalanceSnapshots: mapFromSql<
       DomainDataset["accountBalanceSnapshots"]
     >(accountBalanceSnapshots),

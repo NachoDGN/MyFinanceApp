@@ -377,6 +377,7 @@ export function createDataset(
     rules: [],
     auditEvents: [],
     jobs: [],
+    learnedReviewExamples: [],
     accountBalanceSnapshots: [],
     securities: [],
     securityAliases: [],

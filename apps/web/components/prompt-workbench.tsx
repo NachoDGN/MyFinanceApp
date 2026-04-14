@@ -2,10 +2,14 @@
 
 import { useState, useTransition } from "react";
 
+import type { Account, LearnedReviewExample } from "@myfinance/domain";
 import type { PromptProfileModel } from "@myfinance/db";
 import { buildPromptProfilePreview } from "@myfinance/llm";
 
-import { updatePromptProfileAction } from "../app/actions";
+import {
+  deleteLearnedReviewExampleAction,
+  updatePromptProfileAction,
+} from "../app/actions";
 
 type PreviewMode = "system" | "user";
 
@@ -42,12 +46,45 @@ function buildSectionOverrides(profile: PromptProfileModel) {
   );
 }
 
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function formatLearnedOutcome(example: LearnedReviewExample) {
+  const corrected = example.correctedOutcomeSnapshotJson;
+  const parts = [
+    readOptionalString(corrected.transactionClass)?.replace(/_/g, " "),
+    readOptionalString(corrected.categoryCode)?.replace(/_/g, " "),
+    readOptionalString(corrected.securityId),
+  ].filter((value): value is string => Boolean(value));
+
+  return parts.length > 0 ? parts.join(" · ") : "Resolved outcome stored";
+}
+
+function formatExampleTimestamp(value: string) {
+  try {
+    return new Intl.DateTimeFormat("en", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+}
+
 export function PromptWorkbench({
   initialProfiles,
+  accounts,
+  initialLearnedReviewExamples,
 }: {
   initialProfiles: PromptProfileModel[];
+  accounts: Pick<Account, "id" | "displayName">[];
+  initialLearnedReviewExamples: LearnedReviewExample[];
 }) {
   const [profiles, setProfiles] = useState<PromptProfileModel[]>(initialProfiles);
+  const [learnedReviewExamples, setLearnedReviewExamples] = useState<
+    LearnedReviewExample[]
+  >(initialLearnedReviewExamples);
   const [selectedPromptId, setSelectedPromptId] = useState<
     PromptProfileModel["id"] | ""
   >(initialProfiles[0]?.id ?? "");
@@ -87,6 +124,23 @@ export function PromptWorkbench({
     (total, section) => total + section.requiredPlaceholders.length,
     0,
   );
+  const accountDisplayNameById = new Map(
+    accounts.map((account) => [account.id, account.displayName]),
+  );
+  const learnedExamplesByAccount = [...new Set(
+    learnedReviewExamples.map((example) => example.accountId),
+  )]
+    .map((accountId) => ({
+      accountId,
+      accountDisplayName:
+        accountDisplayNameById.get(accountId) ?? accountId,
+      examples: learnedReviewExamples.filter(
+        (example) => example.accountId === accountId,
+      ),
+    }))
+    .sort((left, right) =>
+      left.accountDisplayName.localeCompare(right.accountDisplayName),
+    );
 
   function updateSectionValue(sectionId: string, value: string) {
     setProfiles((current) =>
@@ -146,6 +200,27 @@ export function PromptWorkbench({
       } catch (error) {
         setFeedback(
           error instanceof Error ? error.message : "Prompt update failed.",
+        );
+      }
+    });
+  }
+
+  function handleDeleteLearnedExample(learnedReviewExampleId: string) {
+    startTransition(async () => {
+      setFeedback(null);
+      try {
+        const result = await deleteLearnedReviewExampleAction(
+          learnedReviewExampleId,
+        );
+        setLearnedReviewExamples((current) =>
+          current.filter((example) => example.id !== result.learnedReviewExampleId),
+        );
+        setFeedback(result.message);
+      } catch (error) {
+        setFeedback(
+          error instanceof Error
+            ? error.message
+            : "Learned example deletion failed.",
         );
       }
     });
@@ -371,6 +446,98 @@ export function PromptWorkbench({
           </aside>
         </div>
       </div>
+
+      <section className="section-card prompt-learned-examples-card">
+        <div className="section-header">
+          <div>
+            <span className="label-sm">Learned Examples</span>
+            <h2 className="section-title">Account-scoped prompt memory</h2>
+          </div>
+          <span className="pill">
+            {learnedReviewExamples.length} active example
+            {learnedReviewExamples.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="section-card-body" style={{ display: "grid", gap: 20 }}>
+          <p className="muted">
+            These examples were kept because a manual review resolved the
+            transaction. Removing one stops it from being injected into future
+            analyzer prompts for the same account.
+          </p>
+          {learnedExamplesByAccount.length === 0 ? (
+            <div className="builder-panel">
+              <span className="label-sm">No learned examples yet</span>
+              <p className="builder-copy">
+                Once a manual review resolves an unresolved transaction, its
+                context will appear here as removable prompt memory.
+              </p>
+            </div>
+          ) : (
+            <div className="draft-list">
+              {learnedExamplesByAccount.map((group) => (
+                <article key={group.accountId} className="draft-card">
+                  <div className="draft-meta" style={{ marginBottom: 16 }}>
+                    <div>
+                      <span className="label-sm">Account</span>
+                      <div className="prompt-section-label">
+                        {group.accountDisplayName}
+                      </div>
+                    </div>
+                    <span className="pill">
+                      {group.examples.length} example
+                      {group.examples.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div className="review-queue">
+                    {group.examples.map((example) => {
+                      const sourceDescription =
+                        readOptionalString(
+                          example.sourceTransactionSnapshotJson.descriptionRaw,
+                        ) ?? "Description unavailable.";
+
+                      return (
+                        <div className="review-queue-item" key={example.id}>
+                          <div className="review-queue-header">
+                            <div className="review-queue-title">
+                              <span className="timeline-label">
+                                {sourceDescription}
+                              </span>
+                            </div>
+                            <button
+                              className="btn-ghost"
+                              type="button"
+                              disabled={isPending}
+                              onClick={() =>
+                                handleDeleteLearnedExample(example.id)
+                              }
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <div className="review-queue-meta">
+                            <span className="pill">
+                              {example.promptProfileId}
+                            </span>
+                            <span className="pill">
+                              {formatLearnedOutcome(example)}
+                            </span>
+                            <span className="pill">
+                              {formatExampleTimestamp(example.updatedAt)}
+                            </span>
+                          </div>
+                          <p className="review-queue-reason">
+                            {example.userContext}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

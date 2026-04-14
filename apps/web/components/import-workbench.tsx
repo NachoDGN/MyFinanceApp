@@ -12,12 +12,56 @@ import type {
 } from "@myfinance/domain";
 import { commitImportAction, previewImportAction } from "../app/actions";
 import { NEW_SPREADSHEET_TEMPLATE_ID } from "../app/import-constants";
+import { ImportReviewModal } from "./import-review-modal";
 
 type ImportResult = ImportPreviewResult | ImportCommitResult;
 type TemplateOption = Pick<ImportTemplate, "id" | "name">;
 
+const IMPORT_REVIEW_ACTIVE_BATCH_STORAGE_KEY = "import-review-active-batch-id";
+const IMPORT_REVIEW_RECENT_BATCH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 function isCommitResult(value: ImportResult): value is ImportCommitResult {
   return "importBatchId" in value;
+}
+
+function readTrackedImportBatchId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const value = window.sessionStorage.getItem(
+    IMPORT_REVIEW_ACTIVE_BATCH_STORAGE_KEY,
+  );
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function persistTrackedImportBatchId(importBatchId: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (importBatchId) {
+    window.sessionStorage.setItem(
+      IMPORT_REVIEW_ACTIVE_BATCH_STORAGE_KEY,
+      importBatchId,
+    );
+    return;
+  }
+
+  window.sessionStorage.removeItem(IMPORT_REVIEW_ACTIVE_BATCH_STORAGE_KEY);
+}
+
+function isRecentCommittedBatch(batch: Pick<ImportBatch, "importedAt" | "status">) {
+  if (batch.status !== "committed") {
+    return false;
+  }
+
+  const importedAtTime = Date.parse(batch.importedAt);
+  if (!Number.isFinite(importedAtTime)) {
+    return false;
+  }
+
+  return Date.now() - importedAtTime <= IMPORT_REVIEW_RECENT_BATCH_WINDOW_MS;
 }
 
 function PreviewTable({
@@ -77,11 +121,40 @@ export function ImportWorkbench({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [activeImportBatchId, setActiveImportBatchId] = useState<string | null>(
+    null,
+  );
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     setAvailableTemplates(templates.map(({ id, name }) => ({ id, name })));
   }, [templates]);
+
+  useEffect(() => {
+    const batchIds = new Set(importBatches.map((batch) => batch.id));
+    const persistedBatchId = readTrackedImportBatchId();
+    const fallbackBatchId =
+      importBatches.find(
+        (batch) =>
+          batch.status === "committed" &&
+          (!batch.classificationTriggeredAt || isRecentCommittedBatch(batch)),
+      )?.id ??
+      null;
+
+    setActiveImportBatchId((current) => {
+      if (current && batchIds.has(current)) {
+        return current;
+      }
+      if (persistedBatchId && batchIds.has(persistedBatchId)) {
+        return persistedBatchId;
+      }
+      return fallbackBatchId;
+    });
+  }, [importBatches]);
+
+  useEffect(() => {
+    persistTrackedImportBatchId(activeImportBatchId);
+  }, [activeImportBatchId]);
 
   async function submit(mode: "preview" | "commit") {
     if (!selectedFile) {
@@ -125,7 +198,8 @@ export function ImportWorkbench({
           : `Preview generated from the uploaded file.${validationWarningCount > 0 ? ` ${validationWarningCount} file warning(s) detected.` : ""}`,
     );
 
-    if (mode === "commit") {
+    if (mode === "commit" && isCommitResult(payload)) {
+      setActiveImportBatchId(payload.importBatchId);
       router.refresh();
     }
   }
@@ -345,6 +419,13 @@ export function ImportWorkbench({
           ) : null}
         </div>
       ) : null}
+
+      <ImportReviewModal
+        importBatchId={activeImportBatchId}
+        onTrackedBatchSettled={() => {
+          persistTrackedImportBatchId(null);
+        }}
+      />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
 import {
   createFinanceRepository,
   getRevolutRuntimeStatus,
+  listLearnedReviewExamples,
   listPromptProfiles,
 } from "@myfinance/db";
 import {
@@ -453,9 +454,11 @@ export async function getSettingsModel(searchParams: RawSearchParams) {
 export async function getPromptsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
   const profiles = await listPromptProfiles();
+  const learnedReviewExamples = await listLearnedReviewExamples();
   return {
     ...state,
     promptProfiles: profiles,
+    learnedReviewExamples,
   };
 }
 

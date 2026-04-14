@@ -3,6 +3,7 @@
 import { z } from "zod";
 
 import {
+  deactivateLearnedReviewExample,
   getDbRuntimeConfig,
   refreshOwnedStockPrices,
   updatePromptProfile,
@@ -205,6 +206,20 @@ export async function updateWorkspaceProfileAction(
   });
   revalidateWorkspacePaths();
   return result;
+}
+
+export async function deleteLearnedReviewExampleAction(
+  learnedReviewExampleId: string,
+) {
+  const parsedId = z.string().uuid().parse(learnedReviewExampleId);
+  const result = await deactivateLearnedReviewExample({
+    learnedReviewExampleId: parsedId,
+  });
+  revalidatePromptPaths();
+  return {
+    learnedReviewExampleId: result.id,
+    message: "Learned example removed from future prompt assembly.",
+  };
 }
 
 export async function createEntityAction(input: z.input<typeof entitySchema>) {

@@ -3,7 +3,13 @@ import {
   isTextEmbeddingConfigured,
   type TextEmbeddingClient,
 } from "@myfinance/llm";
-import type { Account, AuditEvent, DomainDataset, Transaction } from "@myfinance/domain";
+import type {
+  Account,
+  AuditEvent,
+  DomainDataset,
+  LearnedReviewExample,
+  Transaction,
+} from "@myfinance/domain";
 import {
   buildAllowedCategoriesForAccount,
   buildAllowedTransactionClassesForAccount,
@@ -308,6 +314,10 @@ function extractHistoricalReviewExample(
     return null;
   }
 
+  if (readOptionalBoolean(after.needsReview) === true) {
+    return null;
+  }
+
   const afterLlmPayload = readOptionalRecord(after.llmPayload);
   const afterReviewContext = readOptionalRecord(afterLlmPayload?.reviewContext);
   const userFeedback =
@@ -482,6 +492,101 @@ function extractHistoricalReviewExample(
   };
 }
 
+function extractLearnedReviewExample(
+  example: LearnedReviewExample,
+): HistoricalReviewExample | null {
+  if (!example.active) {
+    return null;
+  }
+
+  const transaction = readOptionalRecord(example.sourceTransactionSnapshotJson);
+  const initialInference = readOptionalRecord(
+    example.initialInferenceSnapshotJson,
+  );
+  const correctedOutcome = readOptionalRecord(
+    example.correctedOutcomeSnapshotJson,
+  );
+  if (!transaction || !initialInference || !correctedOutcome) {
+    return null;
+  }
+
+  return {
+    auditEventId: example.sourceAuditEventId ?? example.id,
+    objectId: example.sourceTransactionId,
+    createdAt: example.updatedAt ?? example.createdAt,
+    accountId: example.accountId,
+    institutionName: null,
+    transaction: {
+      transactionDate: readOptionalString(transaction.transactionDate),
+      postedDate: readOptionalString(transaction.postedDate),
+      amountOriginal: readOptionalString(transaction.amountOriginal),
+      currencyOriginal: readOptionalString(transaction.currencyOriginal),
+      descriptionRaw: readOptionalString(transaction.descriptionRaw),
+      merchantNormalized: readOptionalString(transaction.merchantNormalized),
+      counterpartyName: readOptionalString(transaction.counterpartyName),
+      securityId: readOptionalString(transaction.securityId),
+      quantity: readOptionalString(transaction.quantity),
+      unitPriceOriginal: readOptionalString(transaction.unitPriceOriginal),
+    },
+    initialInference: {
+      transactionClass: readOptionalString(initialInference.transactionClass),
+      categoryCode: readOptionalString(initialInference.categoryCode),
+      classificationSource: readOptionalString(
+        initialInference.classificationSource,
+      ),
+      classificationStatus: readOptionalString(
+        initialInference.classificationStatus,
+      ),
+      classificationConfidence: readOptionalString(
+        initialInference.classificationConfidence,
+      ),
+      needsReview: readOptionalBoolean(initialInference.needsReview),
+      reviewReason: readOptionalString(initialInference.reviewReason),
+      model: readOptionalString(initialInference.model),
+      explanation: readOptionalString(initialInference.explanation),
+      reason: readOptionalString(initialInference.reason),
+    },
+    userFeedback: example.userContext,
+    correctedOutcome: {
+      transactionClass: readOptionalString(correctedOutcome.transactionClass),
+      categoryCode: readOptionalString(correctedOutcome.categoryCode),
+      merchantNormalized: readOptionalString(
+        correctedOutcome.merchantNormalized,
+      ),
+      counterpartyName: readOptionalString(correctedOutcome.counterpartyName),
+      quantity: readOptionalString(correctedOutcome.quantity),
+      unitPriceOriginal: readOptionalString(correctedOutcome.unitPriceOriginal),
+      reviewReason: readOptionalString(correctedOutcome.reviewReason),
+    },
+  };
+}
+
+function scorePromptReviewExample(
+  example: HistoricalReviewExample,
+  accountById: Map<string, Account>,
+  account: Account,
+  transaction: Transaction,
+  targetTokens: Set<string>,
+) {
+  const exampleAccount = example.accountId
+    ? accountById.get(example.accountId)
+    : null;
+  let score = 0;
+  if (exampleAccount?.institutionName === account.institutionName) {
+    score += 20;
+  }
+  if (transaction.securityId && example.transaction.securityId === transaction.securityId) {
+    score += 30;
+  }
+  const exampleTokens = tokenizePromptText(example.transaction.descriptionRaw);
+  for (const token of targetTokens) {
+    if (exampleTokens.has(token)) {
+      score += 2;
+    }
+  }
+  return score;
+}
+
 export function buildHistoricalReviewExamples(
   dataset: DomainDataset,
   account: Account,
@@ -505,40 +610,21 @@ export function buildHistoricalReviewExamples(
       return exampleAccount?.assetDomain === account.assetDomain;
     })
     .sort((left, right) => {
-      const leftAccount = left.accountId
-        ? accountById.get(left.accountId)
-        : null;
-      const rightAccount = right.accountId
-        ? accountById.get(right.accountId)
-        : null;
-
-      const scoreExample = (
-        example: HistoricalReviewExample,
-        exampleAccount: Account | undefined | null,
-      ) => {
-        let score = 0;
-        if (exampleAccount?.institutionName === account.institutionName) {
-          score += 20;
-        }
-        if (
-          transaction.securityId &&
-          example.transaction.securityId === transaction.securityId
-        ) {
-          score += 30;
-        }
-        const exampleTokens = tokenizePromptText(
-          example.transaction.descriptionRaw,
-        );
-        for (const token of targetTokens) {
-          if (exampleTokens.has(token)) {
-            score += 2;
-          }
-        }
-        return score;
-      };
-
       const scoreDelta =
-        scoreExample(right, rightAccount) - scoreExample(left, leftAccount);
+        scorePromptReviewExample(
+          right,
+          accountById,
+          account,
+          transaction,
+          targetTokens,
+        ) -
+        scorePromptReviewExample(
+          left,
+          accountById,
+          account,
+          transaction,
+          targetTokens,
+        );
       if (scoreDelta !== 0) {
         return scoreDelta;
       }
@@ -548,6 +634,85 @@ export function buildHistoricalReviewExamples(
       );
     })
     .slice(0, limit);
+}
+
+export function buildLearnedReviewExamples(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  limit = 5,
+) {
+  const accountById = new Map(
+    dataset.accounts.map((candidate) => [candidate.id, candidate]),
+  );
+  const targetTokens = tokenizePromptText(transaction.descriptionRaw);
+  const promptProfileId =
+    account.assetDomain === "investment"
+      ? "investment_transaction_analyzer"
+      : "cash_transaction_analyzer";
+  const eligibleExamples = dataset.learnedReviewExamples.filter(
+    (example) =>
+      example.active &&
+      example.accountId === account.id &&
+      example.promptProfileId === promptProfileId &&
+      example.sourceTransactionId !== transaction.id,
+  );
+
+  return eligibleExamples
+    .map((example) => extractLearnedReviewExample(example))
+    .filter((example): example is HistoricalReviewExample => Boolean(example))
+    .sort((left, right) => {
+      const scoreDelta =
+        scorePromptReviewExample(
+          right,
+          accountById,
+          account,
+          transaction,
+          targetTokens,
+        ) -
+        scorePromptReviewExample(
+          left,
+          accountById,
+          account,
+          transaction,
+          targetTokens,
+        );
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      return (
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+      );
+    })
+    .slice(0, limit);
+}
+
+export function buildReviewPromptExamples(
+  dataset: DomainDataset,
+  account: Account,
+  transaction: Transaction,
+  limit = 5,
+) {
+  const learnedExamples = buildLearnedReviewExamples(
+    dataset,
+    account,
+    transaction,
+    limit,
+  );
+  if (learnedExamples.length >= limit) {
+    return learnedExamples.slice(0, limit);
+  }
+
+  const seenObjectIds = new Set(learnedExamples.map((example) => example.objectId));
+  const fallbackExamples = buildHistoricalReviewExamples(
+    dataset,
+    account,
+    transaction,
+    limit * 2,
+  ).filter((example) => !seenObjectIds.has(example.objectId));
+
+  return [...learnedExamples, ...fallbackExamples].slice(0, limit);
 }
 
 function scoreSimilarAccountTransaction(

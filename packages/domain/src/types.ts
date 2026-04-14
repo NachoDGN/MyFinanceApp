@@ -394,6 +394,25 @@ export interface Job {
   createdAt: string;
 }
 
+export interface LearnedReviewExample {
+  id: string;
+  userId: string;
+  accountId: string;
+  sourceTransactionId: string;
+  sourceAuditEventId?: string | null;
+  promptProfileId:
+    | "cash_transaction_analyzer"
+    | "investment_transaction_analyzer";
+  userContext: string;
+  sourceTransactionSnapshotJson: Record<string, unknown>;
+  initialInferenceSnapshotJson: Record<string, unknown>;
+  correctedOutcomeSnapshotJson: Record<string, unknown>;
+  metadataJson: Record<string, unknown>;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RuleDraftParseResult {
   title: string;
   summary: string;
@@ -676,6 +695,7 @@ export interface DomainDataset {
   rules: ClassificationRule[];
   auditEvents: AuditEvent[];
   jobs: Job[];
+  learnedReviewExamples: LearnedReviewExample[];
   accountBalanceSnapshots: AccountBalanceSnapshot[];
   securities: Security[];
   securityAliases: SecurityAlias[];
@@ -908,6 +928,7 @@ export interface ResetWorkspaceResult {
     portfolioSnapshots: number;
     rules: number;
     jobs: number;
+    learnedReviewExamples: number;
   };
 }
 

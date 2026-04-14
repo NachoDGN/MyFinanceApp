@@ -799,20 +799,32 @@ test("manual re-review of a previously unresolved investment transaction always 
   );
 });
 
-test("manual re-review propagation queueing stays limited to unresolved investment transactions", () => {
+test("manual re-review propagation queueing stays limited to previously unresolved transactions", () => {
   const account = createAccount({
-    id: "cash-propagation-skip",
+    id: "cash-propagation-source",
     assetDomain: "cash",
     accountType: "checking",
   });
-  const transaction = createTransaction({
+  const unresolvedTransaction = createTransaction({
+    id: "cash-propagation-unresolved",
+    accountId: account.id,
+    needsReview: true,
+  });
+  const resolvedTransaction = createTransaction({
     id: "propagation-resolved",
     accountId: account.id,
     needsReview: false,
   });
 
   assert.equal(
-    shouldQueueReviewPropagationAfterManualReview(account, transaction),
+    shouldQueueReviewPropagationAfterManualReview(
+      account,
+      unresolvedTransaction,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldQueueReviewPropagationAfterManualReview(account, resolvedTransaction),
     false,
   );
 });

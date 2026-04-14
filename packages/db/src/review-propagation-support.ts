@@ -82,6 +82,10 @@ export async function selectReviewPropagationCandidateMatches(input: {
   sourceTransaction: Transaction;
   embeddingMatches: SimilarUnresolvedTransactionMatch[];
 }) {
+  if (input.embeddingMatches.length === 0) {
+    return [];
+  }
+
   const rankedMatches = await rankReviewPropagationTransactions(
     input.dataset,
     input.account,
@@ -92,18 +96,9 @@ export async function selectReviewPropagationCandidateMatches(input: {
     rankedMatches.map((match) => [match.transaction.id, match]),
   );
 
-  if (input.embeddingMatches.length > 0) {
-    return input.embeddingMatches.filter((match) =>
-      rankedMatchById.has(match.transactionId),
-    );
-  }
-
-  return rankedMatches.map((match) => ({
-    transactionId: match.transaction.id,
-    similarity:
-      match.semanticSimilarity ??
-      Math.min(0.99, Math.max(0, match.lexicalScore) / 100),
-  }));
+  return input.embeddingMatches.filter((match) =>
+    rankedMatchById.has(match.transactionId),
+  );
 }
 
 function getTransactionUserProvidedContext(transaction: Transaction) {
@@ -408,12 +403,10 @@ export function canSeedReviewPropagationFromTransaction(
 }
 
 export function shouldQueueReviewPropagationAfterManualReview(
-  account: { assetDomain: "cash" | "investment" },
+  _account: { assetDomain: "cash" | "investment" },
   transaction: Pick<Transaction, "needsReview">,
 ) {
-  return (
-    account.assetDomain === "investment" && transaction.needsReview === true
-  );
+  return transaction.needsReview === true;
 }
 
 export function buildReviewPropagationUserContext(
