@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, useTransition } from "react";
 
 const REVIEW_QUEUE_POLL_INTERVAL_MS = 2_000;
 const REVIEW_JOB_POLL_INTERVAL_MS = 2_000;
@@ -10,6 +11,11 @@ type ImportReviewQueueReadiness =
   | "waiting_for_embeddings"
   | "ready"
   | "failed";
+
+type ImportReviewQueueCategoryOption = {
+  code: string;
+  displayName: string;
+};
 
 type ImportBatchReviewQueueTransaction = {
   transactionId: string;
@@ -24,6 +30,8 @@ type ImportBatchReviewQueueTransaction = {
   manualNotes: string | null;
   categoryCode: string | null;
   transactionClass: string;
+  categorySuggestions: ImportReviewQueueCategoryOption[];
+  categoryOptions: ImportReviewQueueCategoryOption[];
 };
 
 type ImportBatchReviewQueueState = {
@@ -51,6 +59,14 @@ type ReviewJobStatusPayload = {
       needsReview?: boolean | null;
     } | null;
   };
+};
+
+type BackgroundReviewJob = {
+  jobId: string;
+  transactionId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  message: string | null;
+  lastError: string | null;
 };
 
 function buildQueueUrl(
@@ -116,25 +132,48 @@ function formatDate(value: string | null) {
 
 function buildSessionNotice(input: {
   queueState: ImportBatchReviewQueueState;
-  resolved: boolean;
-  pendingPropagation: boolean;
-  pendingMetrics: boolean;
+  pendingBackgroundJobs: number;
 }) {
   if (input.queueState.deferredSimilarCount > 0) {
-    if (input.resolved && input.pendingPropagation) {
-      return "No more independent unresolved transactions remain. Similar transactions are retrying in the background.";
-    }
-
-    return "No more independent unresolved transactions remain in this session. Similar transactions were deferred to avoid duplicate review.";
+    return input.pendingBackgroundJobs > 0
+      ? "No more independent unresolved transactions remain. Similar transactions are deferred while dispatched reviews keep running in the background."
+      : "No more independent unresolved transactions remain in this session. Similar transactions were deferred to avoid duplicate review.";
   }
 
   if (input.queueState.unresolvedCount === 0) {
-    return input.pendingMetrics
-      ? "The import review queue is complete. Background refresh jobs are still running."
+    return input.pendingBackgroundJobs > 0
+      ? "The import review queue is complete. Dispatched reviews are still finishing in the background."
       : "The import review queue is complete.";
   }
 
   return "No more independent unresolved transactions remain in this session.";
+}
+
+function buildBackgroundJobSummary(backgroundJobs: BackgroundReviewJob[]) {
+  const pendingCount = backgroundJobs.filter(
+    (job) => job.status === "queued" || job.status === "running",
+  ).length;
+  const failedCount = backgroundJobs.filter(
+    (job) => job.status === "failed",
+  ).length;
+
+  if (pendingCount === 0 && failedCount === 0) {
+    return null;
+  }
+
+  const parts = [];
+  if (pendingCount > 0) {
+    parts.push(
+      `${pendingCount} dispatched review${pendingCount === 1 ? "" : "s"} still running in the background.`,
+    );
+  }
+  if (failedCount > 0) {
+    parts.push(
+      `${failedCount} dispatched review${failedCount === 1 ? "" : "s"} failed and may need another pass later.`,
+    );
+  }
+
+  return parts.join(" ");
 }
 
 export function ImportReviewModal({
@@ -144,42 +183,40 @@ export function ImportReviewModal({
   importBatchId: string | null;
   onTrackedBatchSettled?: (importBatchId: string) => void;
 }) {
+  const router = useRouter();
+  const [, startRefresh] = useTransition();
   const [queueState, setQueueState] = useState<ImportBatchReviewQueueState | null>(
     null,
   );
   const [reviewedSourceTransactionIds, setReviewedSourceTransactionIds] =
     useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  const [selectedCategoryCode, setSelectedCategoryCode] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [activeJobStatus, setActiveJobStatus] = useState<
-    "queued" | "running" | null
-  >(null);
-  const [activeJobMessage, setActiveJobMessage] = useState<string | null>(null);
-  const [submittedTransactionId, setSubmittedTransactionId] = useState<
-    string | null
-  >(null);
+  const [backgroundJobs, setBackgroundJobs] = useState<BackgroundReviewJob[]>([]);
   const [dismissed, setDismissed] = useState(false);
   const settledTrackedBatchIdRef = useRef<string | null>(null);
 
   const currentTransaction = queueState?.nextTransaction ?? null;
   const currentTransactionId = currentTransaction?.transactionId ?? null;
+  const pendingBackgroundJobs = backgroundJobs.filter(
+    (job) => job.status === "queued" || job.status === "running",
+  ).length;
+  const backgroundJobSummary = buildBackgroundJobSummary(backgroundJobs);
 
   useEffect(() => {
     setQueueState(null);
     setReviewedSourceTransactionIds([]);
     setDraft("");
+    setSelectedCategoryCode("");
     setFeedback(null);
     setSessionNotice(null);
     setQueueError(null);
     setIsSubmitting(false);
-    setActiveJobId(null);
-    setActiveJobStatus(null);
-    setActiveJobMessage(null);
-    setSubmittedTransactionId(null);
+    setBackgroundJobs([]);
     setDismissed(false);
     settledTrackedBatchIdRef.current = null;
   }, [importBatchId]);
@@ -207,11 +244,12 @@ export function ImportReviewModal({
 
   useEffect(() => {
     setDraft(currentTransaction?.manualNotes ?? "");
+    setSelectedCategoryCode("");
     setFeedback(null);
   }, [currentTransactionId, currentTransaction?.manualNotes]);
 
   useEffect(() => {
-    if (!importBatchId || activeJobId) {
+    if (!importBatchId) {
       return;
     }
 
@@ -251,13 +289,16 @@ export function ImportReviewModal({
 
         if (!nextQueueState.nextTransaction) {
           setSessionNotice(
-            nextQueueState.deferredSimilarCount > 0
-              ? "Independent unresolved transactions are exhausted for this session. Similar ones remain deferred."
-              : nextQueueState.unresolvedCount === 0
-                ? "This import batch has no unresolved transactions left to review."
-                : "No more independent unresolved transactions remain in this session.",
+            buildSessionNotice({
+              queueState: nextQueueState,
+              pendingBackgroundJobs,
+            }),
           );
         }
+
+        timeoutId = setTimeout(() => {
+          void poll();
+        }, REVIEW_QUEUE_POLL_INTERVAL_MS);
       } catch (error) {
         if (cancelled) {
           return;
@@ -279,10 +320,10 @@ export function ImportReviewModal({
         clearTimeout(timeoutId);
       }
     };
-  }, [importBatchId, activeJobId, reviewedSourceTransactionIds]);
+  }, [importBatchId, pendingBackgroundJobs, reviewedSourceTransactionIds]);
 
   useEffect(() => {
-    if (!activeJobId || !importBatchId || !submittedTransactionId) {
+    if (!importBatchId || pendingBackgroundJobs === 0) {
       return;
     }
 
@@ -290,91 +331,99 @@ export function ImportReviewModal({
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const poll = async () => {
+      const pendingJobs = backgroundJobs.filter(
+        (job) => job.status === "queued" || job.status === "running",
+      );
+      if (pendingJobs.length === 0) {
+        return;
+      }
+
       try {
-        const response = await fetch(`/api/review-jobs/${activeJobId}`, {
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as {
-            error?: string;
-          } | null;
-          throw new Error(payload?.error || "Review job lookup failed.");
-        }
+        const results = await Promise.all(
+          pendingJobs.map(async (job) => {
+            const response = await fetch(`/api/review-jobs/${job.jobId}`, {
+              cache: "no-store",
+            });
+            if (!response.ok) {
+              const payload = (await response.json().catch(() => null)) as {
+                error?: string;
+              } | null;
+              throw new Error(payload?.error || "Review job lookup failed.");
+            }
 
-        const payload = (await response.json()) as ReviewJobStatusPayload;
-        if (cancelled || !payload.status) {
-          return;
-        }
-
-        if (payload.status === "completed") {
-          const nextReviewedSourceTransactionIds = [
-            ...new Set([
-              ...reviewedSourceTransactionIds,
-              submittedTransactionId,
-            ]),
-          ];
-          const nextQueueState = await fetchQueueState(
-            importBatchId,
-            nextReviewedSourceTransactionIds,
-          );
-          if (cancelled) {
-            return;
-          }
-
-          const pendingPropagation = (payload.followUpJobs ?? []).some(
-            (job) =>
-              job.jobType === "review_propagation" &&
-              (job.status === "queued" || job.status === "running"),
-          );
-          const pendingMetrics = (payload.followUpJobs ?? []).some(
-            (job) =>
-              job.jobType === "metric_refresh" &&
-              (job.status === "queued" || job.status === "running"),
-          );
-          const resolved = payload.payloadJson?.transaction?.needsReview === false;
-
-          setReviewedSourceTransactionIds(nextReviewedSourceTransactionIds);
-          setQueueState(nextQueueState);
-          setActiveJobId(null);
-          setActiveJobStatus(null);
-          setActiveJobMessage(null);
-          setIsSubmitting(false);
-          setSubmittedTransactionId(null);
-          setQueueError(null);
-          setSessionNotice(
-            !nextQueueState.nextTransaction
-              ? buildSessionNotice({
-                  queueState: nextQueueState,
-                  resolved,
-                  pendingPropagation,
-                  pendingMetrics,
-                })
-              : null,
-          );
-          return;
-        }
-
-        if (payload.status === "failed") {
-          setFeedback(payload.lastError || "Review update failed.");
-          setActiveJobId(null);
-          setActiveJobStatus(null);
-          setActiveJobMessage(null);
-          setIsSubmitting(false);
-          setSubmittedTransactionId(null);
-          return;
-        }
-
-        setActiveJobStatus(payload.status);
-        setActiveJobMessage(
-          typeof payload.payloadJson?.progress?.message === "string"
-            ? payload.payloadJson.progress.message
-            : payload.status === "running"
-              ? "Running analyzer and review update."
-              : "Queued. Waiting for the worker to pick it up.",
+            return {
+              jobId: job.jobId,
+              payload: (await response.json()) as ReviewJobStatusPayload,
+            };
+          }),
         );
-        timeoutId = setTimeout(() => {
-          void poll();
-        }, REVIEW_JOB_POLL_INTERVAL_MS);
+        if (cancelled) {
+          return;
+        }
+
+        let shouldRefresh = false;
+        let nextFeedback: string | null = null;
+        const payloadByJobId = new Map(
+          results.map((result) => [result.jobId, result.payload]),
+        );
+
+        setBackgroundJobs((current) =>
+          current.map((job) => {
+            const payload = payloadByJobId.get(job.jobId);
+            if (!payload?.status) {
+              return job;
+            }
+
+            const nextStatus = payload.status;
+            const nextMessage =
+              typeof payload.payloadJson?.progress?.message === "string"
+                ? payload.payloadJson.progress.message
+                : nextStatus === "running"
+                  ? "Running analyzer and review update."
+                  : nextStatus === "queued"
+                    ? "Queued. Waiting for the worker to pick it up."
+                    : null;
+
+            if (nextStatus !== job.status) {
+              shouldRefresh = true;
+              if (nextStatus === "completed") {
+                nextFeedback =
+                  payload.payloadJson?.transaction?.needsReview === false
+                    ? "A dispatched review resolved successfully."
+                    : "A dispatched review finished, but the transaction still needs review.";
+              } else if (nextStatus === "failed") {
+                nextFeedback =
+                  payload.lastError ?? "A dispatched review failed.";
+              }
+            }
+
+            return {
+              ...job,
+              status: nextStatus,
+              message: nextMessage,
+              lastError: payload.lastError ?? null,
+            };
+          }),
+        );
+
+        if (nextFeedback) {
+          setFeedback(nextFeedback);
+        }
+        if (shouldRefresh) {
+          startRefresh(() => {
+            router.refresh();
+          });
+        }
+
+        const stillPending = results.some(
+          (result) =>
+            result.payload.status === "queued" || result.payload.status === "running",
+        );
+        if (stillPending) {
+          timeoutId = setTimeout(() => {
+            void poll();
+          }, REVIEW_JOB_POLL_INTERVAL_MS);
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -383,11 +432,6 @@ export function ImportReviewModal({
         setFeedback(
           error instanceof Error ? error.message : "Review job polling failed.",
         );
-        setActiveJobId(null);
-        setActiveJobStatus(null);
-        setActiveJobMessage(null);
-        setIsSubmitting(false);
-        setSubmittedTransactionId(null);
       }
     };
 
@@ -399,16 +443,62 @@ export function ImportReviewModal({
         clearTimeout(timeoutId);
       }
     };
-  }, [
-    activeJobId,
-    importBatchId,
-    reviewedSourceTransactionIds,
-    submittedTransactionId,
-  ]);
+  }, [backgroundJobs, importBatchId, pendingBackgroundJobs, router, startRefresh]);
+
+  async function advanceQueue(anchorTransactionId: string) {
+    if (!importBatchId) {
+      return;
+    }
+
+    const nextReviewedSourceTransactionIds = [
+      ...new Set([...reviewedSourceTransactionIds, anchorTransactionId]),
+    ];
+    setReviewedSourceTransactionIds(nextReviewedSourceTransactionIds);
+    setDraft("");
+    setSelectedCategoryCode("");
+
+    try {
+      const nextQueueState = await fetchQueueState(
+        importBatchId,
+        nextReviewedSourceTransactionIds,
+      );
+      setQueueState(nextQueueState);
+      setQueueError(null);
+      setSessionNotice(
+        nextQueueState.nextTransaction
+          ? null
+          : buildSessionNotice({
+              queueState: nextQueueState,
+              pendingBackgroundJobs,
+            }),
+      );
+    } catch (error) {
+      setQueueError(
+        error instanceof Error
+          ? error.message
+          : "Import review queue lookup failed.",
+      );
+    }
+  }
+
+  async function handlePass() {
+    if (!currentTransactionId) {
+      return;
+    }
+
+    setFeedback(null);
+    setSessionNotice(null);
+    await advanceQueue(currentTransactionId);
+  }
 
   async function handleSubmit() {
-    if (!currentTransactionId || !draft.trim()) {
-      setFeedback("Add review context before updating.");
+    if (!currentTransactionId) {
+      return;
+    }
+
+    const trimmedDraft = draft.trim();
+    if (!trimmedDraft && !selectedCategoryCode) {
+      setFeedback("Add review context or pick a category before updating.");
       return;
     }
 
@@ -422,7 +512,8 @@ export function ImportReviewModal({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          reviewContext: draft.trim(),
+          reviewContext: trimmedDraft,
+          selectedCategoryCode: selectedCategoryCode || undefined,
         }),
       });
       if (!response.ok) {
@@ -440,19 +531,32 @@ export function ImportReviewModal({
       if (!payload.jobId) {
         throw new Error("Review job was queued without a job id.");
       }
+      const queuedJobId = payload.jobId;
 
-      setSubmittedTransactionId(currentTransactionId);
-      setActiveJobId(payload.jobId);
-      setActiveJobStatus(payload.status === "running" ? "running" : "queued");
-      setActiveJobMessage(
-        payload.queued === false
-          ? "Review already queued. Waiting for the worker to finish."
-          : "Review queued. Waiting for the worker to finish.",
-      );
+      setBackgroundJobs((current) => {
+        if (current.some((job) => job.jobId === queuedJobId)) {
+          return current;
+        }
+        return [
+          ...current,
+          {
+            jobId: queuedJobId,
+            transactionId: currentTransactionId,
+            status: payload.status === "running" ? "running" : "queued",
+            message:
+              payload.queued === false
+                ? "Review already queued. Moving to the next independent transaction."
+                : "Review dispatched. Moving to the next independent transaction.",
+            lastError: null,
+          },
+        ];
+      });
+      await advanceQueue(currentTransactionId);
     } catch (error) {
       setFeedback(
         error instanceof Error ? error.message : "Review update failed.",
       );
+    } finally {
       setIsSubmitting(false);
     }
   }
@@ -469,18 +573,21 @@ export function ImportReviewModal({
       : null);
   const isReadyToReview =
     queueState?.readiness === "ready" && currentTransaction !== null;
-  const isBusy = isSubmitting || Boolean(activeJobId);
+  const canSubmit = draft.trim() !== "" || selectedCategoryCode !== "";
 
   return (
     <>
-      {readinessMessage || sessionNotice || dismissed ? (
+      {readinessMessage || sessionNotice || dismissed || backgroundJobSummary ? (
         <div className="status-note import-review-inline-note">
-          <strong>Import review queue</strong>
-          <span>
-            {readinessMessage ??
-              sessionNotice ??
-              "The guided review queue is paused for this batch."}
-          </span>
+          <div style={{ display: "grid", gap: 4 }}>
+            <strong>Import review queue</strong>
+            <span>
+              {readinessMessage ??
+                sessionNotice ??
+                backgroundJobSummary ??
+                "The guided review queue is paused for this batch."}
+            </span>
+          </div>
           {dismissed && isReadyToReview ? (
             <button
               className="btn-ghost"
@@ -507,10 +614,7 @@ export function ImportReviewModal({
             <div className="import-review-modal-header">
               <div>
                 <span className="label-sm">Guided Import Review</span>
-                <h2
-                  className="section-title"
-                  id="import-review-modal-title"
-                >
+                <h2 className="section-title" id="import-review-modal-title">
                   Review the next independent unresolved transaction
                 </h2>
               </div>
@@ -577,6 +681,58 @@ export function ImportReviewModal({
               </p>
             </div>
 
+            {currentTransaction.categoryOptions.length > 0 ? (
+              <div className="import-review-category-panel">
+                <div>
+                  <span className="label-sm">Quick category</span>
+                  <div className="import-review-category-copy">
+                    Pick a category when that is enough to unblock the transaction.
+                  </div>
+                </div>
+                {currentTransaction.categorySuggestions.length > 0 ? (
+                  <div className="import-review-category-grid">
+                    {currentTransaction.categorySuggestions.map((category) => {
+                      const isSelected = selectedCategoryCode === category.code;
+                      return (
+                        <button
+                          key={category.code}
+                          className={`import-review-category-chip${
+                            isSelected ? " active" : ""
+                          }`}
+                          type="button"
+                          onClick={() =>
+                            setSelectedCategoryCode((current) =>
+                              current === category.code ? "" : category.code,
+                            )
+                          }
+                        >
+                          {category.displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <label className="input-label">
+                  Select another category
+                  <select
+                    className="input-select"
+                    value={selectedCategoryCode}
+                    onChange={(event) =>
+                      setSelectedCategoryCode(event.target.value)
+                    }
+                    disabled={isSubmitting}
+                  >
+                    <option value="">Choose a category</option>
+                    {currentTransaction.categoryOptions.map((category) => (
+                      <option key={category.code} value={category.code}>
+                        {category.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
+
             <label className="input-label">
               User context
               <textarea
@@ -585,25 +741,20 @@ export function ImportReviewModal({
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder="Explain how this transaction should be resolved, in terms that should help the analyzer handle similar rows in this account next time."
-                disabled={isBusy}
+                disabled={isSubmitting}
               />
             </label>
 
             {feedback ? <div className="status-note">{feedback}</div> : null}
-            {activeJobStatus ? (
-              <div className="status-note">
-                {activeJobMessage ??
-                  (activeJobStatus === "running"
-                    ? "Running analyzer and review update."
-                    : "Queued. Waiting for the worker to pick it up.")}
-              </div>
+            {backgroundJobSummary ? (
+              <div className="status-note">{backgroundJobSummary}</div>
             ) : null}
 
             <div className="import-review-modal-actions">
               <button
                 className="btn-ghost"
                 type="button"
-                disabled={isBusy}
+                disabled={isSubmitting}
                 onClick={() => {
                   setDismissed(true);
                   setSessionNotice(
@@ -614,18 +765,24 @@ export function ImportReviewModal({
                 Finish later
               </button>
               <button
+                className="btn-ghost"
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => {
+                  void handlePass();
+                }}
+              >
+                Pass for now
+              </button>
+              <button
                 className="btn-pill"
                 type="button"
-                disabled={isBusy || draft.trim() === ""}
+                disabled={isSubmitting || !canSubmit}
                 onClick={() => {
                   void handleSubmit();
                 }}
               >
-                {isSubmitting
-                  ? "Queueing..."
-                  : activeJobId
-                    ? "Updating..."
-                    : "Apply context and continue"}
+                {isSubmitting ? "Dispatching..." : "Apply and continue"}
               </button>
             </div>
           </div>

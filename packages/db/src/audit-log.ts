@@ -34,6 +34,7 @@ export async function insertAuditEventRecord(
 ) {
   await sql`
     insert into public.audit_events ${sql({
+      id: auditEvent.id,
       actor_type: auditEvent.actorType,
       actor_id: auditEvent.actorId,
       actor_name: auditEvent.actorName,

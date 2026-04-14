@@ -8,16 +8,20 @@ import {
   type SimilarAccountTransactionPromptContext,
 } from "@myfinance/classification";
 import {
+  buildAllowedCategoriesForAccount,
   assertCategoryCodeAllowedForAccount,
   assertEconomicEntityAllowedForAccount,
   assertRuleOutputsAllowedForScope,
   assertTransactionClassAllowedForAccount,
+  isUncategorizedCategoryCode,
+  needsCreditCardStatementUpload,
   parseRuleDraftRequest,
   buildImportedTransactions,
   isCreditCardSettlementTransaction,
   normalizeImportExecutionInput,
   runDeterministicImport,
   sanitizeImportResult,
+  UNCATEGORIZED_TRANSACTION_REVIEW_REASON,
   type AddOpeningPositionInput,
   type Account,
   type ApplyRuleDraftInput,
@@ -267,7 +271,8 @@ async function selectManualInvestmentRowById(
 
 export interface ReanalyzeTransactionReviewInput {
   transactionId: string;
-  reviewContext: string;
+  reviewContext?: string;
+  selectedCategoryCode?: string | null;
   actorName: string;
   sourceChannel: AuditEvent["sourceChannel"];
   reviewMode?: ReviewReanalysisMode;
@@ -296,6 +301,59 @@ function getReviewReanalyzeChangedFields(
 ) {
   return REVIEW_REANALYZE_COMPARISON_FIELDS.filter(
     (field) => before[field] !== after[field],
+  );
+}
+
+function normalizeOptionalTextValue(value: string | null | undefined) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function buildManualReviewContext(input: {
+  reviewContext: string | null;
+  selectedCategory: { code: string; displayName: string } | null;
+}) {
+  return [
+    input.selectedCategory
+      ? `The user explicitly selected the category ${input.selectedCategory.code} (${input.selectedCategory.displayName}).`
+      : null,
+    input.reviewContext,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n\n");
+}
+
+function shouldApplySelectedCategoryOverride(input: {
+  account: Account;
+  transaction: Transaction;
+  selectedCategoryCode: string | null;
+}) {
+  if (!input.selectedCategoryCode || input.account.assetDomain !== "cash") {
+    return false;
+  }
+
+  if (input.transaction.transactionClass === "unknown") {
+    return false;
+  }
+
+  if (needsCreditCardStatementUpload(input.transaction)) {
+    return false;
+  }
+
+  if (
+    input.transaction.categoryCode === input.selectedCategoryCode &&
+    input.transaction.needsReview === false
+  ) {
+    return false;
+  }
+
+  if (!input.transaction.needsReview) {
+    return true;
+  }
+
+  return (
+    input.transaction.reviewReason === UNCATEGORIZED_TRANSACTION_REVIEW_REASON ||
+    input.transaction.categoryCode == null ||
+    isUncategorizedCategoryCode(input.transaction.categoryCode)
   );
 }
 
@@ -426,9 +484,32 @@ export async function reanalyzeTransactionReview(
       );
     }
 
-    const normalizedReviewContext = input.reviewContext.trim();
+    const normalizedSelectedCategoryCode = normalizeOptionalTextValue(
+      input.selectedCategoryCode,
+    );
+    const allowedCategories = buildAllowedCategoriesForAccount(dataset, account);
+    const selectedCategory = normalizedSelectedCategoryCode
+      ? (allowedCategories.find(
+          (category) => category.code === normalizedSelectedCategoryCode,
+        ) ?? null)
+      : null;
+    if (normalizedSelectedCategoryCode && !selectedCategory) {
+      throw new Error(
+        `Category ${normalizedSelectedCategoryCode} is not allowed for ${account.displayName}.`,
+      );
+    }
+
+    const normalizedReviewContext = buildManualReviewContext({
+      reviewContext: normalizeOptionalTextValue(input.reviewContext),
+      selectedCategory: selectedCategory
+        ? {
+            code: selectedCategory.code,
+            displayName: selectedCategory.displayName,
+          }
+        : null,
+    });
     if (!normalizedReviewContext) {
-      throw new Error("Review context cannot be empty.");
+      throw new Error("Review input requires context or a selected category.");
     }
     const reviewMode =
       input.reviewMode ??
@@ -538,6 +619,62 @@ export async function reanalyzeTransactionReview(
         );
       }
       afterTransaction = mapFromSql<Transaction>(finalRow);
+      if (
+        shouldApplySelectedCategoryOverride({
+          account,
+          transaction: afterTransaction,
+          selectedCategoryCode: normalizedSelectedCategoryCode,
+        })
+      ) {
+        const currentLlmPayload =
+          afterTransaction.llmPayload &&
+          typeof afterTransaction.llmPayload === "object" &&
+          !Array.isArray(afterTransaction.llmPayload)
+            ? (afterTransaction.llmPayload as Record<string, unknown>)
+            : {};
+        const currentReviewContext =
+          currentLlmPayload.reviewContext &&
+          typeof currentLlmPayload.reviewContext === "object" &&
+          !Array.isArray(currentLlmPayload.reviewContext)
+            ? (currentLlmPayload.reviewContext as Record<string, unknown>)
+            : {};
+        const currentApplied =
+          currentLlmPayload.applied &&
+          typeof currentLlmPayload.applied === "object" &&
+          !Array.isArray(currentLlmPayload.applied)
+            ? (currentLlmPayload.applied as Record<string, unknown>)
+            : {};
+        const categoryOverrideRow = await updateTransactionRecord(sql, {
+          userId,
+          transactionId: afterTransaction.id,
+          updatePayload: {
+            category_code: normalizedSelectedCategoryCode,
+            classification_status: "manual_override",
+            classification_source: "manual",
+            classification_confidence: "1.00",
+            needs_review: false,
+            review_reason: null,
+            updated_at: new Date().toISOString(),
+          },
+          llmPayload: {
+            ...currentLlmPayload,
+            reviewContext: {
+              ...currentReviewContext,
+              selectedCategoryCode: normalizedSelectedCategoryCode,
+            },
+            applied: {
+              ...currentApplied,
+              categoryCode: normalizedSelectedCategoryCode,
+              needsReview: false,
+              reviewReason: null,
+              classificationStatus: "manual_override",
+              classificationSource: "manual",
+              classificationConfidence: "1.00",
+            },
+          },
+        });
+        afterTransaction = mapFromSql<Transaction>(categoryOverrideRow);
+      }
       changedFields = getReviewReanalyzeChangedFields(
         beforeTransaction,
         afterTransaction,
@@ -3056,9 +3193,14 @@ class SqlFinanceRepository implements FinanceRepository {
                       | "worker"
                       | "system")
                   : "worker";
-              if (!transactionId || !reviewContext) {
+              const selectedCategoryCode =
+                typeof payloadJson.selectedCategoryCode === "string" &&
+                payloadJson.selectedCategoryCode.trim() !== ""
+                  ? payloadJson.selectedCategoryCode.trim()
+                  : null;
+              if (!transactionId || (!reviewContext && !selectedCategoryCode)) {
                 throw new Error(
-                  "Review reanalysis job is missing transactionId or reviewContext.",
+                  "Review reanalysis job is missing transactionId or review input.",
                 );
               }
               const reportProgress = async (
@@ -3083,6 +3225,7 @@ class SqlFinanceRepository implements FinanceRepository {
               const resultPayload = await reanalyzeTransactionReview({
                 transactionId,
                 reviewContext,
+                selectedCategoryCode,
                 actorName,
                 sourceChannel,
                 reviewMode,

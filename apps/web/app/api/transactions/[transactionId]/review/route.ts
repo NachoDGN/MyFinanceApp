@@ -3,9 +3,20 @@ import { z } from "zod";
 
 import { queueTransactionReviewReanalysis } from "@myfinance/db";
 
-const bodySchema = z.object({
-  reviewContext: z.string().trim().min(1),
-});
+const bodySchema = z
+  .object({
+    reviewContext: z.string().optional().default(""),
+    selectedCategoryCode: z.string().trim().min(1).optional().nullable(),
+  })
+  .refine(
+    (value) =>
+      value.reviewContext.trim().length > 0 ||
+      typeof value.selectedCategoryCode === "string",
+    {
+      message: "Review input requires context or a selected category.",
+      path: ["reviewContext"],
+    },
+  );
 
 export async function POST(
   request: NextRequest,
@@ -17,6 +28,7 @@ export async function POST(
     const result = await queueTransactionReviewReanalysis({
       transactionId,
       reviewContext: body.reviewContext,
+      selectedCategoryCode: body.selectedCategoryCode ?? null,
       actorName: "web-review-editor",
       sourceChannel: "web",
     });

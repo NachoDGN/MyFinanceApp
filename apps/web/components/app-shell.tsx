@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { buildHref } from "../lib/queries";
+import { ImportReviewModalHost } from "./import-review-modal-host";
 
 const primaryNav = [
   { href: "/", label: "Dashboard" },
@@ -145,6 +146,7 @@ export function AppShell({
           </a>
         </div>
       </div>
+      <ImportReviewModalHost />
       {children}
     </div>
   );

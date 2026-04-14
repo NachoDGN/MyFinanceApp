@@ -1,4 +1,5 @@
 import {
+  buildAllowedCategoriesForAccount,
   needsTransactionManualReview,
   type DomainDataset,
   type Transaction,
@@ -14,15 +15,31 @@ import {
   withSeededUserContext,
   type SqlClient,
 } from "./sql-runtime";
-import { getReviewPropagationSimilarityThreshold } from "./transaction-embedding-search";
 
 const DEFAULT_REVIEW_QUEUE_CANDIDATE_LIMIT = 100;
+const DEFAULT_QUICK_CATEGORY_SUGGESTION_LIMIT = 4;
+const QUICK_CATEGORY_SUGGESTION_PRIORITY = [
+  "travel",
+  "software",
+  "office",
+  "meals",
+  "tax",
+  "debt",
+  "bank_fee",
+  "client_payment",
+  "salary",
+] as const;
 
 export type ImportReviewQueueReadiness =
   | "waiting_for_classification"
   | "waiting_for_embeddings"
   | "ready"
   | "failed";
+
+export interface ImportReviewQueueCategoryOption {
+  code: string;
+  displayName: string;
+}
 
 export interface ImportBatchReviewQueueTransaction {
   transactionId: string;
@@ -37,6 +54,8 @@ export interface ImportBatchReviewQueueTransaction {
   manualNotes: string | null;
   categoryCode: string | null;
   transactionClass: string;
+  categorySuggestions: ImportReviewQueueCategoryOption[];
+  categoryOptions: ImportReviewQueueCategoryOption[];
 }
 
 export interface ImportBatchReviewQueueState {
@@ -60,12 +79,18 @@ function buildQueueTransactionRow(
   dataset: DomainDataset,
   transaction: Transaction,
 ): ImportBatchReviewQueueTransaction {
+  const account =
+    dataset.accounts.find((candidate) => candidate.id === transaction.accountId) ??
+    null;
+  const categoryOptions = account
+    ? buildReviewQueueCategoryOptions(dataset, account, transaction)
+    : [];
+
   return {
     transactionId: transaction.id,
     accountId: transaction.accountId,
     accountDisplayName:
-      dataset.accounts.find((account) => account.id === transaction.accountId)
-        ?.displayName ?? transaction.accountId,
+      account?.displayName ?? transaction.accountId,
     transactionDate: transaction.transactionDate,
     postedDate: transaction.postedDate ?? null,
     amountOriginal: transaction.amountOriginal,
@@ -75,7 +100,62 @@ function buildQueueTransactionRow(
     manualNotes: transaction.manualNotes ?? null,
     categoryCode: transaction.categoryCode ?? null,
     transactionClass: transaction.transactionClass,
+    categorySuggestions: buildQuickCategorySuggestions(categoryOptions),
+    categoryOptions,
   };
+}
+
+function buildReviewQueueCategoryOptions(
+  dataset: DomainDataset,
+  account: DomainDataset["accounts"][number],
+  transaction: Transaction,
+): ImportReviewQueueCategoryOption[] {
+  if (account.assetDomain !== "cash") {
+    return [];
+  }
+
+  const numericAmount = Number(transaction.amountOriginal);
+  const allowedDirectionKinds = new Set(
+    numericAmount >= 0 ? ["income", "neutral"] : ["expense", "neutral"],
+  );
+
+  return buildAllowedCategoriesForAccount(dataset, account)
+    .filter((category) => category.active)
+    .filter((category) => !category.code.startsWith("uncategorized_"))
+    .filter((category) => allowedDirectionKinds.has(category.directionKind))
+    .sort(
+      (left, right) =>
+        left.sortOrder - right.sortOrder ||
+        left.displayName.localeCompare(right.displayName),
+    )
+    .map((category) => ({
+      code: category.code,
+      displayName: category.displayName,
+    }));
+}
+
+function buildQuickCategorySuggestions(
+  categoryOptions: ImportReviewQueueCategoryOption[],
+) {
+  if (categoryOptions.length === 0) {
+    return [];
+  }
+
+  const categoryByCode = new Map(
+    categoryOptions.map((category) => [category.code, category]),
+  );
+  const prioritized = QUICK_CATEGORY_SUGGESTION_PRIORITY.flatMap((code) =>
+    categoryByCode.has(code) ? [categoryByCode.get(code)!] : [],
+  );
+  const fallback = categoryOptions.filter(
+    (category) =>
+      !prioritized.some((candidate) => candidate.code === category.code),
+  );
+
+  return [...prioritized, ...fallback].slice(
+    0,
+    DEFAULT_QUICK_CATEGORY_SUGGESTION_LIMIT,
+  );
 }
 
 type QueueReadinessInput = {
@@ -288,7 +368,6 @@ async function readSimilarDeferredTransactionIds(
         1 - (candidate.embedding <=> source.embedding) as similarity
       from approximate_candidates as candidate
       cross join source
-      where 1 - (candidate.embedding <=> source.embedding) >= ${getReviewPropagationSimilarityThreshold()}
       order by candidate.embedding <=> source.embedding asc
     `;
 

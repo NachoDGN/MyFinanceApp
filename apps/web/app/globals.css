@@ -1817,6 +1817,56 @@ textarea {
   gap: 12px;
 }
 
+.import-review-category-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(12, 18, 28, 0.08);
+}
+
+.import-review-category-copy {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.import-review-category-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.import-review-category-chip {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(12, 18, 28, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.import-review-category-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 75, 43, 0.28);
+}
+
+.import-review-category-chip.active {
+  border-color: rgba(255, 75, 43, 0.36);
+  background: rgba(255, 75, 43, 0.12);
+  color: #8e1f0f;
+}
+
 .import-review-description {
   margin: 0;
   font-size: 18px;

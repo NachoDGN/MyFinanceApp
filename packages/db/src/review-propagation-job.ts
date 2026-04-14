@@ -25,7 +25,6 @@ import {
 } from "./sql-json";
 import { type SqlClient } from "./sql-runtime";
 import {
-  getReviewPropagationSimilarityThreshold,
   readTransactionReviewContext,
 } from "./transaction-embedding-search";
 import { executeTransactionEnrichmentPipeline } from "./transaction-enrichment";
@@ -286,7 +285,6 @@ export async function processReviewPropagationJob(
       1 - (candidate.embedding <=> source.embedding) as similarity
     from approximate_candidates as candidate
     cross join source
-    where 1 - (candidate.embedding <=> source.embedding) >= ${getReviewPropagationSimilarityThreshold()}
     order by candidate.embedding <=> source.embedding asc
   `;
   const embeddingMatches = rows.flatMap((row) => {

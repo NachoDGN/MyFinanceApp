@@ -27,7 +27,8 @@ export interface ReviewReanalysisProgress {
 
 export interface QueueTransactionReviewReanalysisInput {
   transactionId: string;
-  reviewContext: string;
+  reviewContext?: string;
+  selectedCategoryCode?: string | null;
   actorName: string;
   sourceChannel: AuditEvent["sourceChannel"];
 }
@@ -185,9 +186,16 @@ export async function queueTransactionReviewReanalysis(
         ? "manual_review_update"
         : "manual_resolved_review";
 
-    const normalizedReviewContext = input.reviewContext.trim();
-    if (!normalizedReviewContext) {
-      throw new Error("Review context cannot be empty.");
+    const normalizedReviewContext = input.reviewContext?.trim() ?? "";
+    const normalizedSelectedCategoryCode =
+      typeof input.selectedCategoryCode === "string" &&
+      input.selectedCategoryCode.trim() !== ""
+        ? input.selectedCategoryCode.trim()
+        : null;
+    if (!normalizedReviewContext && !normalizedSelectedCategoryCode) {
+      throw new Error(
+        "Review input requires context or a selected category.",
+      );
     }
 
     await acquireReviewReanalysisQueueLock(sql, input.transactionId);
@@ -215,6 +223,7 @@ export async function queueTransactionReviewReanalysis(
     const jobId = await queueJob(sql, "review_reanalyze", {
       transactionId: input.transactionId,
       reviewContext: normalizedReviewContext,
+      selectedCategoryCode: normalizedSelectedCategoryCode,
       reviewMode,
       actorName: input.actorName,
       sourceChannel: input.sourceChannel,
