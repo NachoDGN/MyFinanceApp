@@ -6736,6 +6736,86 @@ test("cash metric derives statement balances for cash accounts from imported row
   assert.equal(cashMetric.valueBaseEur, "6911.24");
 });
 
+test("statement-mode cash accounts prefer the latest imported statement balance over computed ledger sums", () => {
+  const cashAccount = createAccount({
+    id: "cash-account-statement-precedence",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "EUR",
+    balanceMode: "statement",
+    openingBalanceOriginal: "0.00",
+    openingBalanceCurrency: "EUR",
+    openingBalanceDate: "2026-01-01",
+  });
+  const dataset = createDataset({
+    accounts: [cashAccount],
+    transactions: [
+      createTransaction({
+        id: "cash-account-statement-precedence-inflow",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-04-10",
+        postedDate: "2026-04-10",
+        amountOriginal: "3000.00",
+        amountBaseEur: "3000.00",
+        descriptionRaw: "ABONO TRANSFERENCIA",
+        descriptionClean: "ABONO TRANSFERENCIA",
+        transactionClass: "income",
+        categoryCode: "client_payment",
+        rawPayload: {
+          Import: {
+            balanceOriginal: "5098.18",
+            balanceCurrency: "EUR",
+          },
+          SourceRow: 12,
+        },
+      }),
+      createTransaction({
+        id: "cash-account-statement-precedence-prior-expense",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-04-05",
+        postedDate: "2026-04-05",
+        amountOriginal: "-821.44",
+        amountBaseEur: "-821.44",
+        descriptionRaw: "SUPPLIER PAYMENT",
+        descriptionClean: "SUPPLIER PAYMENT",
+        transactionClass: "expense",
+        categoryCode: "contractors",
+      }),
+      createTransaction({
+        id: "cash-account-statement-precedence-prior-income",
+        accountId: cashAccount.id,
+        accountEntityId: cashAccount.entityId,
+        economicEntityId: cashAccount.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "4000.00",
+        amountBaseEur: "4000.00",
+        descriptionRaw: "CUSTOMER PAYMENT",
+        descriptionClean: "CUSTOMER PAYMENT",
+        transactionClass: "income",
+        categoryCode: "client_payment",
+      }),
+    ],
+  });
+
+  const balances = getLatestAccountBalances(dataset, "2026-04-10");
+  const cashMetric = buildMetricResult(
+    dataset,
+    { kind: "account", accountId: cashAccount.id },
+    "EUR",
+    "cash_total_current",
+    { referenceDate: "2026-04-10" },
+  );
+
+  assert.equal(balances[0]?.balanceBaseEur, "5098.18000000");
+  assert.equal(balances[0]?.sourceKind, "statement");
+  assert.equal(cashMetric.valueBaseEur, "5098.18");
+});
+
 test("cash metric excludes credit-card liabilities from the cash position KPI", () => {
   const checkingAccount = createAccount({
     id: "cash-account-for-credit-card-balance",

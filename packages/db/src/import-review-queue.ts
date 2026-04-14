@@ -28,6 +28,8 @@ const QUICK_CATEGORY_SUGGESTION_PRIORITY = [
   "bank_fee",
   "client_payment",
   "government_subsidy",
+  "other_expense",
+  "other_income",
   "salary",
 ] as const;
 

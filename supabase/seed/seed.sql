@@ -192,15 +192,17 @@ values
   ('client_payment', 'Client Payment', null, 'company', 'income', 26, true, '{}'::jsonb),
   ('office', 'Office', null, 'company', 'expense', 27, true, '{}'::jsonb),
   ('meals', 'Meals', null, 'company', 'expense', 28, true, '{}'::jsonb),
+  ('other_expense', 'Other', null, 'both', 'expense', 29, true, '{}'::jsonb),
+  ('other_income', 'Other', null, 'both', 'income', 30, true, '{}'::jsonb),
   ('dividend', 'Dividend', null, 'investment', 'income', 27, true, '{}'::jsonb),
   ('interest', 'Interest', null, 'investment', 'income', 28, true, '{}'::jsonb),
-  ('stock_buy', 'Stock Buy', null, 'investment', 'investment', 29, true, '{}'::jsonb),
-  ('broker_fee', 'Broker Fee', null, 'investment', 'investment', 30, true, '{}'::jsonb),
-  ('cash_transfer_to_broker', 'Cash Transfer To Broker', null, 'investment', 'neutral', 31, true, '{}'::jsonb),
-  ('cash_transfer_from_broker', 'Cash Transfer From Broker', null, 'investment', 'neutral', 32, true, '{}'::jsonb),
-  ('uncategorized_expense', 'Uncategorized Expense', null, 'system', 'expense', 33, true, '{}'::jsonb),
-  ('uncategorized_income', 'Uncategorized Income', null, 'system', 'income', 34, true, '{}'::jsonb),
-  ('uncategorized_investment', 'Uncategorized Investment', null, 'investment', 'investment', 35, true, '{}'::jsonb)
+  ('stock_buy', 'Stock Buy', null, 'investment', 'investment', 31, true, '{}'::jsonb),
+  ('broker_fee', 'Broker Fee', null, 'investment', 'investment', 32, true, '{}'::jsonb),
+  ('cash_transfer_to_broker', 'Cash Transfer To Broker', null, 'investment', 'neutral', 33, true, '{}'::jsonb),
+  ('cash_transfer_from_broker', 'Cash Transfer From Broker', null, 'investment', 'neutral', 34, true, '{}'::jsonb),
+  ('uncategorized_expense', 'Uncategorized Expense', null, 'system', 'expense', 35, true, '{}'::jsonb),
+  ('uncategorized_income', 'Uncategorized Income', null, 'system', 'income', 36, true, '{}'::jsonb),
+  ('uncategorized_investment', 'Uncategorized Investment', null, 'investment', 'investment', 37, true, '{}'::jsonb)
 on conflict (code) do nothing;
 
 insert into public.import_batches (

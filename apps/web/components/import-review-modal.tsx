@@ -178,9 +178,13 @@ function buildBackgroundJobSummary(backgroundJobs: BackgroundReviewJob[]) {
 
 export function ImportReviewModal({
   importBatchId,
+  shouldAutoOpen = false,
+  onAutoOpenHandled,
   onTrackedBatchSettled,
 }: {
   importBatchId: string | null;
+  shouldAutoOpen?: boolean;
+  onAutoOpenHandled?: (importBatchId: string) => void;
   onTrackedBatchSettled?: (importBatchId: string) => void;
 }) {
   const router = useRouter();
@@ -199,6 +203,7 @@ export function ImportReviewModal({
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundReviewJob[]>([]);
   const [dismissed, setDismissed] = useState(false);
   const settledTrackedBatchIdRef = useRef<string | null>(null);
+  const handledAutoOpenBatchIdRef = useRef<string | null>(null);
 
   const currentTransaction = queueState?.nextTransaction ?? null;
   const currentTransactionId = currentTransaction?.transactionId ?? null;
@@ -217,8 +222,9 @@ export function ImportReviewModal({
     setQueueError(null);
     setIsSubmitting(false);
     setBackgroundJobs([]);
-    setDismissed(false);
+    setDismissed(importBatchId ? !shouldAutoOpen : false);
     settledTrackedBatchIdRef.current = null;
+    handledAutoOpenBatchIdRef.current = null;
   }, [importBatchId]);
 
   useEffect(() => {
@@ -247,6 +253,31 @@ export function ImportReviewModal({
     setSelectedCategoryCode("");
     setFeedback(null);
   }, [currentTransactionId, currentTransaction?.manualNotes]);
+
+  useEffect(() => {
+    if (
+      !importBatchId ||
+      !shouldAutoOpen ||
+      !onAutoOpenHandled ||
+      handledAutoOpenBatchIdRef.current === importBatchId
+    ) {
+      return;
+    }
+
+    if (queueState?.readiness !== "ready" || currentTransaction === null || dismissed) {
+      return;
+    }
+
+    handledAutoOpenBatchIdRef.current = importBatchId;
+    onAutoOpenHandled(importBatchId);
+  }, [
+    currentTransaction,
+    dismissed,
+    importBatchId,
+    onAutoOpenHandled,
+    queueState?.readiness,
+    shouldAutoOpen,
+  ]);
 
   useEffect(() => {
     if (!importBatchId) {

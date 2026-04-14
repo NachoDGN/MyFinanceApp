@@ -124,12 +124,32 @@ function buildScopedDataset() {
           metadataJson: {},
         },
         {
+          code: "other_expense",
+          displayName: "Other",
+          parentCode: null,
+          scopeKind: "both",
+          directionKind: "expense",
+          sortOrder: 8,
+          active: true,
+          metadataJson: {},
+        },
+        {
+          code: "other_income",
+          displayName: "Other",
+          parentCode: null,
+          scopeKind: "both",
+          directionKind: "income",
+          sortOrder: 9,
+          active: true,
+          metadataJson: {},
+        },
+        {
           code: "uncategorized_expense",
           displayName: "Uncategorized Expense",
           parentCode: null,
           scopeKind: "system",
           directionKind: "expense",
-          sortOrder: 8,
+          sortOrder: 10,
           active: true,
           metadataJson: {},
         },
@@ -353,6 +373,8 @@ test("personal cash accounts only expose personal and system categories", () => 
   assert.equal(allowedCategoryCodes.has("salary"), true);
   assert.equal(allowedCategoryCodes.has("travel"), true);
   assert.equal(allowedCategoryCodes.has("debt"), true);
+  assert.equal(allowedCategoryCodes.has("other_expense"), true);
+  assert.equal(allowedCategoryCodes.has("other_income"), true);
   assert.equal(allowedCategoryCodes.has("software"), false);
   assert.equal(allowedTransactionClasses.has("investment_trade_buy"), false);
 });
@@ -368,6 +390,8 @@ test("company cash accounts expose both-scope travel and debt categories", () =>
 
   assert.equal(allowedCategoryCodes.has("travel"), true);
   assert.equal(allowedCategoryCodes.has("debt"), true);
+  assert.equal(allowedCategoryCodes.has("other_expense"), true);
+  assert.equal(allowedCategoryCodes.has("other_income"), true);
   assert.equal(allowedCategoryCodes.has("tax_credit"), false);
   assert.equal(allowedCategoryCodes.has("subscriptions"), false);
 });

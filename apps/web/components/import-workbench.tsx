@@ -127,7 +127,9 @@ export function ImportWorkbench({
     );
 
     if (mode === "commit" && isCommitResult(payload)) {
-      persistTrackedImportBatchId(payload.importBatchId);
+      persistTrackedImportBatchId(payload.importBatchId, {
+        shouldAutoOpen: true,
+      });
       router.refresh();
     }
   }
