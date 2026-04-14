@@ -44,6 +44,7 @@ export function DashboardView({
     currency: string;
     period: string;
     referenceDate?: string;
+    latestReferenceDate?: string;
     start?: string;
     end?: string;
   };

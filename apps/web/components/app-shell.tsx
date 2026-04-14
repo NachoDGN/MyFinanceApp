@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { redirect } from "next/navigation";
 
 import { buildHref } from "../lib/queries";
 import { ImportReviewModalHost } from "./import-review-modal-host";
@@ -35,6 +36,7 @@ export function AppShell({
     currency: string;
     period: string;
     referenceDate?: string;
+    latestReferenceDate?: string;
     start?: string;
     end?: string;
   };
@@ -54,6 +56,21 @@ export function AppShell({
     pathname === href ||
     pathname.startsWith(`${href}/`) ||
     (isStatementRoute && href === "/transactions");
+  const shouldNormalizeReferenceDate =
+    Boolean(state.referenceDate) &&
+    Boolean(state.latestReferenceDate) &&
+    state.referenceDate !== state.latestReferenceDate;
+
+  if (shouldNormalizeReferenceDate) {
+    redirect(
+      buildHref(
+        pathname,
+        state,
+        { referenceDate: state.latestReferenceDate },
+        pageQueryParams,
+      ),
+    );
+  }
 
   return (
     <div className="page-shell">

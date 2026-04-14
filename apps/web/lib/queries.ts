@@ -132,8 +132,9 @@ export async function resolveAppState(searchParams: RawSearchParams) {
         ? { kind: "consolidated" }
         : { kind: "entity", entityId: requestedEntityId };
   const today = todayIsoInTimezone(dataset.profile.timezone);
+  const latestReferenceDate = getScopeLatestDate(dataset, scope, today);
   const referenceDate =
-    normalizeParam(params, "asOf") ?? getScopeLatestDate(dataset, scope, today);
+    normalizeParam(params, "asOf") ?? latestReferenceDate;
   const period = resolvePeriodSelection({
     preset: periodParam,
     start: normalizeParam(params, "start"),
@@ -173,6 +174,7 @@ export async function resolveAppState(searchParams: RawSearchParams) {
     scopeParam,
     currency,
     referenceDate,
+    latestReferenceDate,
     periodParam,
     period,
     scopeOptions,
@@ -182,6 +184,7 @@ export async function resolveAppState(searchParams: RawSearchParams) {
       currency,
       period: period.preset,
       referenceDate,
+      latestReferenceDate,
       start: period.preset === "custom" ? period.start : undefined,
       end: period.preset === "custom" ? period.end : undefined,
     },
