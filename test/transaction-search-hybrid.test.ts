@@ -5,6 +5,7 @@ import { normalizeSqlDateValue } from "../packages/db/src/sql-date";
 import { fuseTransactionSearchResults } from "../packages/db/src/transaction-search-fusion";
 import {
   buildDeterministicTransactionSearchQuery,
+  extractDistinctiveTransactionSearchEvidenceTokens,
   filterSemanticCandidatesByEvidence,
   resolveTransactionSearchFilters,
 } from "../packages/db/src/transaction-search";
@@ -155,6 +156,38 @@ test("explicit query constraints suppress selector fallback", () => {
   assert.equal(resolved.usedPeriodFallback, false);
 });
 
+test("distinctive evidence tokens strip structural scope and time hints", () => {
+  const dataset = {
+    accounts: [
+      {
+        id: "acc-santander",
+        displayName: "Cuenta Personal",
+        institutionName: "Santander",
+        accountType: "checking",
+        accountSuffix: null,
+        matchingAliases: [],
+      },
+    ],
+    entities: [],
+  } as never;
+
+  const query = "Stripe payments received by Santander account in March 2026";
+  const parsedQuery = buildDeterministicTransactionSearchQuery({
+    query,
+    referenceDate: "2026-04-03",
+    dataset,
+  });
+
+  assert.deepEqual(
+    extractDistinctiveTransactionSearchEvidenceTokens({
+      query,
+      dataset,
+      parsedQuery,
+    }),
+    ["STRIPE"],
+  );
+});
+
 test("sql date normalization handles postgres Date objects", () => {
   const value = new Date("2026-03-27T00:00:00.000Z");
 
@@ -264,5 +297,147 @@ test("semantic evidence filtering keeps exact contextual support and drops garba
   assert.deepEqual(
     filtered.map((candidate) => candidate.transactionId),
     ["txn-notion"],
+  );
+});
+
+test("semantic evidence filtering keeps named hits and drops structural false positives", () => {
+  const semanticCandidates = [
+    {
+      transactionId: "txn-stripe",
+      batchId: "batch-1",
+      sourceBatchKey: "import_batch:1",
+      transactionDate: "2026-03-27",
+      postedAt: "2026-03-27",
+      amount: "100.00",
+      currency: "EUR",
+      merchant: "Stripe",
+      counterparty: "Stripe Ltd",
+      category: "client_payment",
+      accountId: "acc-1",
+      accountName: "Cuenta Personal",
+      institutionName: "Santander",
+      accountType: "checking" as const,
+      economicEntityId: "ent-1",
+      economicEntityName: "Personal",
+      economicEntityKind: "personal" as const,
+      direction: "credit" as const,
+      reviewState: "resolved" as const,
+      reviewReason: null,
+      originalText: "Stripe LTD payment",
+      contextualizedText:
+        "Client payment credit into Cuenta Personal at Santander.\n\nStripe LTD payment",
+      documentSummary: "March client payments.",
+      semanticDistance: 0.08,
+    },
+    {
+      transactionId: "txn-transfer",
+      batchId: "batch-2",
+      sourceBatchKey: "import_batch:2",
+      transactionDate: "2026-03-12",
+      postedAt: "2026-03-12",
+      amount: "600.00",
+      currency: "EUR",
+      merchant: null,
+      counterparty: "TheWhiteBox Company",
+      category: "transfer_between_accounts",
+      accountId: "acc-1",
+      accountName: "Cuenta Personal",
+      institutionName: "Santander",
+      accountType: "checking" as const,
+      economicEntityId: "ent-1",
+      economicEntityName: "Personal",
+      economicEntityKind: "personal" as const,
+      direction: "credit" as const,
+      reviewState: "resolved" as const,
+      reviewReason: null,
+      originalText: "Transferencia recibida",
+      contextualizedText:
+        "Credit into Cuenta Personal at Santander on March 12, 2026.\n\nTransferencia recibida",
+      documentSummary: "March credits.",
+      semanticDistance: 0.09,
+    },
+  ];
+
+  const filtered = filterSemanticCandidatesByEvidence({
+    query: "Stripe payments received by Santander account in March 2026",
+    semanticCandidates,
+    keywordCandidates: [],
+    distinctiveTokens: ["STRIPE"],
+  });
+
+  assert.deepEqual(
+    filtered.map((candidate) => candidate.transactionId),
+    ["txn-stripe"],
+  );
+});
+
+test("semantic evidence filtering does not over-constrain structural-only queries", () => {
+  const semanticCandidates = [
+    {
+      transactionId: "txn-credit-a",
+      batchId: "batch-1",
+      sourceBatchKey: "import_batch:1",
+      transactionDate: "2026-03-27",
+      postedAt: "2026-03-27",
+      amount: "100.00",
+      currency: "EUR",
+      merchant: "Invoice 1001",
+      counterparty: "Client A",
+      category: "client_payment",
+      accountId: "acc-1",
+      accountName: "Cuenta Personal",
+      institutionName: "Santander",
+      accountType: "checking" as const,
+      economicEntityId: "ent-1",
+      economicEntityName: "Personal",
+      economicEntityKind: "personal" as const,
+      direction: "credit" as const,
+      reviewState: "resolved" as const,
+      reviewReason: null,
+      originalText: "Cobro factura 1001",
+      contextualizedText:
+        "Credit into Cuenta Personal at Santander on March 27, 2026.\n\nCobro factura 1001",
+      documentSummary: "March credits.",
+      semanticDistance: 0.08,
+    },
+    {
+      transactionId: "txn-credit-b",
+      batchId: "batch-2",
+      sourceBatchKey: "import_batch:2",
+      transactionDate: "2026-03-12",
+      postedAt: "2026-03-12",
+      amount: "600.00",
+      currency: "EUR",
+      merchant: null,
+      counterparty: "Client B",
+      category: "client_payment",
+      accountId: "acc-1",
+      accountName: "Cuenta Personal",
+      institutionName: "Santander",
+      accountType: "checking" as const,
+      economicEntityId: "ent-1",
+      economicEntityName: "Personal",
+      economicEntityKind: "personal" as const,
+      direction: "credit" as const,
+      reviewState: "resolved" as const,
+      reviewReason: null,
+      originalText: "Ingreso transferencia",
+      contextualizedText:
+        "Credit into Cuenta Personal at Santander on March 12, 2026.\n\nIngreso transferencia",
+      documentSummary: "March credits.",
+      semanticDistance: 0.09,
+    },
+  ];
+
+  const filtered = filterSemanticCandidatesByEvidence({
+    query: "payments received by Santander account in March 2026",
+    semanticCandidates,
+    keywordCandidates: [],
+    distinctiveTokens: [],
+  });
+
+  assert.deepEqual(
+    filtered.map((candidate) => candidate.transactionId),
+    ["txn-credit-a", "txn-credit-b"],
   );
 });

@@ -907,6 +907,23 @@ export interface DeleteTemplateInput {
   apply: boolean;
 }
 
+export interface CreateCategoryInput {
+  category: Pick<
+    Category,
+    "code" | "displayName" | "parentCode" | "scopeKind" | "directionKind"
+  >;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
+export interface DeleteCategoryInput {
+  categoryCode: string;
+  actorName: string;
+  sourceChannel: AuditSourceChannel;
+  apply: boolean;
+}
+
 export interface ResetWorkspaceInput {
   actorName: string;
   sourceChannel: AuditSourceChannel;

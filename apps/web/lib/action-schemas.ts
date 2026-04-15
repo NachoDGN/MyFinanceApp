@@ -12,6 +12,7 @@ function isSupportedTimeZone(value: string) {
 }
 
 const entitySlugPattern = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const categoryCodePattern = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
 
 export const importFieldsSchema = z.object({
   accountId: z.string(),
@@ -199,6 +200,27 @@ export const entityUpdateSchema = entitySchema
   .extend({
     entityId: z.string().uuid(),
   });
+
+export const categorySchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(1)
+    .regex(
+      categoryCodePattern,
+      "Use lowercase letters, numbers, and underscores for the category code.",
+    ),
+  displayName: z.string().trim().min(1),
+  parentCode: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .optional()
+    .transform((value) => value || null),
+  scopeKind: z.enum(["personal", "company", "investment", "both", "system"]),
+  directionKind: z.enum(["income", "expense", "neutral", "investment"]),
+});
 
 export const manualInvestmentMatcherSchema = z
   .string()

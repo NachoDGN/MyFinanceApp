@@ -1,30 +1,20 @@
+import {
+  filterTransactionsByPeriod,
+  filterTransactionsByReferenceDate,
+  filterTransactionsByScope,
+  isUncategorizedCategoryCode,
+  needsTransactionManualReview,
+} from "@myfinance/domain";
+
 import { AppShell } from "../../components/app-shell";
 import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
 import { SectionCard, SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
+import { TransactionCategoryManagementPanel } from "../../components/transaction-category-management-panel";
+import { UnresolvedTransactionsReviewPanel } from "../../components/unresolved-transactions-review-panel";
 import { convertBaseEurToDisplayAmount } from "../../lib/currency";
 import { formatCurrency } from "../../lib/formatters";
 import { buildHref, getTransactionsModel } from "../../lib/queries";
-
-function getPeriodFallbackLabel(period: {
-  preset: string;
-  start: string;
-  end: string;
-}) {
-  if (period.preset === "mtd") {
-    return "Month to Date";
-  }
-  if (period.preset === "ytd") {
-    return "Year to Date";
-  }
-  if (period.preset === "week") {
-    return "Week to Date";
-  }
-  if (period.preset === "24m") {
-    return "Trailing 24 Months";
-  }
-  return `${period.start} to ${period.end}`;
-}
 
 function getSearchSummary(input: {
   query: string;
@@ -32,21 +22,10 @@ function getSearchSummary(input: {
   semanticCandidateCount: number;
   keywordCandidateCount: number;
   warnings: string[];
-  usedScopeFallback: boolean;
-  usedPeriodFallback: boolean;
-  scopeLabel: string | null;
-  periodLabel: string;
 }) {
   if (input.mode === "default" || !input.query.trim()) {
-    return "Finder is idle. The current page selectors control the ledger list until you run a hybrid search.";
+    return "Finder is idle. The current page selectors control the ledger list until you run a global hybrid search.";
   }
-
-  const fallbackBits = [
-    input.usedScopeFallback && input.scopeLabel
-      ? `scope fallback: ${input.scopeLabel}`
-      : null,
-    input.usedPeriodFallback ? `period fallback: ${input.periodLabel}` : null,
-  ].filter(Boolean);
 
   const retrievalSummary =
     input.semanticCandidateCount > 0 && input.keywordCandidateCount > 0
@@ -59,9 +38,7 @@ function getSearchSummary(input: {
 
   return [
     retrievalSummary,
-    fallbackBits.length > 0
-      ? `Current selectors were applied only where the query stayed silent: ${fallbackBits.join("; ")}.`
-      : "The query already supplied its own scope and time constraints, so current-page selectors were not applied as filters.",
+    "The finder searches across all indexed transactions. Add an account, entity, review state, or date to narrow the query.",
     ...input.warnings,
   ].join(" ");
 }
@@ -80,22 +57,179 @@ export default async function TransactionsPage({
       .filter((batch) => batch.creditCardSettlementTransactionId)
       .map((batch) => [batch.creditCardSettlementTransactionId!, batch]),
   );
-  const activeScopeLabel =
-    model.scopeOptions.find((option) => option.value === model.scopeParam)
-      ?.label ?? null;
+  const accountsById = new Map(
+    model.dataset.accounts.map((account) => [account.id, account]),
+  );
+  const entitiesById = new Map(
+    model.dataset.entities.map((entity) => [entity.id, entity]),
+  );
   const clearSearchHref = buildHref(
     "/transactions",
     model.navigationState,
     {},
     { q: undefined },
   );
+  const scopedTransactions = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(model.dataset, model.scope),
+    model.referenceDate,
+  );
+  const scopedPeriodTransactions = filterTransactionsByPeriod(
+    scopedTransactions,
+    model.period,
+  );
+  const unresolvedTransactions = [...scopedPeriodTransactions]
+    .filter((transaction) => needsTransactionManualReview(transaction))
+    .sort((left, right) =>
+      `${right.transactionDate}${right.createdAt}`.localeCompare(
+        `${left.transactionDate}${left.createdAt}`,
+      ),
+    );
+  const unresolvedPanelRows = unresolvedTransactions
+    .slice(0, 12)
+    .map((transaction) => {
+      const account = accountsById.get(transaction.accountId) ?? null;
+      const entity = entitiesById.get(transaction.economicEntityId) ?? null;
+      const statementHref = transaction.importBatchId
+        ? buildHref(
+            `/transactions/statements/${transaction.importBatchId}`,
+            model.navigationState,
+            {},
+          )
+        : undefined;
+
+      return {
+        id: transaction.id,
+        href: `#transaction-${transaction.id}`,
+        ctaLabel: "Jump to ledger",
+        secondaryHref: statementHref,
+        secondaryLabel: statementHref ? "Batch" : undefined,
+        date: transaction.transactionDate,
+        account: (
+          <div style={{ display: "grid", gap: 4 }}>
+            <span>{account?.displayName ?? transaction.accountId}</span>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {entity?.displayName ?? transaction.economicEntityId}
+            </span>
+          </div>
+        ),
+        description: (
+          <div style={{ display: "grid", gap: 4 }}>
+            <span>{transaction.descriptionRaw}</span>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {[
+                transaction.counterpartyName
+                  ? `counterparty ${transaction.counterpartyName}`
+                  : null,
+                transaction.categoryCode
+                  ? `category ${transaction.categoryCode}`
+                  : null,
+                transaction.reviewReason ? transaction.reviewReason : null,
+              ]
+                .filter(Boolean)
+                .join(" · ") || "Awaiting manual review details."}
+            </span>
+          </div>
+        ),
+        amount: formatCurrency(
+          convertBaseEurToDisplayAmount(
+            model.dataset,
+            transaction.amountBaseEur,
+            model.currency,
+            transaction.transactionDate,
+          ),
+          model.currency,
+        ),
+        review: (
+          <ReviewEditorCell
+            transactionId={transaction.id}
+            needsReview={transaction.needsReview}
+            categoryCode={transaction.categoryCode}
+            reviewReason={transaction.reviewReason}
+            manualNotes={transaction.manualNotes}
+            transactionClass={transaction.transactionClass}
+            classificationSource={transaction.classificationSource}
+            quantity={transaction.quantity}
+            llmPayload={transaction.llmPayload}
+            creditCardStatementStatus={transaction.creditCardStatementStatus}
+            descriptionRaw={transaction.descriptionRaw}
+            descriptionClean={transaction.descriptionClean}
+          />
+        ),
+      };
+    });
+  const categoryPanelAccounts = model.dataset.accounts
+    .filter((account) =>
+      scopedTransactions.some((transaction) => transaction.accountId === account.id),
+    )
+    .map((account) => {
+      const accountTransactions = scopedTransactions.filter(
+        (transaction) => transaction.accountId === account.id,
+      );
+
+      return {
+        id: account.id,
+        displayName: account.displayName,
+        institutionName: account.institutionName,
+        entityName:
+          entitiesById.get(account.entityId)?.displayName ?? account.entityId,
+        assetDomain: account.assetDomain,
+        totalTransactions: accountTransactions.length,
+        categorizedTransactions: accountTransactions.filter(
+          (transaction) =>
+            Boolean(transaction.categoryCode) &&
+            !isUncategorizedCategoryCode(transaction.categoryCode),
+        ).length,
+        uncategorizedTransactions: accountTransactions.filter(
+          (transaction) =>
+            !transaction.categoryCode ||
+            isUncategorizedCategoryCode(transaction.categoryCode),
+        ).length,
+      };
+    });
+  const categoryPanelCategories = model.dataset.categories.map((category) => {
+    const matchingTransactions = scopedTransactions.filter(
+      (transaction) => transaction.categoryCode === category.code,
+    );
+
+    return {
+      code: category.code,
+      displayName: category.displayName,
+      scopeKind: category.scopeKind,
+      directionKind: category.directionKind,
+      active: category.active,
+      totalTransactionCount: matchingTransactions.length,
+      lastTransactionDate:
+        [...matchingTransactions]
+          .sort((left, right) =>
+            right.transactionDate.localeCompare(left.transactionDate),
+          )
+          .at(0)?.transactionDate ?? null,
+      accountUsage: categoryPanelAccounts.map((account) => {
+        const accountTransactions = matchingTransactions.filter(
+          (transaction) => transaction.accountId === account.id,
+        );
+
+        return {
+          accountId: account.id,
+          transactionCount: accountTransactions.length,
+          lastTransactionDate:
+            [...accountTransactions]
+              .sort((left, right) =>
+                right.transactionDate.localeCompare(left.transactionDate),
+              )
+              .at(0)?.transactionDate ?? null,
+        };
+      }),
+    };
+  });
+  const initialCategoryPanelAccountId =
+    model.scope.kind === "account" ? model.scope.accountId ?? null : null;
 
   return (
     <AppShell
       pathname="/transactions"
       scopeOptions={model.scopeOptions}
       state={model.navigationState}
-      pageQueryParams={{ q: model.transactionSearchQuery || undefined }}
     >
       <div className="dashboard-grid">
         <div className="page-header">
@@ -153,47 +287,57 @@ export default async function TransactionsPage({
                 model.ledger.search.semanticCandidateCount,
               keywordCandidateCount: model.ledger.search.keywordCandidateCount,
               warnings: model.ledger.search.warnings,
-              usedScopeFallback: model.ledger.search.filters.usedScopeFallback,
-              usedPeriodFallback:
-                model.ledger.search.filters.usedPeriodFallback,
-              scopeLabel: activeScopeLabel,
-              periodLabel: getPeriodFallbackLabel(model.period),
             })}
           </div>
         </SectionCard>
 
+        <UnresolvedTransactionsReviewPanel
+          rows={unresolvedPanelRows}
+          summaryPills={[
+            {
+              label: `${unresolvedTransactions.length} unresolved in the current scope`,
+              tone: unresolvedTransactions.length > 0 ? "warning" : "default",
+            },
+            {
+              label: `${new Set(unresolvedTransactions.map((row) => row.accountId)).size} accounts represented`,
+            },
+          ]}
+          helperText="This queue stays tied to the current scope and period so you can work through unresolved rows directly, while the finder above now searches globally."
+          footerNote={
+            unresolvedTransactions.length > unresolvedPanelRows.length
+              ? `Showing the newest ${unresolvedPanelRows.length} unresolved transactions for fast triage. Use the ledger below for the full queue.`
+              : undefined
+          }
+        />
+
+        <TransactionCategoryManagementPanel
+          accounts={categoryPanelAccounts}
+          categories={categoryPanelCategories}
+          initialAccountId={initialCategoryPanelAccountId}
+          emptyStateCopy="No category definitions are available in the current scope."
+        />
+
         <SectionCard
-          title="Ledger Actions"
-          subtitle="Review and statement tools"
+          title="Ledger"
+          subtitle="Detailed transaction results"
           span="span-12"
         >
-          <div className="split-grid">
-            <div>
-              <span className="label-sm">Search-ready metadata</span>
-              <div className="legend-list" style={{ marginTop: 12 }}>
-                {[
-                  "Raw description stays visible",
-                  "Account and entity context",
-                  "Review state",
-                  "Merchant and counterparty",
-                  "Date and amount direction",
-                  "Batch summary inheritance",
-                ].map((item) => (
-                  <span key={item} className="pill">
-                    {item}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div>
-              <span className="label-sm">Current quality state</span>
-              <div style={{ marginTop: 12 }} className="metric-nominal">
-                {model.ledger.quality.pendingEnrichmentCount} rows await
-                automatic analysis, {model.ledger.quality.pendingReviewCount}{" "}
-                rows need manual review, and{" "}
-                {model.ledger.quality.staleAccountsCount} accounts are stale.
-              </div>
-            </div>
+          <div className="legend-list" style={{ marginTop: 12 }}>
+            <span className="pill">
+              {model.ledger.quality.pendingEnrichmentCount} queued for enrichment
+            </span>
+            <span
+              className={
+                model.ledger.quality.pendingReviewCount > 0
+                  ? "pill warning"
+                  : "pill"
+              }
+            >
+              {model.ledger.quality.pendingReviewCount} manual review
+            </span>
+            <span className="pill">
+              {model.ledger.quality.staleAccountsCount} stale accounts
+            </span>
           </div>
         </SectionCard>
 
@@ -210,129 +354,128 @@ export default async function TransactionsPage({
             </div>
           </SectionCard>
         ) : (
-          <SimpleTable
-            span="span-12"
-            headers={[
-              "Date",
-              "Account",
-              "Economic Entity",
-              "Description",
-              "Amount",
-              "Match",
-              "Statement",
-              "Review",
-            ]}
-            rows={model.ledger.rows.map((row) => {
-              const transaction = row.transaction;
-              const account =
-                model.dataset.accounts.find(
-                  (candidate) => candidate.id === transaction.accountId,
-                ) ?? null;
-              const economicEntity =
-                model.dataset.entities.find(
-                  (candidate) => candidate.id === transaction.economicEntityId,
-                ) ?? null;
-              const statementBatch = importBatchBySettlementId.get(
-                transaction.id,
-              );
+          <div id="ledger-results">
+            <SimpleTable
+              span="span-12"
+              headers={[
+                "Date",
+                "Account",
+                "Economic Entity",
+                "Description",
+                "Amount",
+                "Match",
+                "Statement",
+                "Review",
+              ]}
+              rows={model.ledger.rows.map((row) => {
+                const transaction = row.transaction;
+                const account = accountsById.get(transaction.accountId) ?? null;
+                const economicEntity =
+                  entitiesById.get(transaction.economicEntityId) ?? null;
+                const statementBatch = importBatchBySettlementId.get(
+                  transaction.id,
+                );
 
-              return [
-                transaction.transactionDate,
-                account?.displayName ?? transaction.accountId,
-                economicEntity?.displayName ?? transaction.economicEntityId,
-                <div style={{ display: "grid", gap: 4 }}>
-                  <span>{transaction.descriptionRaw}</span>
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {[
-                      transaction.merchantNormalized
-                        ? `merchant ${transaction.merchantNormalized}`
-                        : null,
-                      transaction.counterpartyName
-                        ? `counterparty ${transaction.counterpartyName}`
-                        : null,
-                      transaction.categoryCode
-                        ? `category ${transaction.categoryCode}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") ||
-                      "No structured merchant/counterparty/category context yet."}
-                  </span>
-                </div>,
-                formatCurrency(
-                  convertBaseEurToDisplayAmount(
-                    model.dataset,
-                    transaction.amountBaseEur,
-                    model.currency,
-                    transaction.transactionDate,
-                  ),
-                  model.currency,
-                ),
-                row.searchDiagnostics ? (
-                  <div style={{ display: "grid", gap: 4 }}>
-                    <span>
-                      Hybrid {row.searchDiagnostics.hybridScore.toFixed(4)}
-                    </span>
+                return [
+                  transaction.transactionDate,
+                  account?.displayName ?? transaction.accountId,
+                  economicEntity?.displayName ?? transaction.economicEntityId,
+                  <div
+                    id={`transaction-${transaction.id}`}
+                    style={{ display: "grid", gap: 4 }}
+                  >
+                    <span>{transaction.descriptionRaw}</span>
                     <span className="muted" style={{ fontSize: 12 }}>
                       {[
-                        row.searchDiagnostics.semanticRank
-                          ? `semantic #${row.searchDiagnostics.semanticRank}`
+                        transaction.merchantNormalized
+                          ? `merchant ${transaction.merchantNormalized}`
                           : null,
-                        row.searchDiagnostics.keywordRank
-                          ? `bm25 #${row.searchDiagnostics.keywordRank}`
+                        transaction.counterpartyName
+                          ? `counterparty ${transaction.counterpartyName}`
                           : null,
-                        row.searchDiagnostics.rerankRank
-                          ? `rerank #${row.searchDiagnostics.rerankRank}`
+                        transaction.categoryCode
+                          ? `category ${transaction.categoryCode}`
                           : null,
                       ]
                         .filter(Boolean)
-                        .join(" · ")}
+                        .join(" · ") ||
+                        "No structured merchant/counterparty/category context yet."}
                     </span>
-                    <span className="muted" style={{ fontSize: 12 }}>
-                      {[
-                        row.searchDiagnostics.direction,
-                        row.searchDiagnostics.reviewState,
-                        row.searchDiagnostics.matchedBy.join("+"),
-                      ].join(" · ")}
-                    </span>
-                  </div>
-                ) : (
-                  "Default list"
-                ),
-                <CreditCardStatementUploadCell
-                  settlementTransactionId={transaction.id}
-                  statementStatus={transaction.creditCardStatementStatus}
-                  linkedCreditCardAccountName={
-                    model.dataset.accounts.find(
-                      (candidate) =>
-                        candidate.id === transaction.linkedCreditCardAccountId,
-                    )?.displayName ?? null
-                  }
-                  linkedImportFilename={
-                    statementBatch?.originalFilename ?? null
-                  }
-                  linkedImportBatchId={statementBatch?.id ?? null}
-                  templateOptions={creditCardTemplates}
-                />,
-                <ReviewEditorCell
-                  transactionId={transaction.id}
-                  needsReview={transaction.needsReview}
-                  categoryCode={transaction.categoryCode}
-                  reviewReason={transaction.reviewReason}
-                  manualNotes={transaction.manualNotes}
-                  transactionClass={transaction.transactionClass}
-                  classificationSource={transaction.classificationSource}
-                  quantity={transaction.quantity}
-                  llmPayload={transaction.llmPayload}
-                  creditCardStatementStatus={
-                    transaction.creditCardStatementStatus
-                  }
-                  descriptionRaw={transaction.descriptionRaw}
-                  descriptionClean={transaction.descriptionClean}
-                />,
-              ];
-            })}
-          />
+                  </div>,
+                  formatCurrency(
+                    convertBaseEurToDisplayAmount(
+                      model.dataset,
+                      transaction.amountBaseEur,
+                      model.currency,
+                      transaction.transactionDate,
+                    ),
+                    model.currency,
+                  ),
+                  row.searchDiagnostics ? (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <span>
+                        Hybrid {row.searchDiagnostics.hybridScore.toFixed(4)}
+                      </span>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {[
+                          row.searchDiagnostics.semanticRank
+                            ? `semantic #${row.searchDiagnostics.semanticRank}`
+                            : null,
+                          row.searchDiagnostics.keywordRank
+                            ? `bm25 #${row.searchDiagnostics.keywordRank}`
+                            : null,
+                          row.searchDiagnostics.rerankRank
+                            ? `rerank #${row.searchDiagnostics.rerankRank}`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {[
+                          row.searchDiagnostics.direction,
+                          row.searchDiagnostics.reviewState,
+                          row.searchDiagnostics.matchedBy.join("+"),
+                        ].join(" · ")}
+                      </span>
+                    </div>
+                  ) : (
+                    "Default list"
+                  ),
+                  <CreditCardStatementUploadCell
+                    settlementTransactionId={transaction.id}
+                    statementStatus={transaction.creditCardStatementStatus}
+                    linkedCreditCardAccountName={
+                      accountsById.get(
+                        transaction.linkedCreditCardAccountId ?? "",
+                      )?.displayName ?? null
+                    }
+                    linkedImportFilename={
+                      statementBatch?.originalFilename ?? null
+                    }
+                    linkedImportBatchId={statementBatch?.id ?? null}
+                    templateOptions={creditCardTemplates}
+                  />,
+                  <ReviewEditorCell
+                    transactionId={transaction.id}
+                    needsReview={transaction.needsReview}
+                    categoryCode={transaction.categoryCode}
+                    reviewReason={transaction.reviewReason}
+                    manualNotes={transaction.manualNotes}
+                    transactionClass={transaction.transactionClass}
+                    classificationSource={transaction.classificationSource}
+                    quantity={transaction.quantity}
+                    llmPayload={transaction.llmPayload}
+                    creditCardStatementStatus={
+                      transaction.creditCardStatementStatus
+                    }
+                    descriptionRaw={transaction.descriptionRaw}
+                    descriptionClean={transaction.descriptionClean}
+                  />,
+                ];
+              })}
+            />
+          </div>
         )}
       </div>
     </AppShell>

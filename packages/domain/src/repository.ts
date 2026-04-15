@@ -14,6 +14,7 @@ import type {
   ApplyRuleDraftInput,
   AuditEvent,
   CreateAccountInput,
+  CreateCategoryInput,
   CreateEntityInput,
   CreateManualInvestmentInput,
   CreditCardStatementImportInput,
@@ -21,6 +22,7 @@ import type {
   CreateRuleInput,
   CreateTemplateInput,
   DeleteAccountInput,
+  DeleteCategoryInput,
   DeleteEntityInput,
   DeleteHoldingAdjustmentInput,
   DeleteManualInvestmentInput,
@@ -214,6 +216,12 @@ export interface FinanceRepository {
   deleteTemplate(
     input: DeleteTemplateInput,
   ): Promise<{ applied: boolean; templateId: string }>;
+  createCategory(
+    input: CreateCategoryInput,
+  ): Promise<{ applied: boolean; categoryCode: string }>;
+  deleteCategory(
+    input: DeleteCategoryInput,
+  ): Promise<{ applied: boolean; categoryCode: string }>;
   addOpeningPosition(
     input: AddOpeningPositionInput,
   ): Promise<{ applied: boolean; adjustmentId: string }>;

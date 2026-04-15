@@ -30,10 +30,12 @@ import {
   type CreditCardStatementImportResult,
   type CreateEntityInput,
   type CreateAccountInput,
+  type CreateCategoryInput,
   type CreateManualInvestmentInput,
   type CreateRuleInput,
   type CreateTemplateInput,
   type DeleteAccountInput,
+  type DeleteCategoryInput,
   type DeleteEntityInput,
   type DeleteHoldingAdjustmentInput,
   type DeleteManualInvestmentInput,
@@ -2159,6 +2161,108 @@ class SqlFinanceRepository implements FinanceRepository {
     });
 
     return result;
+  }
+
+  async createCategory(input: CreateCategoryInput) {
+    return withSeededUserContext(async (sql) => {
+      const normalizedCode = input.category.code.trim().toLowerCase();
+      const existing = await sql`
+        select code
+        from public.categories
+        where code = ${normalizedCode}
+        limit 1
+      `;
+      if (existing[0]) {
+        throw new Error(`Category ${normalizedCode} already exists.`);
+      }
+
+      const [sortOrderRow] = await sql`
+        select coalesce(max(sort_order), 0)::int as max_sort_order
+        from public.categories
+      `;
+      const nextSortOrder = (sortOrderRow?.max_sort_order ?? 0) + 10;
+
+      if (input.apply) {
+        await sql`
+          insert into public.categories (
+            code,
+            display_name,
+            parent_code,
+            scope_kind,
+            direction_kind,
+            sort_order,
+            active,
+            metadata_json
+          ) values (
+            ${normalizedCode},
+            ${input.category.displayName},
+            ${input.category.parentCode ?? null},
+            ${input.category.scopeKind},
+            ${input.category.directionKind},
+            ${nextSortOrder},
+            true,
+            '{}'::jsonb
+          )
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        categoryCode: normalizedCode,
+      };
+    });
+  }
+
+  async deleteCategory(input: DeleteCategoryInput) {
+    return withSeededUserContext(async (sql) => {
+      const normalizedCode = input.categoryCode.trim().toLowerCase();
+      const existing = await sql`
+        select code
+        from public.categories
+        where code = ${normalizedCode}
+        limit 1
+      `;
+      if (!existing[0]) {
+        throw new Error(`Category ${normalizedCode} not found.`);
+      }
+
+      const [transactionUsageRow, childCategoryRow] = await Promise.all([
+        sql`
+          select count(*)::int as usage_count
+          from public.transactions
+          where category_code = ${normalizedCode}
+        `,
+        sql`
+          select count(*)::int as child_count
+          from public.categories
+          where parent_code = ${normalizedCode}
+        `,
+      ]);
+
+      if ((transactionUsageRow[0]?.usage_count ?? 0) > 0) {
+        throw new Error(
+          `Category ${normalizedCode} is still assigned to transactions and cannot be deleted.`,
+        );
+      }
+
+      if ((childCategoryRow[0]?.child_count ?? 0) > 0) {
+        throw new Error(
+          `Category ${normalizedCode} still has child categories and cannot be deleted.`,
+        );
+      }
+
+      if (input.apply) {
+        await sql`
+          delete from public.categories
+          where code = ${normalizedCode}
+        `;
+      }
+
+      return {
+        applied: input.apply,
+        categoryCode: normalizedCode,
+      };
+    });
   }
 
   async addOpeningPosition(input: AddOpeningPositionInput) {

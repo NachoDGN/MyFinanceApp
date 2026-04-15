@@ -160,6 +160,14 @@ function tokenizeNormalizedMatcher(value: string) {
     );
 }
 
+function tokenizeMatcherText(value: string | null | undefined) {
+  if (!value) {
+    return [];
+  }
+
+  return tokenizeNormalizedMatcher(value);
+}
+
 function startOfMonthIso(value: string) {
   return `${value.slice(0, 7)}-01`;
 }
@@ -257,6 +265,63 @@ const TRANSACTION_SEARCH_QUERY_STOPWORDS = new Set([
   "WAS",
   "WERE",
   "WITH",
+]);
+
+const TRANSACTION_SEARCH_WEAK_EVIDENCE_TOKENS = new Set([
+  "ACCOUNT",
+  "ACCOUNTS",
+  "APR",
+  "APRIL",
+  "AUG",
+  "AUGUST",
+  "BANK",
+  "CARD",
+  "CHECKING",
+  "CREDIT",
+  "CREDITS",
+  "DATE",
+  "DATES",
+  "DEBIT",
+  "DEBITS",
+  "DEC",
+  "DECEMBER",
+  "FEB",
+  "FEBRUARY",
+  "INCOME",
+  "INFLOW",
+  "JAN",
+  "JANUARY",
+  "JUL",
+  "JULY",
+  "JUN",
+  "JUNE",
+  "MAR",
+  "MARCH",
+  "MAY",
+  "MONTH",
+  "NOV",
+  "NOVEMBER",
+  "OCT",
+  "OCTOBER",
+  "OUTFLOW",
+  "PAID",
+  "PAYMENT",
+  "PAYMENTS",
+  "PERIOD",
+  "RECEIVED",
+  "RESULT",
+  "RESULTS",
+  "ROW",
+  "ROWS",
+  "SAVINGS",
+  "SHOW",
+  "TODAY",
+  "TRANSACTION",
+  "TRANSACTIONS",
+  "VIEW",
+  "YEAR",
+  "YEARS",
+  "YESTERDAY",
 ]);
 
 function shiftMonth(referenceDate: string, deltaMonths: number) {
@@ -558,6 +623,7 @@ export function resolveTransactionSearchFilters(input: {
   parsedQuery: ParsedTransactionSearchQuery;
   scope: Scope;
   period: PeriodSelection;
+  applySelectorFallback?: boolean;
 }) {
   const filters: ResolvedTransactionSearchFilters = {
     accountIds: uniq(input.parsedQuery.accountIds),
@@ -579,7 +645,9 @@ export function resolveTransactionSearchFilters(input: {
     explanation: input.parsedQuery.explanation,
   };
 
-  if (!filters.hasExplicitScopeConstraint) {
+  const applySelectorFallback = input.applySelectorFallback !== false;
+
+  if (applySelectorFallback && !filters.hasExplicitScopeConstraint) {
     if (input.scope.kind === "account" && input.scope.accountId) {
       filters.accountIds = uniq([...filters.accountIds, input.scope.accountId]);
       filters.usedScopeFallback = true;
@@ -589,7 +657,7 @@ export function resolveTransactionSearchFilters(input: {
     }
   }
 
-  if (!filters.hasExplicitTimeConstraint) {
+  if (applySelectorFallback && !filters.hasExplicitTimeConstraint) {
     filters.dateStart = input.period.start;
     filters.dateEnd = input.period.end;
     filters.usedPeriodFallback = true;
@@ -793,6 +861,66 @@ function extractTransactionSearchEvidenceTokens(query: string) {
   );
 }
 
+function isWeakTransactionSearchEvidenceToken(token: string) {
+  return (
+    TRANSACTION_SEARCH_WEAK_EVIDENCE_TOKENS.has(token) ||
+    /^\d{4}$/.test(token) ||
+    /^\d{1,2}$/.test(token)
+  );
+}
+
+function collectStructuredConstraintTokens(input: {
+  dataset: DomainDataset;
+  parsedQuery: ParsedTransactionSearchQuery;
+}) {
+  const accountTokenSources = input.dataset.accounts
+    .filter((account) => input.parsedQuery.accountIds.includes(account.id))
+    .flatMap((account) => [
+      account.displayName,
+      account.institutionName,
+      account.accountSuffix,
+      ...account.matchingAliases,
+    ]);
+  const entityTokenSources = input.dataset.entities
+    .filter((entity) => input.parsedQuery.entityIds.includes(entity.id))
+    .flatMap((entity) => [entity.displayName, entity.legalName, entity.slug]);
+
+  return new Set(
+    uniq([
+      ...accountTokenSources.flatMap((value) => tokenizeMatcherText(value)),
+      ...entityTokenSources.flatMap((value) => tokenizeMatcherText(value)),
+      ...input.parsedQuery.accountTypes.flatMap((value) =>
+        tokenizeMatcherText(value),
+      ),
+      ...input.parsedQuery.entityKinds.flatMap((value) =>
+        tokenizeMatcherText(value),
+      ),
+      ...input.parsedQuery.reviewStates.flatMap((value) =>
+        tokenizeMatcherText(value),
+      ),
+      ...input.parsedQuery.directions.flatMap((value) =>
+        tokenizeMatcherText(value),
+      ),
+      ...tokenizeMatcherText(input.parsedQuery.dateStart),
+      ...tokenizeMatcherText(input.parsedQuery.dateEnd),
+    ]),
+  );
+}
+
+export function extractDistinctiveTransactionSearchEvidenceTokens(input: {
+  query: string;
+  dataset: DomainDataset;
+  parsedQuery: ParsedTransactionSearchQuery;
+}) {
+  const structuredConstraintTokens = collectStructuredConstraintTokens(input);
+
+  return extractTransactionSearchEvidenceTokens(input.query).filter(
+    (token) =>
+      !isWeakTransactionSearchEvidenceToken(token) &&
+      !structuredConstraintTokens.has(token),
+  );
+}
+
 function getRequiredEvidenceMatches(queryTokens: string[]) {
   return queryTokens.length >= 4 ? 2 : 1;
 }
@@ -830,8 +958,10 @@ export function filterSemanticCandidatesByEvidence(input: {
   query: string;
   semanticCandidates: TransactionSemanticCandidate[];
   keywordCandidates?: TransactionKeywordCandidate[];
+  distinctiveTokens?: string[];
 }) {
-  const queryTokens = extractTransactionSearchEvidenceTokens(input.query);
+  const queryTokens =
+    input.distinctiveTokens ?? extractTransactionSearchEvidenceTokens(input.query);
   if (queryTokens.length === 0) {
     return input.semanticCandidates;
   }
@@ -932,6 +1062,7 @@ async function runTransactionSearchRetrieval(input: {
   userId: string;
   query: string;
   filters: ResolvedTransactionSearchFilters;
+  distinctiveTokens?: string[];
   warnings: Set<string>;
 }) {
   let keywordCandidates: TransactionKeywordCandidate[] = [];
@@ -962,6 +1093,7 @@ async function runTransactionSearchRetrieval(input: {
       query: input.query,
       semanticCandidates: rawSemanticCandidates,
       keywordCandidates,
+      distinctiveTokens: input.distinctiveTokens,
     });
   } catch {
     input.warnings.add(
@@ -1055,16 +1187,24 @@ export async function searchTransactions(
     query,
     referenceDate: input.referenceDate,
   });
+  const distinctiveEvidenceTokens =
+    extractDistinctiveTransactionSearchEvidenceTokens({
+      query,
+      dataset: input.dataset,
+      parsedQuery,
+    });
   let filters = resolveTransactionSearchFilters({
     parsedQuery,
     scope: input.scope,
     period: input.period,
+    applySelectorFallback: false,
   });
   let retrieval = await runTransactionSearchRetrieval({
     sql,
     userId,
     query,
     filters,
+    distinctiveTokens: distinctiveEvidenceTokens,
     warnings,
   });
 
@@ -1084,6 +1224,7 @@ export async function searchTransactions(
       userId,
       query,
       filters: broadenedFilters,
+      distinctiveTokens: distinctiveEvidenceTokens,
       warnings,
     });
     if (broadenedRetrieval.fusedHits.length > 0) {

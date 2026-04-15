@@ -17,6 +17,7 @@ import { domain } from "../lib/action-service";
 import {
   accountSchema,
   accountUpdateSchema,
+  categorySchema,
   createManualInvestmentSchema,
   entitySchema,
   entityUpdateSchema,
@@ -137,6 +138,32 @@ export async function deleteTemplateAction(templateId: string) {
   });
   revalidateTemplatePaths();
   revalidateAccountsPath();
+  return result;
+}
+
+export async function createCategoryAction(
+  input: z.input<typeof categorySchema>,
+) {
+  const category = categorySchema.parse(input);
+  const result = await domain.createCategory({
+    category,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
+  return result;
+}
+
+export async function deleteCategoryAction(categoryCode: string) {
+  const parsed = z.string().trim().min(1).parse(categoryCode);
+  const result = await domain.deleteCategory({
+    categoryCode: parsed,
+    actorName: "web-action",
+    sourceChannel: "web",
+    apply: true,
+  });
+  revalidateWorkspacePaths();
   return result;
 }
 

@@ -420,6 +420,14 @@ export class FinanceDomainService {
     return this.repository.deleteTemplate(input);
   }
 
+  createCategory(input: Parameters<FinanceRepository["createCategory"]>[0]) {
+    return this.repository.createCategory(input);
+  }
+
+  deleteCategory(input: Parameters<FinanceRepository["deleteCategory"]>[0]) {
+    return this.repository.deleteCategory(input);
+  }
+
   addOpeningPosition(input: AddOpeningPositionInput) {
     return this.repository.addOpeningPosition(input);
   }
