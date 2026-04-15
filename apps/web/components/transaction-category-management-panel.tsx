@@ -431,8 +431,8 @@ function CategoryCard({
   return (
     <article
       style={{
-        padding: 24,
-        borderRadius: 24,
+        padding: 20,
+        borderRadius: 22,
         border:
           category.active === false
             ? "1px dashed rgba(0, 0, 0, 0.14)"
@@ -442,7 +442,7 @@ function CategoryCard({
             ? "linear-gradient(180deg, rgba(0, 0, 0, 0.02) 0%, #ffffff 100%)"
             : "#ffffff",
         display: "grid",
-        gap: 18,
+        gap: 16,
       }}
     >
       <div
@@ -529,33 +529,61 @@ function CategoryCard({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-          gap: 14,
+          gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+          gap: 10,
         }}
       >
-        <SummaryMetric
-          label="Usage"
-          value={String(category.scopedTransactionCount)}
-          detail={
-            category.scopedAmountDisplay
-              ? category.scopedAmountDisplay
-              : "Amount placeholder available from parent"
-          }
-        />
-        <SummaryMetric
-          label="Share"
-          value={formatPercent(usageRatio)}
-          detail="Share of categorized transactions in the selected scope"
-        />
-        <SummaryMetric
-          label="Last Activity"
-          value={lastUsedLabel}
-          detail={
-            category.usedAccountCount > 0
-              ? `Used across ${category.usedAccountCount} account${category.usedAccountCount === 1 ? "" : "s"}`
-              : "Waiting for first assignment"
-          }
-        />
+        {[
+          {
+            label: "Usage",
+            value: String(category.scopedTransactionCount),
+            detail:
+              category.scopedAmountDisplay ??
+              `${category.usedAccountCount} account${category.usedAccountCount === 1 ? "" : "s"}`,
+          },
+          {
+            label: "Share",
+            value: formatPercent(usageRatio),
+            detail: "of categorized volume",
+          },
+          {
+            label: "Last Used",
+            value: lastUsedLabel,
+            detail:
+              category.usedAccountCount > 0
+                ? `Across ${category.usedAccountCount} account${category.usedAccountCount === 1 ? "" : "s"}`
+                : "Waiting for first assignment",
+          },
+        ].map((metric) => (
+          <div
+            key={`${category.code}-${metric.label}`}
+            style={{
+              padding: 14,
+              borderRadius: 18,
+              background: "rgba(0, 0, 0, 0.025)",
+              border: "1px solid rgba(0, 0, 0, 0.05)",
+              display: "grid",
+              gap: 4,
+            }}
+          >
+            <span className="label-sm" style={{ marginBottom: 0 }}>
+              {metric.label}
+            </span>
+            <span
+              style={{
+                fontSize: metric.label === "Last Used" ? 18 : 26,
+                fontWeight: 700,
+                letterSpacing: "-0.02em",
+                lineHeight: 1.1,
+              }}
+            >
+              {metric.value}
+            </span>
+            <span className="metric-nominal" style={{ fontSize: 12 }}>
+              {metric.detail}
+            </span>
+          </div>
+        ))}
       </div>
 
       <div style={{ display: "grid", gap: 8 }}>
@@ -574,6 +602,13 @@ function CategoryCard({
         </div>
         <CoverageBar value={usageRatio} />
       </div>
+
+      {selectedAccountId !== ALL_ACCOUNTS_ID && category.otherAccountCount > 0 ? (
+        <span className="metric-nominal" style={{ fontSize: 13 }}>
+          Also active in {category.otherAccountCount} other account
+          {category.otherAccountCount === 1 ? "" : "s"}.
+        </span>
+      ) : null}
 
       {accountBadges.length > 0 ? (
         <div style={{ display: "grid", gap: 10 }}>
@@ -1060,7 +1095,7 @@ export function TransactionCategoryManagementPanel({
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "repeat(auto-fit, minmax(320px, 1fr))",
+                        "repeat(auto-fit, minmax(280px, 1fr))",
                       gap: 18,
                     }}
                   >
@@ -1117,7 +1152,7 @@ export function TransactionCategoryManagementPanel({
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "repeat(auto-fit, minmax(320px, 1fr))",
+                        "repeat(auto-fit, minmax(280px, 1fr))",
                       gap: 18,
                     }}
                   >

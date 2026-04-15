@@ -7128,6 +7128,56 @@ test("historical ledger excludes future transactions and review counts beyond th
   assert.deepEqual(ledger.quality, summary.quality);
 });
 
+test("default ledger rows respect the selected period even without a search query", async () => {
+  const account = createAccount({
+    id: "ledger-period-account",
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createTransaction({
+        id: "march-row",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-29",
+        postedDate: "2026-03-29",
+        amountOriginal: "-40.00",
+        amountBaseEur: "-40.00",
+      }),
+      createTransaction({
+        id: "april-row",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-04-02",
+        postedDate: "2026-04-02",
+        amountOriginal: "-25.00",
+        amountBaseEur: "-25.00",
+      }),
+    ],
+  });
+  const service = new FinanceDomainService({
+    getDataset: async () => dataset,
+  });
+  const ledger = await service.listTransactions(
+    { kind: "consolidated" },
+    {
+      referenceDate: "2026-04-03",
+      period: resolvePeriodSelection({
+        preset: "mtd",
+        referenceDate: "2026-04-03",
+      }),
+    },
+  );
+
+  assert.deepEqual(
+    ledger.transactions.map((transaction) => transaction.id),
+    ["april-row"],
+  );
+  assert.equal(ledger.totalCount, 1);
+});
+
 test("custom dashboard and income series stay inside the requested custom range", () => {
   const account = createAccount({
     id: "custom-range-series-account",

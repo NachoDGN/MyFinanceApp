@@ -180,9 +180,12 @@ export class FinanceDomainService {
       options.period ??
       resolvePeriodSelection({ preset: "mtd", referenceDate });
     const defaultTransactions = [
-      ...filterTransactionsByReferenceDate(
-        filterTransactionsByScope(dataset, scope),
-        referenceDate,
+      ...filterTransactionsByPeriod(
+        filterTransactionsByReferenceDate(
+          filterTransactionsByScope(dataset, scope),
+          referenceDate,
+        ),
+        period,
       ),
     ].sort((a, b) =>
       `${b.transactionDate}${b.createdAt}`.localeCompare(
