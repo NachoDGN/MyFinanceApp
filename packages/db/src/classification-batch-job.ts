@@ -29,6 +29,7 @@ import type { SqlClient } from "./sql-runtime";
 import { updateTransactionRecord } from "./transaction-record";
 
 const MAX_FIRST_PASS_CONCURRENCY = 200;
+const DEFAULT_FIRST_PASS_CONCURRENCY_CAP = MAX_FIRST_PASS_CONCURRENCY;
 const DEFAULT_TRUSTED_RESOLUTION_CONFIDENCE = 0.85;
 const DEFAULT_ESCALATION_SIMILARITY_THRESHOLD = 0.8;
 const DEFAULT_ESCALATION_CONTEXT_LIMIT = 5;
@@ -75,7 +76,19 @@ export function getBatchClassificationFirstPassConcurrency(
   const normalizedCount = Number.isFinite(transactionCount)
     ? Math.max(1, Math.floor(transactionCount))
     : 1;
-  return Math.min(normalizedCount, MAX_FIRST_PASS_CONCURRENCY);
+  const configuredCap = Number(
+    process.env.BATCH_TRANSACTION_CLASSIFICATION_CONCURRENCY ??
+      `${DEFAULT_FIRST_PASS_CONCURRENCY_CAP}`,
+  );
+  const normalizedCap =
+    Number.isFinite(configuredCap) && configuredCap > 0
+      ? Math.max(1, Math.floor(configuredCap))
+      : DEFAULT_FIRST_PASS_CONCURRENCY_CAP;
+  return Math.min(
+    normalizedCount,
+    normalizedCap,
+    MAX_FIRST_PASS_CONCURRENCY,
+  );
 }
 
 export function getTrustedBatchResolutionConfidence() {

@@ -1,5 +1,6 @@
 import {
   buildAllowedCategoriesForAccount,
+  isBrokerageCashAccountType,
   needsTransactionManualReview,
   type DomainDataset,
   type Transaction,
@@ -19,6 +20,7 @@ import {
 const DEFAULT_REVIEW_QUEUE_CANDIDATE_LIMIT = 100;
 const DEFAULT_QUICK_CATEGORY_SUGGESTION_LIMIT = 4;
 const QUICK_CATEGORY_SUGGESTION_PRIORITY = [
+  "brokerage",
   "travel",
   "software",
   "office",
@@ -108,17 +110,44 @@ function buildQueueTransactionRow(
   };
 }
 
-function buildReviewQueueCategoryOptions(
+function isBrokerageCashManualCategoryEligible(
+  transaction: Transaction,
+) {
+  return (
+    transaction.transactionClass === "unknown" ||
+    transaction.transactionClass === "income" ||
+    transaction.transactionClass === "expense" ||
+    transaction.transactionClass === "fee" ||
+    transaction.transactionClass === "refund" ||
+    transaction.transactionClass === "reimbursement" ||
+    transaction.transactionClass === "owner_contribution" ||
+    transaction.transactionClass === "owner_draw" ||
+    transaction.transactionClass === "loan_inflow" ||
+    transaction.transactionClass === "loan_principal_payment" ||
+    transaction.transactionClass === "loan_interest_payment" ||
+    transaction.transactionClass === "fx_conversion" ||
+    transaction.transactionClass === "balance_adjustment"
+  );
+}
+
+export function buildReviewQueueCategoryOptions(
   dataset: DomainDataset,
   account: DomainDataset["accounts"][number],
   transaction: Transaction,
 ): ImportReviewQueueCategoryOption[] {
+  if (
+    isBrokerageCashAccountType(account.accountType) &&
+    !isBrokerageCashManualCategoryEligible(transaction)
+  ) {
+    return [];
+  }
+
   const numericAmount = Number(transaction.amountOriginal);
   const allowedDirectionKinds = new Set(
     numericAmount >= 0 ? ["income", "neutral"] : ["expense", "neutral"],
   );
 
-  return buildAllowedCategoriesForAccount(dataset, account)
+  const categoryOptions = buildAllowedCategoriesForAccount(dataset, account)
     .filter((category) => category.active)
     .filter((category) => !category.code.startsWith("uncategorized_"))
     .filter((category) => allowedDirectionKinds.has(category.directionKind))
@@ -131,6 +160,12 @@ function buildReviewQueueCategoryOptions(
       code: category.code,
       displayName: category.displayName,
     }));
+
+  if (isBrokerageCashAccountType(account.accountType)) {
+    return categoryOptions.filter((category) => category.code === "brokerage");
+  }
+
+  return categoryOptions;
 }
 
 function buildQuickCategorySuggestions(

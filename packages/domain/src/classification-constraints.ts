@@ -4,7 +4,10 @@ import type {
   DomainDataset,
   TransactionClass,
 } from "./types";
-import { resolveAccountAssetDomain } from "./account-domain";
+import {
+  isBrokerageCashAccountType,
+  resolveAccountAssetDomain,
+} from "./account-domain";
 
 const CASH_ACCOUNT_ALLOWED_TRANSACTION_CLASSES = [
   "income",
@@ -62,6 +65,13 @@ function getEffectiveAssetDomain(
     : account.assetDomain;
 }
 
+const BROKERAGE_CASH_SYSTEM_CATEGORY_CODES = new Set<Category["code"]>([
+  "brokerage",
+  "dividend_income",
+  "interest_income",
+  "transfer_between_accounts",
+]);
+
 export function buildAllowedTransactionClassesForAccount(
   account: Pick<Account, "assetDomain"> & Partial<Pick<Account, "accountType">>,
 ): readonly TransactionClass[] {
@@ -75,14 +85,27 @@ export function buildAllowedCategoriesForAccount(
   account: Pick<Account, "assetDomain" | "entityId"> &
     Partial<Pick<Account, "accountType">>,
 ) {
+  if (
+    account.accountType &&
+    isBrokerageCashAccountType(account.accountType)
+  ) {
+    return dataset.categories.filter(
+      (category) =>
+        category.scopeKind === "investment" ||
+        BROKERAGE_CASH_SYSTEM_CATEGORY_CODES.has(category.code),
+    );
+  }
+
   if (getEffectiveAssetDomain(account) === "investment") {
     const allowedScopeKinds = new Set<Category["scopeKind"]>([
       "investment",
       "system",
       "both",
     ]);
-    return dataset.categories.filter((category) =>
-      allowedScopeKinds.has(category.scopeKind),
+    return dataset.categories.filter(
+      (category) =>
+        allowedScopeKinds.has(category.scopeKind) &&
+        category.code !== "brokerage",
     );
   }
 

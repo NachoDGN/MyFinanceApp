@@ -185,6 +185,7 @@ values
   ('dividend_income', 'Dividend Income', null, 'system', 'income', 19, true, '{}'::jsonb),
   ('interest_income', 'Interest Income', null, 'system', 'income', 20, true, '{}'::jsonb),
   ('transfer_between_accounts', 'Transfer Between Accounts', null, 'system', 'neutral', 21, true, '{}'::jsonb),
+  ('brokerage', 'Brokerage', null, 'investment', 'neutral', 22, true, '{}'::jsonb),
   ('atm_fee', 'ATM Fee', null, 'system', 'expense', 22, true, '{}'::jsonb),
   ('bank_fee', 'Bank Fee', null, 'system', 'expense', 23, true, '{}'::jsonb),
   ('software', 'Software', null, 'company', 'expense', 24, true, '{}'::jsonb),

@@ -1,4 +1,5 @@
 export {
+  isBrokerageCashAccountType,
   isInvestmentAccountType,
   resolveAccountAssetDomain,
 } from "./account-domain";

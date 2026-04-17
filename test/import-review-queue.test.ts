@@ -5,7 +5,10 @@ import {
   buildHistoricalReviewExamples,
   buildReviewPromptExamples,
 } from "../packages/classification/src/investment-support.ts";
-import { resolveImportReviewQueueReadiness } from "../packages/db/src/import-review-queue.ts";
+import {
+  buildReviewQueueCategoryOptions,
+  resolveImportReviewQueueReadiness,
+} from "../packages/db/src/import-review-queue.ts";
 import { selectReviewPropagationCandidateMatches } from "../packages/db/src/review-propagation-support.ts";
 import {
   createAccount,
@@ -335,4 +338,117 @@ test("review propagation candidate selection can include already-resolved matche
     matches.map((match) => match.transactionId),
     [resolvedCandidate.id, unresolvedCandidate.id],
   );
+});
+
+test("brokerage cash review queue only exposes the brokerage category for generic cash-like rows", () => {
+  const account = createAccount({
+    id: "brokerage-cash-review-account",
+    assetDomain: "investment",
+    accountType: "brokerage_cash",
+  });
+  const transaction = createTransaction({
+    id: "brokerage-cash-review-transaction",
+    accountId: account.id,
+    transactionClass: "expense",
+    amountOriginal: "-15.00",
+    categoryCode: "other_expense",
+    needsReview: true,
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [transaction],
+    categories: [
+      {
+        code: "brokerage",
+        displayName: "Brokerage",
+        parentCode: null,
+        scopeKind: "investment",
+        directionKind: "neutral",
+        sortOrder: 1,
+        active: true,
+        metadataJson: {},
+      },
+      {
+        code: "other_expense",
+        displayName: "Other",
+        parentCode: null,
+        scopeKind: "both",
+        directionKind: "expense",
+        sortOrder: 2,
+        active: true,
+        metadataJson: {},
+      },
+      {
+        code: "other_income",
+        displayName: "Other",
+        parentCode: null,
+        scopeKind: "both",
+        directionKind: "income",
+        sortOrder: 3,
+        active: true,
+        metadataJson: {},
+      },
+      {
+        code: "transfer_between_accounts",
+        displayName: "Transfer Between Accounts",
+        parentCode: null,
+        scopeKind: "system",
+        directionKind: "neutral",
+        sortOrder: 4,
+        active: true,
+        metadataJson: {},
+      },
+    ],
+  });
+
+  assert.deepEqual(buildReviewQueueCategoryOptions(dataset, account, transaction), [
+    {
+      code: "brokerage",
+      displayName: "Brokerage",
+    },
+  ]);
+});
+
+test("brokerage cash review queue hides manual category picks for resolved investment trades", () => {
+  const account = createAccount({
+    id: "brokerage-cash-resolved-trade-account",
+    assetDomain: "investment",
+    accountType: "brokerage_cash",
+  });
+  const transaction = createTransaction({
+    id: "brokerage-cash-resolved-trade",
+    accountId: account.id,
+    transactionClass: "investment_trade_buy",
+    amountOriginal: "-100.00",
+    categoryCode: "stock_buy",
+    needsReview: false,
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [transaction],
+    categories: [
+      {
+        code: "brokerage",
+        displayName: "Brokerage",
+        parentCode: null,
+        scopeKind: "investment",
+        directionKind: "neutral",
+        sortOrder: 1,
+        active: true,
+        metadataJson: {},
+      },
+      {
+        code: "stock_buy",
+        displayName: "Stock Buy",
+        parentCode: null,
+        scopeKind: "investment",
+        directionKind: "investment",
+        sortOrder: 2,
+        active: true,
+        metadataJson: {},
+      },
+    ],
+  });
+
+  assert.deepEqual(buildReviewQueueCategoryOptions(dataset, account, transaction), []);
 });

@@ -8,7 +8,6 @@ import {
   type SimilarAccountTransactionPromptContext,
 } from "@myfinance/classification";
 import {
-  buildAllowedCategoriesForAccount,
   isInvestmentAccountType,
   assertCategoryCodeAllowedForAccount,
   assertEconomicEntityAllowedForAccount,
@@ -98,7 +97,9 @@ import {
   resolveAnalyzerPromptProfileId,
   upsertLearnedReviewExample,
 } from "./learned-review-examples";
+import { buildReviewQueueCategoryOptions } from "./import-review-queue";
 export {
+  buildReviewQueueCategoryOptions,
   getImportBatchReviewQueueState,
   resolveImportReviewQueueReadiness,
   type ImportBatchReviewQueueState,
@@ -497,12 +498,13 @@ export async function reanalyzeTransactionReview(
     const normalizedSelectedCategoryCode = normalizeOptionalTextValue(
       input.selectedCategoryCode,
     );
-    const allowedCategories = buildAllowedCategoriesForAccount(
+    const selectableCategories = buildReviewQueueCategoryOptions(
       dataset,
       account,
+      beforeTransaction,
     );
     const selectedCategory = normalizedSelectedCategoryCode
-      ? (allowedCategories.find(
+      ? (selectableCategories.find(
           (category) => category.code === normalizedSelectedCategoryCode,
         ) ?? null)
       : null;

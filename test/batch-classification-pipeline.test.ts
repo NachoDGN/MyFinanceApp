@@ -94,3 +94,19 @@ test("batch classification first pass concurrency scales with import size up to 
   assert.equal(getBatchClassificationFirstPassConcurrency(12), 12);
   assert.equal(getBatchClassificationFirstPassConcurrency(229), 200);
 });
+
+test("batch classification first pass concurrency honors an env cap", () => {
+  const previous = process.env.BATCH_TRANSACTION_CLASSIFICATION_CONCURRENCY;
+  process.env.BATCH_TRANSACTION_CLASSIFICATION_CONCURRENCY = "24";
+
+  try {
+    assert.equal(getBatchClassificationFirstPassConcurrency(12), 12);
+    assert.equal(getBatchClassificationFirstPassConcurrency(229), 24);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.BATCH_TRANSACTION_CLASSIFICATION_CONCURRENCY;
+    } else {
+      process.env.BATCH_TRANSACTION_CLASSIFICATION_CONCURRENCY = previous;
+    }
+  }
+});

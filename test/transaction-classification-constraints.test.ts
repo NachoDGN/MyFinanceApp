@@ -153,12 +153,22 @@ function buildScopedDataset() {
           metadataJson: {},
         },
         {
+          code: "brokerage",
+          displayName: "Brokerage",
+          parentCode: null,
+          scopeKind: "investment",
+          directionKind: "neutral",
+          sortOrder: 10,
+          active: true,
+          metadataJson: {},
+        },
+        {
           code: "uncategorized_expense",
           displayName: "Uncategorized Expense",
           parentCode: null,
           scopeKind: "system",
           directionKind: "expense",
-          sortOrder: 10,
+          sortOrder: 11,
           active: true,
           metadataJson: {},
         },
@@ -168,7 +178,17 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "system",
           directionKind: "income",
-          sortOrder: 11,
+          sortOrder: 12,
+          active: true,
+          metadataJson: {},
+        },
+        {
+          code: "interest_income",
+          displayName: "Interest Income",
+          parentCode: null,
+          scopeKind: "system",
+          directionKind: "income",
+          sortOrder: 13,
           active: true,
           metadataJson: {},
         },
@@ -178,7 +198,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "system",
           directionKind: "neutral",
-          sortOrder: 12,
+          sortOrder: 14,
           active: true,
           metadataJson: {},
         },
@@ -188,7 +208,7 @@ function buildScopedDataset() {
           parentCode: null,
           scopeKind: "investment",
           directionKind: "investment",
-          sortOrder: 13,
+          sortOrder: 15,
           active: true,
           metadataJson: {},
         },
@@ -442,7 +462,7 @@ test("company cash accounts expose both-scope travel and debt categories", () =>
   assert.equal(allowedCategoryCodes.has("subscriptions"), false);
 });
 
-test("brokerage-ledger accounts expose investment trades plus shared broker cash categories", () => {
+test("brokerage-ledger accounts expose investment trades plus the dedicated brokerage bucket", () => {
   const { dataset, investmentAccount } = buildScopedDataset();
 
   const allowedCategoryCodes = new Set(
@@ -455,9 +475,12 @@ test("brokerage-ledger accounts expose investment trades plus shared broker cash
   );
 
   assert.equal(allowedCategoryCodes.has("uncategorized_investment"), true);
+  assert.equal(allowedCategoryCodes.has("brokerage"), true);
   assert.equal(allowedCategoryCodes.has("dividend_income"), true);
+  assert.equal(allowedCategoryCodes.has("interest_income"), true);
   assert.equal(allowedCategoryCodes.has("transfer_between_accounts"), true);
-  assert.equal(allowedCategoryCodes.has("other_expense"), true);
+  assert.equal(allowedCategoryCodes.has("other_expense"), false);
+  assert.equal(allowedCategoryCodes.has("other_income"), false);
   assert.equal(allowedCategoryCodes.has("subscriptions"), false);
   assert.equal(allowedCategoryCodes.has("software"), false);
   assert.equal(allowedTransactionClasses.has("investment_trade_buy"), true);

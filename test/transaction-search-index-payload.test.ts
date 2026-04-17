@@ -47,3 +47,20 @@ test("transaction search contextualization concurrency scales with batch size up
   assert.equal(getTransactionSearchContextualizationConcurrency(25), 25);
   assert.equal(getTransactionSearchContextualizationConcurrency(229), 200);
 });
+
+test("transaction search contextualization concurrency honors an env cap", () => {
+  const previous =
+    process.env.TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY;
+  process.env.TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY = "16";
+
+  try {
+    assert.equal(getTransactionSearchContextualizationConcurrency(8), 8);
+    assert.equal(getTransactionSearchContextualizationConcurrency(229), 16);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY;
+    } else {
+      process.env.TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY = previous;
+    }
+  }
+});

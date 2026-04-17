@@ -22,6 +22,8 @@ import { serializeVector } from "./transaction-embedding-search";
 const TRANSACTION_SEARCH_EMBEDDING_DIMENSIONS = 3072;
 const TRANSACTION_SEARCH_EMBEDDING_BATCH_SIZE = 8;
 const MAX_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY = 200;
+const DEFAULT_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY_CAP =
+  MAX_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY;
 const TRANSACTION_SEARCH_SUMMARY_WINDOW_CHAR_LIMIT = 18_000;
 const EMPTY_UUID = "00000000-0000-0000-0000-000000000000";
 const TRANSACTION_SEARCH_EMBEDDING_ZERO_VECTOR = Array.from(
@@ -173,8 +175,17 @@ export function getTransactionSearchContextualizationConcurrency(
   const normalizedCount = Number.isFinite(rowCount)
     ? Math.max(1, Math.floor(rowCount))
     : 1;
+  const configuredCap = Number(
+    process.env.TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY ??
+      `${DEFAULT_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY_CAP}`,
+  );
+  const normalizedCap =
+    Number.isFinite(configuredCap) && configuredCap > 0
+      ? Math.max(1, Math.floor(configuredCap))
+      : DEFAULT_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY_CAP;
   return Math.min(
     normalizedCount,
+    normalizedCap,
     MAX_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY,
   );
 }

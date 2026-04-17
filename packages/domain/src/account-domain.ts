@@ -5,6 +5,10 @@ const INVESTMENT_ACCOUNT_TYPES = new Set<AccountType>([
   "brokerage_cash",
 ]);
 
+export function isBrokerageCashAccountType(accountType: AccountType) {
+  return accountType === "brokerage_cash";
+}
+
 export function isInvestmentAccountType(accountType: AccountType) {
   return INVESTMENT_ACCOUNT_TYPES.has(accountType);
 }
