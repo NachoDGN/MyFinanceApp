@@ -7,6 +7,7 @@ import { getDbRuntimeConfig, getPromptOverrides } from "@myfinance/db";
 import {
   inferImportTemplateDraft,
   logImportDebug,
+  resolveAccountAssetDomain,
   type Account,
   validateSpreadsheetFile,
 } from "@myfinance/domain";
@@ -22,7 +23,7 @@ import { revalidateTemplatePaths } from "./api-revalidate";
 export function toAssetDomain(
   accountType: Account["accountType"],
 ) {
-  return accountType === "brokerage_account" ? "investment" : "cash";
+  return resolveAccountAssetDomain(accountType);
 }
 
 function parseAliases(value: string) {

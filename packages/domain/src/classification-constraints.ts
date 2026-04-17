@@ -4,6 +4,7 @@ import type {
   DomainDataset,
   TransactionClass,
 } from "./types";
+import { resolveAccountAssetDomain } from "./account-domain";
 
 const CASH_ACCOUNT_ALLOWED_TRANSACTION_CLASSES = [
   "income",
@@ -53,21 +54,35 @@ function describeAccount(account: Pick<Account, "displayName" | "institutionName
   return `${account.displayName} (${account.institutionName})`;
 }
 
+function getEffectiveAssetDomain(
+  account: Pick<Account, "assetDomain"> & Partial<Pick<Account, "accountType">>,
+) {
+  return account.accountType
+    ? resolveAccountAssetDomain(account.accountType)
+    : account.assetDomain;
+}
+
 export function buildAllowedTransactionClassesForAccount(
-  account: Pick<Account, "assetDomain">,
+  account: Pick<Account, "assetDomain"> & Partial<Pick<Account, "accountType">>,
 ): readonly TransactionClass[] {
-  return account.assetDomain === "investment"
+  return getEffectiveAssetDomain(account) === "investment"
     ? INVESTMENT_ACCOUNT_ALLOWED_TRANSACTION_CLASSES
     : CASH_ACCOUNT_ALLOWED_TRANSACTION_CLASSES;
 }
 
 export function buildAllowedCategoriesForAccount(
   dataset: Pick<DomainDataset, "categories" | "entities">,
-  account: Pick<Account, "assetDomain" | "entityId">,
+  account: Pick<Account, "assetDomain" | "entityId"> &
+    Partial<Pick<Account, "accountType">>,
 ) {
-  if (account.assetDomain === "investment") {
-    return dataset.categories.filter(
-      (category) => category.scopeKind === "investment",
+  if (getEffectiveAssetDomain(account) === "investment") {
+    const allowedScopeKinds = new Set<Category["scopeKind"]>([
+      "investment",
+      "system",
+      "both",
+    ]);
+    return dataset.categories.filter((category) =>
+      allowedScopeKinds.has(category.scopeKind),
     );
   }
 
@@ -87,7 +102,8 @@ export function buildAllowedCategoriesForAccount(
 
 export function getAllowedCategoryCodesForAccount(
   dataset: Pick<DomainDataset, "categories" | "entities">,
-  account: Pick<Account, "assetDomain" | "entityId">,
+  account: Pick<Account, "assetDomain" | "entityId"> &
+    Partial<Pick<Account, "accountType">>,
 ) {
   return new Set(
     buildAllowedCategoriesForAccount(dataset, account).map(
@@ -98,11 +114,12 @@ export function getAllowedCategoryCodesForAccount(
 
 export function resolveConstrainedEconomicEntityId(
   dataset: Pick<DomainDataset, "entities">,
-  account: Pick<Account, "assetDomain" | "entityId">,
+  account: Pick<Account, "assetDomain" | "entityId"> &
+    Partial<Pick<Account, "accountType">>,
   requestedEconomicEntityId: string | null | undefined,
   fallbackEconomicEntityId = account.entityId,
 ) {
-  if (account.assetDomain === "cash") {
+  if (getEffectiveAssetDomain(account) === "cash") {
     return account.entityId;
   }
 
@@ -117,7 +134,8 @@ export function resolveConstrainedEconomicEntityId(
 }
 
 export function assertTransactionClassAllowedForAccount(
-  account: Pick<Account, "assetDomain" | "displayName" | "institutionName">,
+  account: Pick<Account, "assetDomain" | "displayName" | "institutionName"> &
+    Partial<Pick<Account, "accountType">>,
   transactionClass: string,
   context = "Transaction class",
 ) {
@@ -139,7 +157,8 @@ export function assertCategoryCodeAllowedForAccount(
   account: Pick<
     Account,
     "assetDomain" | "entityId" | "displayName" | "institutionName"
-  >,
+  > &
+    Partial<Pick<Account, "accountType">>,
   categoryCode: string,
   context = "Category",
 ) {
@@ -157,7 +176,8 @@ export function assertEconomicEntityAllowedForAccount(
   account: Pick<
     Account,
     "assetDomain" | "entityId" | "displayName" | "institutionName"
-  >,
+  > &
+    Partial<Pick<Account, "accountType">>,
   economicEntityId: string,
   context = "Economic entity",
 ) {

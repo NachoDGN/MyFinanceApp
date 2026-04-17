@@ -3,7 +3,12 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import type { AccountType, Entity, ImportTemplate } from "@myfinance/domain";
+import {
+  isInvestmentAccountType,
+  type AccountType,
+  type Entity,
+  type ImportTemplate,
+} from "@myfinance/domain/client";
 import { accountTypeOptions } from "@myfinance/domain/template-config";
 import {
   createAccountAction,
@@ -73,7 +78,7 @@ export function AccountsWorkbench({
   );
 
   function getDefaultStaleThreshold(nextAccountType: AccountType) {
-    return nextAccountType === "brokerage_account"
+    return isInvestmentAccountType(nextAccountType)
       ? String(defaultInvestmentStaleAfterDays)
       : String(defaultCashStaleAfterDays);
   }

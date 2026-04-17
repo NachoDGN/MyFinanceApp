@@ -1,4 +1,4 @@
-import type { DomainDataset } from "@myfinance/domain";
+import { normalizeAccountAssetDomain, type DomainDataset } from "@myfinance/domain";
 
 import { learnedReviewExamplesTableExists } from "./learned-review-examples";
 import { mapFromSql } from "./sql-json";
@@ -137,11 +137,15 @@ export async function loadDatasetForUser(
     );
   }
 
+  const normalizedAccounts = mapFromSql<DomainDataset["accounts"]>(accounts).map(
+    normalizeAccountAssetDomain,
+  );
+
   return {
     schemaVersion: "v1" as const,
     profile: mapFromSql<DomainDataset["profile"]>(profiles[0]),
     entities: mapFromSql<DomainDataset["entities"]>(entities),
-    accounts: mapFromSql<DomainDataset["accounts"]>(accounts),
+    accounts: normalizedAccounts,
     bankConnections:
       mapFromSql<DomainDataset["bankConnections"]>(bankConnections),
     bankAccountLinks:

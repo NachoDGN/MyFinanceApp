@@ -113,10 +113,6 @@ function buildReviewQueueCategoryOptions(
   account: DomainDataset["accounts"][number],
   transaction: Transaction,
 ): ImportReviewQueueCategoryOption[] {
-  if (account.assetDomain !== "cash") {
-    return [];
-  }
-
   const numericAmount = Number(transaction.amountOriginal);
   const allowedDirectionKinds = new Set(
     numericAmount >= 0 ? ["income", "neutral"] : ["expense", "neutral"],

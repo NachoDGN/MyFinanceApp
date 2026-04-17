@@ -9,6 +9,7 @@ import {
   assertRuleOutputsAllowedForScope,
   buildAllowedCategoriesForAccount,
   buildAllowedTransactionClassesForAccount,
+  resolveAccountAssetDomain,
 } from "../packages/domain/src/index.ts";
 
 import {
@@ -47,11 +48,19 @@ function buildScopedDataset() {
     accountType: "company_bank",
     assetDomain: "cash",
   });
+  const investmentAccount = createAccount({
+    id: "account-brokerage-cash",
+    entityId: personalEntity.id,
+    displayName: "Brokerage Ledger",
+    institutionName: "MyInvestor",
+    accountType: "brokerage_cash",
+    assetDomain: "investment",
+  });
 
   return {
     dataset: createDataset({
       entities: [personalEntity, companyEntity],
-      accounts: [personalAccount, companyAccount],
+      accounts: [personalAccount, companyAccount, investmentAccount],
       categories: [
         {
           code: "subscriptions",
@@ -153,6 +162,36 @@ function buildScopedDataset() {
           active: true,
           metadataJson: {},
         },
+        {
+          code: "dividend_income",
+          displayName: "Dividend Income",
+          parentCode: null,
+          scopeKind: "system",
+          directionKind: "income",
+          sortOrder: 11,
+          active: true,
+          metadataJson: {},
+        },
+        {
+          code: "transfer_between_accounts",
+          displayName: "Transfer Between Accounts",
+          parentCode: null,
+          scopeKind: "system",
+          directionKind: "neutral",
+          sortOrder: 12,
+          active: true,
+          metadataJson: {},
+        },
+        {
+          code: "uncategorized_investment",
+          displayName: "Uncategorized Investment",
+          parentCode: null,
+          scopeKind: "investment",
+          directionKind: "investment",
+          sortOrder: 13,
+          active: true,
+          metadataJson: {},
+        },
       ],
       transactions: [],
     }),
@@ -160,8 +199,15 @@ function buildScopedDataset() {
     companyEntity,
     personalAccount,
     companyAccount,
+    investmentAccount,
   };
 }
+
+test("brokerage cash accounts resolve to the investment asset domain", () => {
+  assert.equal(resolveAccountAssetDomain("brokerage_cash"), "investment");
+  assert.equal(resolveAccountAssetDomain("brokerage_account"), "investment");
+  assert.equal(resolveAccountAssetDomain("checking"), "cash");
+});
 
 test("cash transaction classifier defaults to gemini-3-flash-preview", () => {
   const previousLlmModel = process.env.LLM_TRANSACTION_MODEL;
@@ -394,6 +440,30 @@ test("company cash accounts expose both-scope travel and debt categories", () =>
   assert.equal(allowedCategoryCodes.has("other_income"), true);
   assert.equal(allowedCategoryCodes.has("tax_credit"), false);
   assert.equal(allowedCategoryCodes.has("subscriptions"), false);
+});
+
+test("brokerage-ledger accounts expose investment trades plus shared broker cash categories", () => {
+  const { dataset, investmentAccount } = buildScopedDataset();
+
+  const allowedCategoryCodes = new Set(
+    buildAllowedCategoriesForAccount(dataset, investmentAccount).map(
+      (category) => category.code,
+    ),
+  );
+  const allowedTransactionClasses = new Set(
+    buildAllowedTransactionClassesForAccount(investmentAccount),
+  );
+
+  assert.equal(allowedCategoryCodes.has("uncategorized_investment"), true);
+  assert.equal(allowedCategoryCodes.has("dividend_income"), true);
+  assert.equal(allowedCategoryCodes.has("transfer_between_accounts"), true);
+  assert.equal(allowedCategoryCodes.has("other_expense"), true);
+  assert.equal(allowedCategoryCodes.has("subscriptions"), false);
+  assert.equal(allowedCategoryCodes.has("software"), false);
+  assert.equal(allowedTransactionClasses.has("investment_trade_buy"), true);
+  assert.equal(allowedTransactionClasses.has("investment_trade_sell"), true);
+  assert.equal(allowedTransactionClasses.has("dividend"), true);
+  assert.equal(allowedTransactionClasses.has("transfer_internal"), true);
 });
 
 test("personal-only rule outputs must be scoped away from company cash accounts", () => {

@@ -1,3 +1,4 @@
+export * from "./account-domain";
 export * from "./classification-constraints";
 export * from "./finance";
 export * from "./fund-order-history";

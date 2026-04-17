@@ -1,4 +1,8 @@
 export {
+  isInvestmentAccountType,
+  resolveAccountAssetDomain,
+} from "./account-domain";
+export {
   getTransactionReviewReason,
   getTransactionAnalysisStatus,
   getTransactionReviewState,
@@ -9,3 +13,8 @@ export {
   needsTransactionManualReview,
   type TransactionReviewState,
 } from "./transaction-review";
+export type {
+  AccountType,
+  Entity,
+  ImportTemplate,
+} from "./types";
