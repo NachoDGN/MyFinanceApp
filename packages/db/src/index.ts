@@ -169,6 +169,7 @@ export {
 import {
   buildResolvedReviewSeedTransaction,
   buildResolvedReviewSimilarTransactionContext,
+  canSeedReviewPropagationFromTransaction,
   refreshFinanceAnalyticsArtifacts,
   replaceTransactionInDataset,
   shouldQueueReviewPropagationAfterManualReview,
@@ -277,6 +278,7 @@ export interface ReanalyzeTransactionReviewInput {
   transactionId: string;
   reviewContext?: string;
   selectedCategoryCode?: string | null;
+  propagateResolvedMatches?: boolean;
   actorName: string;
   sourceChannel: AuditEvent["sourceChannel"];
   reviewMode?: ReviewReanalysisMode;
@@ -723,22 +725,30 @@ export async function reanalyzeTransactionReview(
           userContext: normalizedReviewContext,
         });
       }
+      const shouldIncludeResolvedTargets =
+        input.propagateResolvedMatches === true &&
+        afterTransaction.needsReview === false &&
+        canSeedReviewPropagationFromTransaction(account, afterTransaction);
       if (
-        wasPendingReview &&
-        shouldQueueReviewPropagationAfterManualReview(
-          account,
-          beforeTransaction,
-        )
+        (wasPendingReview &&
+          shouldQueueReviewPropagationAfterManualReview(
+            account,
+            beforeTransaction,
+          )) ||
+        shouldIncludeResolvedTargets
       ) {
         await input.onProgress?.({
           stage: "review_propagation",
           message:
-            "Propagating the correction to similar unresolved transactions.",
+            shouldIncludeResolvedTargets
+              ? "Propagating the correction to similar transactions, including already-resolved matches."
+              : "Propagating the correction to similar unresolved transactions.",
         });
         const reviewPropagationPayload = {
           sourceTransactionId: afterTransaction.id,
           accountId: afterTransaction.accountId,
           sourceAuditEventId: auditEvent.id,
+          includeResolvedTargets: shouldIncludeResolvedTargets,
         };
         if (await supportsJobType(sql, "review_propagation")) {
           const reviewPropagationJobId = await queueJob(
@@ -749,6 +759,7 @@ export async function reanalyzeTransactionReview(
           followUpJobs.push({
             id: reviewPropagationJobId,
             jobType: "review_propagation",
+            includeResolvedTargets: shouldIncludeResolvedTargets,
           });
         } else {
           await processReviewPropagationJob(
@@ -3337,6 +3348,8 @@ class SqlFinanceRepository implements FinanceRepository {
                 payloadJson.selectedCategoryCode.trim() !== ""
                   ? payloadJson.selectedCategoryCode.trim()
                   : null;
+              const propagateResolvedMatches =
+                payloadJson.propagateResolvedMatches === true;
               if (!transactionId || (!reviewContext && !selectedCategoryCode)) {
                 throw new Error(
                   "Review reanalysis job is missing transactionId or review input.",
@@ -3368,6 +3381,7 @@ class SqlFinanceRepository implements FinanceRepository {
                 actorName,
                 sourceChannel,
                 reviewMode,
+                propagateResolvedMatches,
                 onProgress: reportProgress,
               });
               await completeJob(sql, job.id, startedAt, {

@@ -1,6 +1,12 @@
 import { Decimal } from "decimal.js";
 
-import { resolveFxRate } from "@myfinance/domain";
+import {
+  filterTransactionsByReferenceDate,
+  filterTransactionsByScope,
+  isInvestmentAccountType,
+  needsTransactionManualReview,
+  resolveFxRate,
+} from "@myfinance/domain";
 
 import { convertBaseEurToDisplayAmount } from "./currency";
 import { formatCurrency, formatDate, formatPercent, formatQuantity } from "./formatters";
@@ -127,6 +133,8 @@ export type InvestmentsPageModel = {
   totalPages: number;
   totalProcessedRows: number;
   totalProcessedRowsOverall: number;
+  processedRowsPeriodLabel: string;
+  allTimeResolvedTradeRows: number;
   processedRows: InvestmentsPageTransactionRow[];
   unresolvedRows: InvestmentsPageTransactionRow[];
   metricCards: InvestmentsPageMetricCard[];
@@ -163,6 +171,27 @@ function normalizeParam(
 
 function normalizeInstrumentText(value: string | null | undefined) {
   return value?.trim().toUpperCase() ?? "";
+}
+
+function describeProcessedRowsPeriodLabel(period: InvestmentsModel["period"]) {
+  if (period.preset === "all") return "all-time";
+  if (period.preset === "ytd") return "YTD";
+  if (period.preset === "mtd") return "MTD";
+  return "selected-period";
+}
+
+function describeInvestmentsPeriodLabel(period: InvestmentsModel["period"]) {
+  if (period.preset === "all") return "All Time";
+  if (period.preset === "ytd") return "YTD";
+  if (period.preset === "mtd") return "MTD";
+  return "Selected Period";
+}
+
+function describeInvestmentsComparisonLabel(period: InvestmentsModel["period"]) {
+  if (period.preset === "all") return "inception";
+  if (period.preset === "ytd") return "year-start";
+  if (period.preset === "mtd") return "month-start";
+  return formatDate(period.start);
 }
 
 function readOptionalRecord(value: unknown): Record<string, unknown> | null {
@@ -473,9 +502,25 @@ export function buildInvestmentsPageModel(
   const accountById = new Map(
     model.dataset.accounts.map((account) => [account.id, account]),
   );
+  const investmentAccountIds = new Set(
+    model.dataset.accounts
+      .filter((account) => account.assetDomain === "investment")
+      .map((account) => account.id),
+  );
   const entityById = new Map(
     model.dataset.entities.map((entity) => [entity.id, entity]),
   );
+  const allTimeResolvedTradeRows = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(model.dataset, model.scope),
+    model.referenceDate,
+  ).filter(
+    (transaction) =>
+      investmentAccountIds.has(transaction.accountId) &&
+      !needsTransactionManualReview(transaction) &&
+      ["investment_trade_buy", "investment_trade_sell"].includes(
+        transaction.transactionClass,
+      ),
+  ).length;
   const latestManualValuationByInvestmentId = new Map<
     string,
     (typeof model.dataset.manualInvestmentValuations)[number]
@@ -616,18 +661,9 @@ export function buildInvestmentsPageModel(
     totalPortfolioValueDisplay,
     getHoldingDisplayMetric,
   );
-  const periodLabel =
-    model.period.preset === "ytd"
-      ? "YTD"
-      : model.period.preset === "mtd"
-        ? "MTD"
-        : "Selected Period";
-  const comparisonLabel =
-    model.period.preset === "ytd"
-      ? "year-start"
-      : model.period.preset === "mtd"
-        ? "month-start"
-        : formatDate(model.period.start);
+  const periodLabel = describeInvestmentsPeriodLabel(model.period);
+  const comparisonLabel = describeInvestmentsComparisonLabel(model.period);
+  const processedRowsPeriodLabel = describeProcessedRowsPeriodLabel(model.period);
   const periodInvestmentIncome = new Decimal(model.dividendsPeriod).plus(
     model.interestPeriod,
   );
@@ -762,18 +798,17 @@ export function buildInvestmentsPageModel(
     totalPages,
     totalProcessedRows,
     totalProcessedRowsOverall,
+    processedRowsPeriodLabel,
+    allTimeResolvedTradeRows,
     processedRows: processedRowsPage,
     unresolvedRows,
     metricCards: [
       {
         label: "Portfolio Market Value",
         value: formatCurrency(model.metrics.portfolioValue.valueDisplay, model.currency),
-        badge: `${model.metrics.portfolioValue.deltaPercent ?? "0.00"}%`,
-        badgeTone:
-          Number(model.metrics.portfolioValue.deltaDisplay ?? "0") >= 0
-            ? "accent"
-            : "neutral",
-        subtitle: `${formatCurrency(model.metrics.portfolioValue.deltaDisplay, model.currency)} vs ${comparisonLabel}`,
+        badge: "All Time",
+        badgeTone: "neutral",
+        subtitle: `Current holdings snapshot as of ${formatDate(model.referenceDate)}`,
         chartValues: [
           ...model.holdings.holdings.map((holding) =>
             toDisplayChartValue(model, holding.currentValueEur),
@@ -943,7 +978,12 @@ export function buildInvestmentsPageModel(
       .filter((entity) => entity.active)
       .map((entity) => ({ id: entity.id, label: entity.displayName })),
     manualInvestmentCashAccounts: model.dataset.accounts
-      .filter((account) => account.isActive && account.assetDomain === "cash")
+      .filter(
+        (account) =>
+          account.isActive &&
+          (account.assetDomain === "cash" ||
+            isInvestmentAccountType(account.accountType)),
+      )
       .map((account) => ({
         id: account.id,
         entityId: account.entityId,

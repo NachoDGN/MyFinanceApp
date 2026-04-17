@@ -80,6 +80,7 @@ export async function selectReviewPropagationCandidateMatches(input: {
   account: DomainDataset["accounts"][number];
   sourceTransaction: Transaction;
   embeddingMatches: SimilarUnresolvedTransactionMatch[];
+  includeResolvedTargets?: boolean;
 }) {
   if (input.embeddingMatches.length === 0) {
     return [];
@@ -89,7 +90,10 @@ export async function selectReviewPropagationCandidateMatches(input: {
     input.dataset.transactions
       .filter((candidate) => candidate.id !== input.sourceTransaction.id)
       .filter((candidate) => candidate.accountId === input.account.id)
-      .filter((candidate) => candidate.needsReview)
+      .filter(
+        (candidate) =>
+          candidate.needsReview || input.includeResolvedTargets === true,
+      )
       .filter((candidate) => !candidate.voidedAt)
       .map((candidate) => [candidate.id, candidate] as const),
   );

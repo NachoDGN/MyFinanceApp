@@ -275,3 +275,64 @@ test("review propagation candidate selection never falls back without embedding 
 
   assert.deepEqual(matches, []);
 });
+
+test("review propagation candidate selection can include already-resolved matches when explicitly requested", async () => {
+  const account = createAccount({
+    id: "propagation-include-resolved-account",
+    assetDomain: "investment",
+    accountType: "brokerage_account",
+  });
+  const sourceTransaction = createTransaction({
+    id: "propagation-include-resolved-source",
+    accountId: account.id,
+    descriptionRaw: "VANGUARD US 500 STOCK EUR",
+    descriptionClean: "VANGUARD US 500 STOCK EUR",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    needsReview: false,
+  });
+  const unresolvedCandidate = createTransaction({
+    id: "propagation-unresolved-candidate",
+    accountId: account.id,
+    descriptionRaw: "VANGUARD US 500 STOCK EUR @ 2",
+    descriptionClean: "VANGUARD US 500 STOCK EUR @ 2",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    needsReview: true,
+  });
+  const resolvedCandidate = createTransaction({
+    id: "propagation-resolved-candidate",
+    accountId: account.id,
+    descriptionRaw: "VANGUARD US 500 STOCK EUR INS",
+    descriptionClean: "VANGUARD US 500 STOCK EUR INS",
+    transactionClass: "investment_trade_buy",
+    categoryCode: "stock_buy",
+    needsReview: false,
+  });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [sourceTransaction, unresolvedCandidate, resolvedCandidate],
+  });
+
+  const matches = await selectReviewPropagationCandidateMatches({
+    dataset,
+    account,
+    sourceTransaction,
+    embeddingMatches: [
+      {
+        transactionId: resolvedCandidate.id,
+        similarity: 0.992,
+      },
+      {
+        transactionId: unresolvedCandidate.id,
+        similarity: 0.981,
+      },
+    ],
+    includeResolvedTargets: true,
+  });
+
+  assert.deepEqual(
+    matches.map((match) => match.transactionId),
+    [resolvedCandidate.id, unresolvedCandidate.id],
+  );
+});

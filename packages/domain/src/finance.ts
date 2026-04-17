@@ -17,6 +17,7 @@ import { normalizeMatcherText } from "./text";
 
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
+const ALL_TIME_START_ISO = "1900-01-01";
 const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
@@ -170,6 +171,14 @@ export function resolvePeriodSelection(input: {
     };
   }
 
+  if (preset === "all") {
+    return {
+      start: ALL_TIME_START_ISO,
+      end: referenceDate,
+      preset: "all",
+    };
+  }
+
   if (preset === "ytd") {
     return {
       start: startOfYearIso(referenceDate),
@@ -188,6 +197,14 @@ export function resolvePeriodSelection(input: {
 export function getPreviousComparablePeriod(
   period: PeriodSelection,
 ): PeriodSelection {
+  if (period.preset === "all") {
+    return {
+      start: period.start,
+      end: shiftIsoDate(period.start, -1),
+      preset: "custom",
+    };
+  }
+
   if (period.preset === "mtd") {
     const currentMonthStart = toDate(period.start);
     const previousMonthStart = new Date(

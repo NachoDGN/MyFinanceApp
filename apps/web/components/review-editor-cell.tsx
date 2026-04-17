@@ -38,6 +38,7 @@ type ReviewJobStatusPayload = {
   followUpJobs?: Array<{
     id: string;
     jobType?: "metric_refresh" | "review_propagation";
+    includeResolvedTargets?: boolean;
     status?: "queued" | "running" | "completed" | "failed";
     createdAt?: string;
     startedAt?: string | null;
@@ -133,6 +134,12 @@ export function ReviewEditorCell({
     job: NonNullable<ReturnType<typeof getPendingFollowUpJob>>,
   ) => {
     if (job.jobType === "review_propagation") {
+      if (job.includeResolvedTargets) {
+        return job.status === "running"
+          ? "Updating similar transactions, including already-resolved matches, in the background."
+          : "Queued. Similar transactions, including already-resolved matches, will update in the background.";
+      }
+
       return job.status === "running"
         ? "Updating similar unresolved transactions in the background."
         : "Queued. Similar unresolved transactions will update in the background.";
@@ -182,7 +189,9 @@ export function ReviewEditorCell({
             );
             setFeedback(
               pendingFollowUpJob.jobType === "review_propagation"
-                ? "Transaction re-reviewed. Similar unresolved transactions are still updating."
+                ? pendingFollowUpJob.includeResolvedTargets
+                  ? "Transaction re-reviewed. Similar transactions, including already-resolved matches, are still updating."
+                  : "Transaction re-reviewed. Similar unresolved transactions are still updating."
                 : "Transaction re-reviewed. Portfolio metrics are still refreshing.",
             );
             timeoutId = setTimeout(() => {
@@ -271,7 +280,7 @@ export function ReviewEditorCell({
     };
   }, [activeJobId, isResolvedReview, router, startRefresh]);
 
-  async function handleUpdate() {
+  async function handleUpdate(propagateResolvedMatches = false) {
     if (!trimmedDraft) {
       setFeedback("Add review context before updating.");
       return;
@@ -289,6 +298,7 @@ export function ReviewEditorCell({
           },
           body: JSON.stringify({
             reviewContext: trimmedDraft,
+            propagateResolvedMatches,
           }),
         },
       );
@@ -314,8 +324,16 @@ export function ReviewEditorCell({
       setActiveJobProgressMessage(null);
       setFeedback(
         payload.queued === false
-          ? `${isResolvedReview ? "Resolved review" : "Review"} already queued. Waiting for the worker to finish.`
-          : `${isResolvedReview ? "Resolved review" : "Review"} queued. Waiting for the worker to finish.`,
+          ? `${isResolvedReview ? "Resolved review" : "Review"} already queued. ${
+              propagateResolvedMatches
+                ? "Resolved-match propagation will run if the queued job has not started yet. "
+                : ""
+            }Waiting for the worker to finish.`
+          : `${isResolvedReview ? "Resolved review" : "Review"} queued. ${
+              propagateResolvedMatches
+                ? "Similar already-resolved transactions will also be considered after reanalysis. "
+                : ""
+            }Waiting for the worker to finish.`,
       );
     } catch (error) {
       setFeedback(
@@ -404,7 +422,7 @@ export function ReviewEditorCell({
           }
           type="button"
           onClick={() => {
-            void handleUpdate();
+            void handleUpdate(false);
           }}
           disabled={isBusy || !trimmedDraft}
         >
@@ -418,6 +436,18 @@ export function ReviewEditorCell({
                   ? "Reanalyze"
                   : "Update"}
         </button>
+        {!isPendingEnrichment ? (
+          <button
+            className="btn-ghost"
+            type="button"
+            onClick={() => {
+              void handleUpdate(true);
+            }}
+            disabled={isBusy || !trimmedDraft}
+          >
+            Propagate Resolved
+          </button>
+        ) : null}
         {feedback ? (
           <span
             className={

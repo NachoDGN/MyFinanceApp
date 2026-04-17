@@ -14,12 +14,14 @@ import {
 } from "./primitives";
 
 function describePeriodLabel(period: string) {
+  if (period === "all") return "All Time";
   if (period === "ytd") return "YTD";
   if (period === "custom") return "Custom Range";
   return "MTD";
 }
 
 function describeComparisonLabel(period: string) {
+  if (period === "all") return "inception";
   if (period === "ytd") return "year-start";
   if (period === "custom") return "prior window";
   return "month-start";

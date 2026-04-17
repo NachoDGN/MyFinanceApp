@@ -7,6 +7,7 @@ const bodySchema = z
   .object({
     reviewContext: z.string().optional().default(""),
     selectedCategoryCode: z.string().trim().min(1).optional().nullable(),
+    propagateResolvedMatches: z.boolean().optional().default(false),
   })
   .refine(
     (value) =>
@@ -29,6 +30,7 @@ export async function POST(
       transactionId,
       reviewContext: body.reviewContext,
       selectedCategoryCode: body.selectedCategoryCode ?? null,
+      propagateResolvedMatches: body.propagateResolvedMatches,
       actorName: "web-review-editor",
       sourceChannel: "web",
     });

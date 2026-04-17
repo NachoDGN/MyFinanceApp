@@ -12,6 +12,7 @@ import { queueJob } from "./job-state";
 import {
   buildResolvedSourcePrecedent,
   buildResolvedSourcePropagatedContextEntry,
+  buildResolvedReviewSeedTransaction,
   buildUnresolvedSourcePropagatedContextEntry,
   mergePropagatedContextHistory,
   replaceTransactionInDataset,
@@ -105,11 +106,17 @@ async function applyReviewPropagationToCandidate(
     };
   }
 
+  const analysisCandidate = input.currentCandidate.needsReview
+    ? input.currentCandidate
+    : buildResolvedReviewSeedTransaction(
+        input.currentCandidate,
+        input.account.assetDomain,
+      );
   const { afterRow: after, afterTransaction } =
     await executeTransactionEnrichmentPipeline(sql, input.userId, {
       dataset: input.dataset,
       account: input.account,
-      transaction: input.currentCandidate,
+      transaction: analysisCandidate,
       enrichmentOptions: {
         trigger: "review_propagation",
         promptOverrides: input.promptOverrides,
@@ -162,6 +169,7 @@ export async function processReviewPropagationJob(
     typeof payloadJson.sourceAuditEventId === "string"
       ? payloadJson.sourceAuditEventId
       : null;
+  const includeResolvedTargets = payloadJson.includeResolvedTargets === true;
   if (!sourceTransactionId) {
     throw new Error("Review propagation job is missing sourceTransactionId.");
   }
@@ -209,7 +217,7 @@ export async function processReviewPropagationJob(
     (candidate) =>
       candidate.accountId === account.id &&
       candidate.id !== sourceTransactionId &&
-      candidate.needsReview === true &&
+      (candidate.needsReview === true || includeResolvedTargets) &&
       !candidate.voidedAt,
   );
   if (candidateTransactions.length === 0) {
@@ -271,7 +279,7 @@ export async function processReviewPropagationJob(
         and r.account_id = ${account.id}
         and r.transaction_id in ${sql(candidateIds)}
         and r.transaction_id <> ${sourceTransactionId}
-        and coalesce(t.needs_review, false) = true
+        and (${includeResolvedTargets} or coalesce(t.needs_review, false) = true)
         and t.voided_at is null
         and r.embedding_status in ('ready', 'stale')
         and b.status in ('ready', 'processing', 'stale')
@@ -302,6 +310,7 @@ export async function processReviewPropagationJob(
     account,
     sourceTransaction,
     embeddingMatches,
+    includeResolvedTargets,
   });
 
   const appliedTransactionIds: string[] = [];
@@ -326,7 +335,7 @@ export async function processReviewPropagationJob(
         ) ?? null;
       if (
         !currentCandidate ||
-        !currentCandidate.needsReview ||
+        (!currentCandidate.needsReview && !includeResolvedTargets) ||
         currentCandidate.voidedAt
       ) {
         skippedCount += 1;
@@ -414,6 +423,7 @@ export async function processReviewPropagationJob(
       sourceAuditEventId,
       accountId: account.id,
       mode,
+      includeResolvedTargets,
       candidateCount: candidateMatches.length,
       attemptedCount,
       appliedCount,

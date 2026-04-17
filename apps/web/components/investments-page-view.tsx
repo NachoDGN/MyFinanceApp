@@ -97,12 +97,16 @@ function ProcessedTransactionsSection({
         <div>
           <span className="investment-review-kicker">
             {model.securityFilter
-              ? `${model.totalProcessedRows} of ${model.totalProcessedRowsOverall} resolved rows`
-              : `${model.totalProcessedRows} resolved rows`}
+              ? `${model.totalProcessedRows} of ${model.totalProcessedRowsOverall} ${model.processedRowsPeriodLabel} processed rows`
+              : `${model.totalProcessedRows} ${model.processedRowsPeriodLabel} processed rows`}
           </span>
           <h2 className="investment-review-title">
             Processed Investment Transactions
           </h2>
+          <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+            {model.allTimeResolvedTradeRows} all-time resolved buy/sell trades in
+            this scope.
+          </p>
           {model.securityFilter ? (
             <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
               Security filter: {model.securityFilter}

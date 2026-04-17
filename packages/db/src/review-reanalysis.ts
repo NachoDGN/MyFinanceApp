@@ -29,6 +29,7 @@ export interface QueueTransactionReviewReanalysisInput {
   transactionId: string;
   reviewContext?: string;
   selectedCategoryCode?: string | null;
+  propagateResolvedMatches?: boolean;
   actorName: string;
   sourceChannel: AuditEvent["sourceChannel"];
 }
@@ -36,6 +37,7 @@ export interface QueueTransactionReviewReanalysisInput {
 export interface ReviewReanalysisFollowUpJobRef {
   id: string;
   jobType: "metric_refresh" | "review_propagation";
+  includeResolvedTargets?: boolean;
 }
 
 export interface ReviewReanalysisFollowUpJobStatus
@@ -104,6 +106,7 @@ function normalizeReviewReanalysisFollowUpJobRef(
   return {
     id,
     jobType,
+    includeResolvedTargets: record.includeResolvedTargets === true,
   };
 }
 
@@ -142,6 +145,7 @@ async function readReviewReanalysisFollowUpJobStatuses(
       {
         id: job.id,
         jobType: ref.jobType,
+        includeResolvedTargets: ref.includeResolvedTargets,
         status: job.status,
         createdAt: job.createdAt,
         startedAt: job.startedAt ?? null,
@@ -213,6 +217,22 @@ export async function queueTransactionReviewReanalysis(
       ? mapFromSql<DomainDataset["jobs"]>(existingRows)[0]
       : null;
     if (existingJob) {
+      if (
+        input.propagateResolvedMatches === true &&
+        existingJob.status === "queued" &&
+        existingJob.payloadJson.propagateResolvedMatches !== true
+      ) {
+        await sql`
+          update public.jobs
+          set payload_json = jsonb_set(
+            coalesce(payload_json, '{}'::jsonb),
+            '{propagateResolvedMatches}',
+            'true'::jsonb,
+            true
+          )
+          where id = ${existingJob.id}
+        `;
+      }
       return {
         queued: false,
         jobId: existingJob.id,
@@ -224,6 +244,7 @@ export async function queueTransactionReviewReanalysis(
       transactionId: input.transactionId,
       reviewContext: normalizedReviewContext,
       selectedCategoryCode: normalizedSelectedCategoryCode,
+      propagateResolvedMatches: input.propagateResolvedMatches === true,
       reviewMode,
       actorName: input.actorName,
       sourceChannel: input.sourceChannel,

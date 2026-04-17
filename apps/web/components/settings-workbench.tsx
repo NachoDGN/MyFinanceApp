@@ -54,8 +54,15 @@ export function SettingsWorkbench({
           formData.get("defaultBaseCurrency") === "USD" ? "USD" : "EUR";
         const defaultDisplayCurrency =
           formData.get("defaultDisplayCurrency") === "USD" ? "USD" : "EUR";
+        const requestedDefaultPeriod = String(
+          formData.get("defaultPeriodPreset") ?? "mtd",
+        );
         const defaultPeriodPreset =
-          formData.get("defaultPeriodPreset") === "ytd" ? "ytd" : "mtd";
+          requestedDefaultPeriod === "all"
+            ? "all"
+            : requestedDefaultPeriod === "ytd"
+              ? "ytd"
+              : "mtd";
         await updateWorkspaceProfileAction({
           displayName: String(formData.get("displayName") ?? ""),
           defaultBaseCurrency,
@@ -241,6 +248,7 @@ export function SettingsWorkbench({
             >
               <option value="mtd">Month to Date</option>
               <option value="ytd">Year to Date</option>
+              <option value="all">All Time</option>
             </select>
           </label>
           <label className="input-label">

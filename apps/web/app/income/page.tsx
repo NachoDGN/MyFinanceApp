@@ -25,6 +25,9 @@ function getPeriodLabel(period: {
   start: string;
   end: string;
 }) {
+  if (period.preset === "all") {
+    return "All Time";
+  }
   if (period.preset === "mtd") {
     return "Month to Date";
   }

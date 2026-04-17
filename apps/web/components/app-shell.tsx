@@ -144,6 +144,17 @@ export function AppShell({
             href={buildHref(
               pathname,
               state,
+              { period: "all" },
+              pageQueryParams,
+            )}
+            className={`filter-pill ${state.period === "all" ? "active" : ""}`}
+          >
+            All Time
+          </a>
+          <a
+            href={buildHref(
+              pathname,
+              state,
               { currency: "EUR" },
               pageQueryParams,
             )}

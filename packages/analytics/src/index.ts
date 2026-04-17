@@ -301,6 +301,28 @@ function buildTrailingMonthlyFlowSeries(
   );
 }
 
+function resolveScopedSeriesStartDate(
+  dataset: DomainDataset,
+  scope: Scope,
+  referenceDate: string,
+) {
+  const scopedTransactions = filterTransactionsByReferenceDate(
+    filterTransactionsByScope(dataset, scope),
+    referenceDate,
+  );
+  if (scopedTransactions.length === 0) {
+    return referenceDate;
+  }
+
+  return scopedTransactions.reduce(
+    (earliest, transaction) =>
+      transaction.transactionDate < earliest
+        ? transaction.transactionDate
+        : earliest,
+    scopedTransactions[0]!.transactionDate,
+  );
+}
+
 function buildMonthlyIncomeComposition(
   dataset: DomainDataset,
   scope: Scope,
@@ -888,6 +910,13 @@ export function buildDashboardSummary(
   const monthlySeries =
     period.preset === "custom"
       ? buildMonthlyFlowSeries(dataset, input.scope, period.start, period.end)
+      : period.preset === "all"
+        ? buildMonthlyFlowSeries(
+            dataset,
+            input.scope,
+            resolveScopedSeriesStartDate(dataset, input.scope, referenceDate),
+            period.end,
+          )
       : buildTrailingMonthlyFlowSeries(
           dataset,
           input.scope,
@@ -1402,6 +1431,17 @@ export function buildIncomeReadModel(
             summary.period.start,
             summary.period.end,
           )
+        : summary.period.preset === "all"
+          ? buildMonthlyIncomeComposition(
+              dataset,
+              input.scope,
+              resolveScopedSeriesStartDate(
+                dataset,
+                input.scope,
+                context.referenceDate,
+              ),
+              summary.period.end,
+            )
         : buildTrailingMonthlyIncomeComposition(
             dataset,
             input.scope,
