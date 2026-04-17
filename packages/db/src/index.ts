@@ -9,6 +9,7 @@ import {
 } from "@myfinance/classification";
 import {
   buildAllowedCategoriesForAccount,
+  isInvestmentAccountType,
   assertCategoryCodeAllowedForAccount,
   assertEconomicEntityAllowedForAccount,
   assertRuleOutputsAllowedForScope,
@@ -60,6 +61,7 @@ import {
 import { type PromptProfileOverrides } from "@myfinance/llm";
 import { withInvestmentMutationLock } from "./investment-mutation-lock";
 import { applyInvestmentRebuild } from "./investment-rebuild-runner";
+import { processFundNavBackfillJob } from "./fund-nav-backfill";
 import { processReviewPropagationJob } from "./review-propagation-job";
 export {
   refreshOwnedStockPrices,
@@ -329,7 +331,7 @@ function shouldApplySelectedCategoryOverride(input: {
   transaction: Transaction;
   selectedCategoryCode: string | null;
 }) {
-  if (!input.selectedCategoryCode || input.account.assetDomain !== "cash") {
+  if (!input.selectedCategoryCode) {
     return false;
   }
 
@@ -353,7 +355,8 @@ function shouldApplySelectedCategoryOverride(input: {
   }
 
   return (
-    input.transaction.reviewReason === UNCATEGORIZED_TRANSACTION_REVIEW_REASON ||
+    input.transaction.reviewReason ===
+      UNCATEGORIZED_TRANSACTION_REVIEW_REASON ||
     input.transaction.categoryCode == null ||
     isUncategorizedCategoryCode(input.transaction.categoryCode)
   );
@@ -489,7 +492,10 @@ export async function reanalyzeTransactionReview(
     const normalizedSelectedCategoryCode = normalizeOptionalTextValue(
       input.selectedCategoryCode,
     );
-    const allowedCategories = buildAllowedCategoriesForAccount(dataset, account);
+    const allowedCategories = buildAllowedCategoriesForAccount(
+      dataset,
+      account,
+    );
     const selectedCategory = normalizedSelectedCategoryCode
       ? (allowedCategories.find(
           (category) => category.code === normalizedSelectedCategoryCode,
@@ -1640,7 +1646,9 @@ class SqlFinanceRepository implements FinanceRepository {
           `,
         ]);
 
-      const learnedReviewExamples = (await learnedReviewExamplesTableExists(sql))
+      const learnedReviewExamples = (await learnedReviewExamplesTableExists(
+        sql,
+      ))
         ? await sql`
             delete from public.learned_review_examples
             where user_id = ${this.userId}
@@ -1869,11 +1877,15 @@ class SqlFinanceRepository implements FinanceRepository {
               afterTransaction.economicEntityId)
         ) {
           const accountRows = await sql`
-            select asset_domain from public.accounts
+            select asset_domain, account_type from public.accounts
             where id = ${afterTransaction.accountId}
             limit 1
           `;
-          if (accountRows[0]?.asset_domain === "investment") {
+          const persistedAccount = accountRows[0];
+          if (
+            persistedAccount?.asset_domain === "investment" ||
+            isInvestmentAccountType(persistedAccount?.account_type)
+          ) {
             await queueJob(sql, "position_rebuild", {
               accountId: afterTransaction.accountId,
               transactionId: afterTransaction.id,
@@ -2354,9 +2366,12 @@ class SqlFinanceRepository implements FinanceRepository {
           "The funding account must belong to the same entity as the tracked investment.",
         );
       }
-      if (fundingAccount.asset_domain !== "cash") {
+      if (
+        fundingAccount.asset_domain !== "cash" &&
+        !isInvestmentAccountType(fundingAccount.account_type)
+      ) {
         throw new Error(
-          "Manual company investments must be linked to a cash account so cost basis can be derived from cash transfers.",
+          "Manual company investments must be linked to a cash-capable account so cost basis can be derived from transfers.",
         );
       }
 
@@ -2447,9 +2462,12 @@ class SqlFinanceRepository implements FinanceRepository {
           "The funding account must belong to the same entity as the tracked investment.",
         );
       }
-      if (fundingAccount.asset_domain !== "cash") {
+      if (
+        fundingAccount.asset_domain !== "cash" &&
+        !isInvestmentAccountType(fundingAccount.account_type)
+      ) {
         throw new Error(
-          "Manual company investments must be linked to a cash account so cost basis can be derived from cash transfers.",
+          "Manual company investments must be linked to a cash-capable account so cost basis can be derived from transfers.",
         );
       }
 
@@ -3249,6 +3267,23 @@ class SqlFinanceRepository implements FinanceRepository {
               processedJobs.push({
                 id: job.id,
                 jobType: "position_rebuild",
+                status: "completed",
+              });
+              continue;
+            }
+
+            if (job.job_type === "fund_nav_backfill") {
+              const resultPayload = await processFundNavBackfillJob(
+                sql,
+                payloadJson,
+              );
+              await completeJob(sql, job.id, startedAt, {
+                ...payloadJson,
+                ...resultPayload,
+              });
+              processedJobs.push({
+                id: job.id,
+                jobType: "fund_nav_backfill",
                 status: "completed",
               });
               continue;

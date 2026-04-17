@@ -60,7 +60,7 @@ export async function claimNextQueuedJob(sql: SqlClient, workerId: string) {
       where status = 'queued'
         and available_at <= ${startedAt}
       order by
-        case job_type
+        case job_type::text
           when 'review_reanalyze' then 0
           when 'rule_parse' then 1
           when 'bank_sync' then 2
@@ -69,9 +69,10 @@ export async function claimNextQueuedJob(sql: SqlClient, workerId: string) {
           when 'transfer_rematch' then 5
           when 'security_resolution' then 6
           when 'price_refresh' then 7
-          when 'position_rebuild' then 8
-          when 'metric_refresh' then 9
-          when 'review_propagation' then 10
+          when 'fund_nav_backfill' then 8
+          when 'position_rebuild' then 9
+          when 'metric_refresh' then 10
+          when 'review_propagation' then 11
           else 99
         end asc,
         available_at asc,

@@ -3322,6 +3322,144 @@ test("investment rebuild derives quantity from stored NAV history for exact fund
   );
 });
 
+test("investment rebuild uses FT fallback immediately and queues fund NAV backfill coverage work", async () => {
+  const expectedToday = new Date().toISOString().slice(0, 10);
+  let fetchCalls = 0;
+
+  await withRuntimeOverrides(
+    {
+      env: {
+        TWELVE_DATA_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+      },
+      fetch: async (input) => {
+        fetchCalls += 1;
+        const url = readRequestUrl(input);
+        if (
+          url.hostname === "markets.ft.com" &&
+          url.pathname.endsWith("/historical")
+        ) {
+          return new Response(
+            `
+              <section
+                data-f2-app-id="mod-tearsheet-historical-prices"
+                data-mod-config="{&quot;symbol&quot;:&quot;72731963&quot;,&quot;inception&quot;:&quot;2014-02-27T00:00:00Z&quot;}"
+              ></section>
+            `,
+            { status: 200 },
+          );
+        }
+
+        if (
+          url.hostname === "markets.ft.com" &&
+          url.pathname.includes("/ajax/get-historical-prices")
+        ) {
+          return new Response(
+            JSON.stringify({
+              html: `
+                <table>
+                  <tr>
+                    <td><span class="mod-ui-hide-small-below">Tuesday, March 03, 2026</span></td>
+                    <td>49.79</td>
+                    <td>49.79</td>
+                    <td>49.79</td>
+                    <td>49.79</td>
+                    <td>0</td>
+                  </tr>
+                </table>
+              `,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+
+        return jsonResponse({ status: "error" }, { status: 404 });
+      },
+    },
+    async () => {
+      const account = createAccount({
+        id: "broker-ft-fallback-fund",
+        assetDomain: "investment",
+        accountType: "brokerage_account",
+        institutionName: "Broker",
+        displayName: "Brokerage",
+      });
+      const security = createSecurity({
+        id: "security-ft-fund",
+        providerName: "manual",
+        providerSymbol: "IE0032126645",
+        canonicalSymbol: "IE0032126645",
+        displaySymbol: "IE0032126645",
+        name: "Vanguard Eurozone Stock Index Fund EUR Acc",
+        exchangeName: "FT",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: "IE0032126645",
+        metadataJson: {
+          instrumentType: "Index Fund",
+        },
+      });
+      const transaction = createTransaction({
+        id: "ft-fund-buy",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-03",
+        postedDate: "2026-03-03",
+        amountOriginal: "-99.58",
+        amountBaseEur: "-99.58",
+        currencyOriginal: "EUR",
+        descriptionRaw: "VANGUARD EUROZONE STOCK INDEX",
+        descriptionClean: "VANGUARD EUROZONE STOCK INDEX",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "llm",
+        classificationSource: "llm",
+        classificationConfidence: "0.94",
+        securityId: security.id,
+        quantity: null,
+        unitPriceOriginal: null,
+        needsReview: true,
+        reviewReason: "Quantity still needs to be derived.",
+      });
+      const dataset = createDataset({
+        accounts: [account],
+        transactions: [transaction],
+        securities: [security],
+      });
+
+      const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-03");
+      const patch = rebuilt.transactionPatches.find(
+        (candidate) => candidate.id === transaction.id,
+      );
+
+      assert.equal(fetchCalls, 2);
+      assert.equal(patch?.quantity, "2.00000000");
+      assert.equal(patch?.unitPriceOriginal, "49.79");
+      assert.equal(patch?.needsReview, false);
+      assert.equal(patch?.reviewReason, null);
+      assert.deepEqual(rebuilt.fundNavBackfillRequests, [
+        {
+          securityId: security.id,
+          isin: "IE0032126645",
+          quoteCurrency: "EUR",
+          startDate: "2026-01-01",
+          endDate: expectedToday,
+          triggerTransactionId: transaction.id,
+        },
+      ]);
+      assert.equal(rebuilt.upsertedPrices.length, 1);
+      assert.equal(rebuilt.upsertedPrices[0]?.sourceName, "ft_markets_nav");
+      assert.equal(rebuilt.upsertedPrices[0]?.priceDate, "2026-03-03");
+    },
+  );
+});
+
 test("investment rebuild derives signed sell quantity from stored NAV history for exact fund ISIN matches", async () => {
   await withRuntimeOverrides(
     { env: { TWELVE_DATA_API_KEY: undefined } },

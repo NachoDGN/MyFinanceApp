@@ -23,6 +23,12 @@ import {
   readRawOutputNumberAsString,
   readRawOutputString,
 } from "./sql-json";
+import {
+  buildFundNavBackfillRequest,
+  mergeFundNavBackfillRequests,
+  type FundNavBackfillRequest,
+} from "./fund-nav-backfill";
+import { fetchFtFundPriceAtOrBeforeDate } from "./ft-fund-history";
 
 type SearchCandidate = {
   providerSymbol: string;
@@ -78,6 +84,7 @@ export type InvestmentRebuildArtifacts = {
   insertedSecurities: Security[];
   insertedAliases: SecurityAlias[];
   upsertedPrices: SecurityPrice[];
+  fundNavBackfillRequests: FundNavBackfillRequest[];
   positions: DomainDataset["investmentPositions"];
   snapshots: DomainDataset["dailyPortfolioSnapshots"];
 };
@@ -1619,9 +1626,6 @@ function scoreStoredPriceCandidate(price: SecurityPrice) {
   if (!isPlaceholderSecurityPrice(price)) {
     score += 20;
   }
-  if (price.sourceName === "manual_nav_import") {
-    score += 50;
-  }
   if (normalizeSecurityText(price.marketState).includes("NAV")) {
     score += 20;
   }
@@ -1994,6 +1998,7 @@ export async function prepareInvestmentRebuild(
   const upsertedPriceIndexes = new Map<string, number>();
   const historicalPriceCache = new Map<string, SecurityPrice | null>();
   const latestPriceCache = new Map<string, SecurityPrice | null>();
+  const fundNavBackfillRequests: FundNavBackfillRequest[] = [];
   const historicalLookupTransactionIds = options?.historicalLookupTransactionIds
     ? new Set(options.historicalLookupTransactionIds)
     : null;
@@ -2072,6 +2077,7 @@ export async function prepareInvestmentRebuild(
     context?: SecurityResolutionContext,
     options?: {
       allowExternalLookup?: boolean;
+      triggerTransactionId?: string;
     },
   ) => {
     const cacheKey = `${security.id}:${transactionDate}`;
@@ -2102,6 +2108,22 @@ export async function prepareInvestmentRebuild(
       ) ?? null;
     if (
       options?.allowExternalLookup !== false &&
+      securityRecord &&
+      securityLooksLikeFund(securityRecord, context) &&
+      options?.triggerTransactionId
+    ) {
+      const request = buildFundNavBackfillRequest({
+        security: securityRecord,
+        transactionDate,
+        triggerTransactionId: options.triggerTransactionId,
+        isin: normalizedIsin,
+      });
+      if (request) {
+        fundNavBackfillRequests.push(request);
+      }
+    }
+    if (
+      options?.allowExternalLookup !== false &&
       apiKey &&
       securityRecord &&
       supportsTwelveDataMarketData(securityRecord)
@@ -2114,6 +2136,33 @@ export async function prepareInvestmentRebuild(
       if (fetchedPrice) {
         historicalPriceCache.set(cacheKey, fetchedPrice);
         return fetchedPrice;
+      }
+    }
+
+    if (
+      options?.allowExternalLookup !== false &&
+      securityRecord &&
+      securityLooksLikeFund(securityRecord, context)
+    ) {
+      const exactIsin = normalizeSecurityIdentifier(
+        context?.exactIsin ?? securityRecord.isin,
+      );
+      if (exactIsin) {
+        try {
+          const fetchedFtPrice = await fetchFtFundPriceAtOrBeforeDate({
+            securityId: securityRecord.id,
+            isin: exactIsin,
+            quoteCurrency: securityRecord.quoteCurrency,
+            transactionDate,
+            maxDriftDays: MAX_HISTORICAL_PRICE_DRIFT_DAYS,
+          });
+          if (fetchedFtPrice.price) {
+            historicalPriceCache.set(cacheKey, fetchedFtPrice.price);
+            return fetchedFtPrice.price;
+          }
+        } catch {
+          // Let the asynchronous backfill job retry later.
+        }
       }
     }
 
@@ -2265,6 +2314,7 @@ export async function prepareInvestmentRebuild(
               allowExternalLookup:
                 !historicalLookupTransactionIds ||
                 historicalLookupTransactionIds.has(transaction.id),
+              triggerTransactionId: transaction.id,
             },
           )
         : null;
@@ -2498,6 +2548,9 @@ export async function prepareInvestmentRebuild(
     insertedSecurities,
     insertedAliases,
     upsertedPrices,
+    fundNavBackfillRequests: mergeFundNavBackfillRequests(
+      fundNavBackfillRequests,
+    ),
     positions: rebuilt.positions,
     snapshots: rebuilt.snapshots,
   };

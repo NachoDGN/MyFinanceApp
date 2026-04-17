@@ -89,6 +89,7 @@ export type JobType =
   | "transfer_rematch"
   | "security_resolution"
   | "price_refresh"
+  | "fund_nav_backfill"
   | "position_rebuild"
   | "metric_refresh"
   | "review_reanalyze"

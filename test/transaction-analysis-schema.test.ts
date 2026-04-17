@@ -58,3 +58,34 @@ test("transaction analysis schema normalizes string confidence and preserves sna
   assert.equal(parsed.confidence, 0.91);
   assert.equal(parsed.reason, "Invoice settlement.");
 });
+
+test("transaction analysis schema truncates oversized explanation and reason strings", () => {
+  const parsed = transactionAnalysisResponseSchema.parse({
+    transaction_class: "investment_trade_buy",
+    category_code: "stock_buy",
+    merchant_normalized: "MyInvestor",
+    counterparty_name: "MyInvestor",
+    economic_entity_override: null,
+    security_hint: "Vanguard Emerging Markets Stock Index Fund",
+    quantity: null,
+    unit_price_original: null,
+    resolved_instrument_name: null,
+    resolved_instrument_isin: null,
+    resolved_instrument_ticker: null,
+    resolved_instrument_exchange: null,
+    current_price: null,
+    current_price_currency: null,
+    current_price_timestamp: null,
+    current_price_source: null,
+    current_price_type: null,
+    resolution_process: null,
+    confidence: 0.92,
+    explanation: "e".repeat(300),
+    reason: "r".repeat(400),
+  });
+
+  assert.equal(parsed.explanation.length, 240);
+  assert.equal(parsed.explanation.endsWith("…"), true);
+  assert.equal(parsed.reason.length, 320);
+  assert.equal(parsed.reason.endsWith("…"), true);
+});

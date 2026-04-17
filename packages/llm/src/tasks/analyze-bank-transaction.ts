@@ -8,6 +8,13 @@ function normalizeOptionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function truncateString(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return value.slice(0, Math.max(1, maxLength - 1)).trimEnd() + "…";
+}
+
 function normalizeOptionalNumber(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -109,8 +116,8 @@ function normalizeTransactionAnalysisPayload(value: unknown) {
       normalizeOptionalString(record.resolution_process) ??
       normalizeOptionalString(record.resolutionProcess),
     confidence: inferredConfidence,
-    explanation,
-    reason,
+    explanation: truncateString(explanation, 240),
+    reason: truncateString(reason, 320),
   };
 }
 
@@ -194,8 +201,8 @@ const transactionAnalysisJsonSchema = {
     current_price_type: { type: ["string", "null"] },
     resolution_process: { type: ["string", "null"] },
     confidence: { type: "number", minimum: 0, maximum: 1 },
-    explanation: { type: "string" },
-    reason: { type: "string" },
+    explanation: { type: "string", maxLength: 240 },
+    reason: { type: "string", maxLength: 320 },
   },
 } satisfies Record<string, unknown>;
 

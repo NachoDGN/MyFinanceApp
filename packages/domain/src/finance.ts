@@ -57,9 +57,6 @@ function scoreSecurityPriceCandidate(price: SecurityPrice) {
   if (!isPlaceholderSecurityPrice(price)) {
     score += 20;
   }
-  if (price.sourceName === "manual_nav_import") {
-    score += 50;
-  }
   if (
     String(price.marketState ?? "")
       .toUpperCase()

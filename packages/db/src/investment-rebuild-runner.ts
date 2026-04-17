@@ -17,6 +17,7 @@ import {
 } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 import { updateTransactionRecord } from "./transaction-record";
+import { queueFundNavBackfillJobs } from "./fund-nav-backfill";
 
 export type ApplyInvestmentRebuildOptions = {
   onProgress?: (progress: InvestmentRebuildProgress) => Promise<void> | void;
@@ -279,6 +280,7 @@ export async function applyInvestmentRebuild(
     await insertSecurities(sql, rebuilt.insertedSecurities);
     await insertSecurityAliases(sql, rebuilt.insertedAliases);
     await upsertSecurityPrices(sql, rebuilt.upsertedPrices);
+    await queueFundNavBackfillJobs(sql, rebuilt.fundNavBackfillRequests);
     await applyTransactionPatches(sql, {
       userId,
       latestTransactionsById,
