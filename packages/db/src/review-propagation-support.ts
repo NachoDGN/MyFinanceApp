@@ -1,5 +1,4 @@
 import {
-  rankReviewPropagationTransactions,
   type SimilarAccountTransactionPromptContext,
   type TransactionEnrichmentDecision,
 } from "@myfinance/classification";
@@ -86,19 +85,27 @@ export async function selectReviewPropagationCandidateMatches(input: {
     return [];
   }
 
-  const rankedMatches = await rankReviewPropagationTransactions(
-    input.dataset,
-    input.account,
-    input.sourceTransaction,
-    { embeddingClient: null },
-  );
-  const rankedMatchById = new Map(
-    rankedMatches.map((match) => [match.transaction.id, match]),
+  const candidateById = new Map(
+    input.dataset.transactions
+      .filter((candidate) => candidate.id !== input.sourceTransaction.id)
+      .filter((candidate) => candidate.accountId === input.account.id)
+      .filter((candidate) => candidate.needsReview)
+      .filter((candidate) => !candidate.voidedAt)
+      .map((candidate) => [candidate.id, candidate] as const),
   );
 
-  return input.embeddingMatches.filter((match) =>
-    rankedMatchById.has(match.transactionId),
-  );
+  return [...input.embeddingMatches]
+    .filter((match) => candidateById.has(match.transactionId))
+    .sort((left, right) => {
+      if (right.similarity !== left.similarity) {
+        return right.similarity - left.similarity;
+      }
+      const leftCreatedAt =
+        candidateById.get(left.transactionId)?.createdAt ?? "";
+      const rightCreatedAt =
+        candidateById.get(right.transactionId)?.createdAt ?? "";
+      return rightCreatedAt.localeCompare(leftCreatedAt);
+    });
 }
 
 function getTransactionUserProvidedContext(transaction: Transaction) {

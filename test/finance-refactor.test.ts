@@ -1453,7 +1453,7 @@ test("investment review propagation ranking rejects semantically nearby but diff
   assert.ok((matches[0]?.semanticSimilarity ?? 0) > 0.9);
 });
 
-test("review propagation candidate selection drops embedding matches that fail the lexical guardrail", async () => {
+test("review propagation candidate selection follows embedding order without lexical guardrails", async () => {
   const account = createAccount({
     id: "broker-review-propagation-filter",
     assetDomain: "investment",
@@ -1546,7 +1546,7 @@ test("review propagation candidate selection drops embedding matches that fail t
 
   assert.deepEqual(
     matches.map((match) => match.transactionId),
-    ["candidate-us500-variant"],
+    ["candidate-us500-variant", "candidate-amd"],
   );
 });
 
