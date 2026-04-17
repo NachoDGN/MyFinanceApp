@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  selectOwnedFundNavRefreshSecurities,
   selectOwnedStockPriceRefreshSecurities,
   selectTrackedEurFxPairs,
 } from "../packages/db/src/index.ts";
@@ -165,6 +166,123 @@ test("owned stock price refresh selection includes only open stock and ETF posit
   assert.deepEqual(selected.map((security) => security.displaySymbol).sort(), [
     "AMD",
     "VWCE",
+  ]);
+});
+
+test("owned fund NAV refresh selection includes only open fund positions with ISINs", () => {
+  const investmentAccount = createAccount({
+    id: "brokerage-1",
+    accountType: "brokerage_account",
+    assetDomain: "investment",
+    displayName: "Brokerage",
+  });
+
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      {
+        id: "security-fund",
+        providerName: "manual_fund_nav",
+        providerSymbol: "IE0032126645",
+        canonicalSymbol: "IE0032126645",
+        displaySymbol: "VUSAFUND",
+        name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+        exchangeName: "Manual NAV",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: "IE0032126645",
+        figi: null,
+        active: true,
+        metadataJson: {
+          instrumentType: "mutual_fund",
+        },
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+      {
+        id: "security-fund-no-isin",
+        providerName: "manual_fund_nav",
+        providerSymbol: "NOISIN",
+        canonicalSymbol: "NOISIN",
+        displaySymbol: "NOISIN",
+        name: "Missing ISIN Fund",
+        exchangeName: "Manual NAV",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {
+          instrumentType: "mutual_fund",
+        },
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+      {
+        id: "security-amd",
+        providerName: "twelve_data",
+        providerSymbol: "AMD",
+        canonicalSymbol: "AMD",
+        displaySymbol: "AMD",
+        name: "Advanced Micro Devices Inc",
+        exchangeName: "NASDAQ",
+        micCode: "XNAS",
+        assetType: "stock",
+        quoteCurrency: "USD",
+        country: "US",
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {},
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "buy-fund",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-05",
+        postedDate: "2026-04-05",
+        transactionClass: "investment_trade_buy",
+        securityId: "security-fund",
+        quantity: "4",
+        amountOriginal: "-400.00",
+        amountBaseEur: "-400.00",
+      }),
+      createTransaction({
+        id: "buy-fund-no-isin",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-05",
+        postedDate: "2026-04-05",
+        transactionClass: "investment_trade_buy",
+        securityId: "security-fund-no-isin",
+        quantity: "2",
+        amountOriginal: "-200.00",
+        amountBaseEur: "-200.00",
+      }),
+      createTransaction({
+        id: "buy-amd",
+        accountId: investmentAccount.id,
+        transactionDate: "2026-04-05",
+        postedDate: "2026-04-05",
+        transactionClass: "investment_trade_buy",
+        securityId: "security-amd",
+        quantity: "2",
+        amountOriginal: "-200.00",
+        amountBaseEur: "-200.00",
+      }),
+    ],
+  });
+
+  const selected = selectOwnedFundNavRefreshSecurities(dataset, "2026-04-10");
+
+  assert.deepEqual(selected.map((security) => security.displaySymbol), [
+    "VUSAFUND",
   ]);
 });
 

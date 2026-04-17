@@ -18,6 +18,10 @@ import { normalizeMatcherText } from "./text";
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
 const ALL_TIME_START_ISO = "1900-01-01";
+const AUTHORITATIVE_NAV_SOURCE_NAMES = new Set([
+  "ft_markets_nav",
+  "manual_nav_import",
+]);
 const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
@@ -52,25 +56,31 @@ function readPriceRawString(rawJson: unknown, key: string): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+function isNavLikeSecurityPrice(price: SecurityPrice) {
+  return (
+    String(price.marketState ?? "")
+      .toUpperCase()
+      .includes("NAV") ||
+    String(readPriceRawString(price.rawJson, "priceType") ?? "")
+      .toUpperCase()
+      .includes("NAV")
+  );
+}
+
 function scoreSecurityPriceCandidate(price: SecurityPrice) {
   let score = 0;
 
   if (!isPlaceholderSecurityPrice(price)) {
     score += 20;
   }
-  if (
-    String(price.marketState ?? "")
-      .toUpperCase()
-      .includes("NAV")
-  ) {
-    score += 20;
+  if (isNavLikeSecurityPrice(price)) {
+    score += 30;
   }
   if (
-    String(readPriceRawString(price.rawJson, "priceType") ?? "")
-      .toUpperCase()
-      .includes("NAV")
+    isNavLikeSecurityPrice(price) &&
+    AUTHORITATIVE_NAV_SOURCE_NAMES.has(price.sourceName)
   ) {
-    score += 10;
+    score += 100;
   }
 
   return score;

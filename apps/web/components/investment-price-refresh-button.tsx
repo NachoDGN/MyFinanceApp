@@ -32,8 +32,10 @@ export function InvestmentPriceRefreshButton() {
       setFeedback(null);
       try {
         const result = await refreshOwnedStockPricesAction();
+        const totalTrackedHoldings =
+          result.totalTrackedStocks + result.totalTrackedFunds;
 
-        if (result.totalTrackedStocks === 0 && result.totalTrackedFxPairs === 0) {
+        if (totalTrackedHoldings === 0 && result.totalTrackedFxPairs === 0) {
           setFeedback(
             "No tracked holdings or FX pairs are available to refresh.",
           );

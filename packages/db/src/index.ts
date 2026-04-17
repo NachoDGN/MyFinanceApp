@@ -67,6 +67,7 @@ import { processFundNavBackfillJob } from "./fund-nav-backfill";
 import { processReviewPropagationJob } from "./review-propagation-job";
 export {
   refreshOwnedStockPrices,
+  selectOwnedFundNavRefreshSecurities,
   selectOwnedStockPriceRefreshSecurities,
   selectTrackedEurFxPairs,
   type RefreshOwnedStockPricesResult,

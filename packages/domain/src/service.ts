@@ -42,6 +42,7 @@ import {
   resolveScopeQuoteFreshness,
   resolvePeriodSelection,
   resolveScopeEntityIds,
+  summarizeQuoteFreshness,
   todayIso,
 } from "./finance";
 import { isRuleParserConfigured } from "./rule-drafts";
@@ -341,13 +342,7 @@ export class FinanceDomainService {
       scope,
       holdings,
       cryptoBalances,
-      quoteFreshness: quoteStates.includes("fresh")
-        ? "fresh"
-        : quoteStates.includes("delayed")
-          ? "delayed"
-          : quoteStates.includes("stale")
-            ? "stale"
-            : "missing",
+      quoteFreshness: summarizeQuoteFreshness(quoteStates),
       brokerageCashEur,
       generatedAt: new Date().toISOString(),
     };

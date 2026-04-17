@@ -8,6 +8,7 @@ import {
   type SecurityPrice,
 } from "@myfinance/domain";
 
+import { fetchFtFundPriceAtOrBeforeDate } from "./ft-fund-history";
 import { loadDatasetForUser } from "./dataset-loader";
 import { withInvestmentMutationLock } from "./investment-mutation-lock";
 import { serializeJson } from "./sql-json";
@@ -16,6 +17,8 @@ import {
   withSeededUserContext,
   type SqlClient,
 } from "./sql-runtime";
+
+const MAX_CURRENT_FUND_NAV_DRIFT_DAYS = 15;
 
 function readPayloadField<T>(
   payload: Record<string, unknown>,
@@ -84,19 +87,49 @@ function isRefreshableOwnedStockSecurity(security: Security) {
   );
 }
 
-export function selectOwnedStockPriceRefreshSecurities(
+function isRefreshableOwnedFundSecurity(security: Security) {
+  const instrumentType =
+    typeof security.metadataJson?.instrumentType === "string"
+      ? security.metadataJson.instrumentType.trim().toLowerCase()
+      : "";
+  return Boolean(
+    security.isin?.trim() &&
+      security.quoteCurrency?.trim() &&
+      (security.providerName === "manual_fund_nav" ||
+        instrumentType.includes("fund")),
+  );
+}
+
+function buildOwnedSecurityIds(
   dataset: DomainDataset,
   referenceDate = getDatasetLatestDate(dataset),
 ) {
   const { positions } = rebuildInvestmentState(dataset, referenceDate);
-  const ownedSecurityIds = new Set(
-    positions.map((position) => position.securityId),
-  );
+  return new Set(positions.map((position) => position.securityId));
+}
+
+export function selectOwnedStockPriceRefreshSecurities(
+  dataset: DomainDataset,
+  referenceDate = getDatasetLatestDate(dataset),
+) {
+  const ownedSecurityIds = buildOwnedSecurityIds(dataset, referenceDate);
 
   return dataset.securities.filter(
     (security) =>
       ownedSecurityIds.has(security.id) &&
       isRefreshableOwnedStockSecurity(security),
+  );
+}
+
+export function selectOwnedFundNavRefreshSecurities(
+  dataset: DomainDataset,
+  referenceDate = getDatasetLatestDate(dataset),
+) {
+  const ownedSecurityIds = buildOwnedSecurityIds(dataset, referenceDate);
+
+  return dataset.securities.filter(
+    (security) =>
+      ownedSecurityIds.has(security.id) && isRefreshableOwnedFundSecurity(security),
   );
 }
 
@@ -123,6 +156,7 @@ export function selectTrackedEurFxPairs(
     dataset,
     referenceDate,
   )
+    .concat(selectOwnedFundNavRefreshSecurities(dataset, referenceDate))
     .map((security) => security.quoteCurrency.trim().toUpperCase())
     .filter((currency) => currency !== "EUR");
 
@@ -194,6 +228,46 @@ async function fetchLatestOwnedStockPrice(
     },
     reason: null,
   };
+}
+
+async function fetchLatestOwnedFundNav(
+  security: Security,
+  requestDate: string,
+): Promise<{ quote: SecurityPrice | null; reason: string | null }> {
+  if (!security.isin?.trim()) {
+    return {
+      quote: null,
+      reason: "Fund NAV refresh requires an ISIN.",
+    };
+  }
+
+  try {
+    const result = await fetchFtFundPriceAtOrBeforeDate({
+      securityId: security.id,
+      isin: security.isin,
+      quoteCurrency: security.quoteCurrency,
+      transactionDate: requestDate,
+      maxDriftDays: MAX_CURRENT_FUND_NAV_DRIFT_DAYS,
+    });
+
+    if (!result.price) {
+      return {
+        quote: null,
+        reason: `FT Markets returned no NAV within ${MAX_CURRENT_FUND_NAV_DRIFT_DAYS} days.`,
+      };
+    }
+
+    return {
+      quote: result.price,
+      reason: null,
+    };
+  } catch (error) {
+    return {
+      quote: null,
+      reason:
+        error instanceof Error ? error.message : "Fund NAV refresh failed.",
+    };
+  }
 }
 
 async function fetchLatestFxRate(
@@ -319,6 +393,7 @@ async function updateSecurityPriceRefreshMetadata(
 
 export interface RefreshOwnedStockPricesResult {
   totalTrackedStocks: number;
+  totalTrackedFunds: number;
   totalTrackedFxPairs: number;
   refreshedCount: number;
   skippedCount: number;
@@ -340,82 +415,110 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
     );
   }
 
-  return withSeededUserContext(async (sql) => {
-    return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
-      const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
-      const securities = selectOwnedStockPriceRefreshSecurities(dataset);
-      const trackedFxPairs = selectTrackedEurFxPairs(dataset);
-      const requestDate = new Date().toISOString().slice(0, 10);
-      const refreshedSymbols: string[] = [];
-      const skippedSymbols: string[] = [];
-      const skippedDetails: Array<{ symbol: string; reason: string }> = [];
-      const refreshedFxPairs: string[] = [];
-      const skippedFxPairs: Array<{ symbol: string; reason: string }> = [];
-      let latestPriceDate: string | null = null;
+    return withSeededUserContext(async (sql) => {
+      return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
+        const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
+        const stockSecurities = selectOwnedStockPriceRefreshSecurities(dataset);
+        const fundSecurities = selectOwnedFundNavRefreshSecurities(dataset);
+        const trackedFxPairs = selectTrackedEurFxPairs(dataset);
+        const requestDate = new Date().toISOString().slice(0, 10);
+        const refreshedSymbols: string[] = [];
+        const skippedSymbols: string[] = [];
+        const skippedDetails: Array<{ symbol: string; reason: string }> = [];
+        const refreshedFxPairs: string[] = [];
+        const skippedFxPairs: Array<{ symbol: string; reason: string }> = [];
+        let latestPriceDate: string | null = null;
 
-      for (const baseCurrency of trackedFxPairs) {
-        const pair = `${baseCurrency}/EUR`;
-        const { fxRate, reason } = await fetchLatestFxRate(
-          baseCurrency,
-          "EUR",
-          apiKey,
-          requestDate,
-        );
-        if (!fxRate) {
-          skippedFxPairs.push({
-            symbol: pair,
-            reason: reason ?? "FX refresh failed.",
+        for (const baseCurrency of trackedFxPairs) {
+          const pair = `${baseCurrency}/EUR`;
+          const { fxRate, reason } = await fetchLatestFxRate(
+            baseCurrency,
+            "EUR",
+            apiKey,
+            requestDate,
+          );
+          if (!fxRate) {
+            skippedFxPairs.push({
+              symbol: pair,
+              reason: reason ?? "FX refresh failed.",
+            });
+            continue;
+          }
+
+          await upsertFxRateRow(sql, fxRate);
+          refreshedFxPairs.push(pair);
+          if (!latestPriceDate || fxRate.asOfDate > latestPriceDate) {
+            latestPriceDate = fxRate.asOfDate;
+          }
+        }
+
+        for (const security of stockSecurities) {
+          const { quote, reason } = await fetchLatestOwnedStockPrice(
+            security,
+            apiKey,
+            requestDate,
+          );
+          if (!quote) {
+            skippedSymbols.push(security.displaySymbol);
+            skippedDetails.push({
+              symbol: security.displaySymbol,
+              reason: reason ?? "Quote refresh failed.",
+            });
+            continue;
+          }
+
+          await upsertSecurityPriceRow(sql, quote);
+          await updateSecurityPriceRefreshMetadata(sql, {
+            securityId: security.id,
+            quoteCurrency: quote.currency,
+            quoteTimestamp: quote.quoteTimestamp,
           });
-          continue;
+          refreshedSymbols.push(security.displaySymbol);
+          if (!latestPriceDate || quote.priceDate > latestPriceDate) {
+            latestPriceDate = quote.priceDate;
+          }
         }
 
-        await upsertFxRateRow(sql, fxRate);
-        refreshedFxPairs.push(pair);
-        if (!latestPriceDate || fxRate.asOfDate > latestPriceDate) {
-          latestPriceDate = fxRate.asOfDate;
-        }
-      }
+        for (const security of fundSecurities) {
+          const { quote, reason } = await fetchLatestOwnedFundNav(
+            security,
+            requestDate,
+          );
+          if (!quote) {
+            skippedSymbols.push(security.displaySymbol);
+            skippedDetails.push({
+              symbol: security.displaySymbol,
+              reason: reason ?? "Fund NAV refresh failed.",
+            });
+            continue;
+          }
 
-      for (const security of securities) {
-        const { quote, reason } = await fetchLatestOwnedStockPrice(
-          security,
-          apiKey,
-          requestDate,
-        );
-        if (!quote) {
-          skippedSymbols.push(security.displaySymbol);
-          skippedDetails.push({
-            symbol: security.displaySymbol,
-            reason: reason ?? "Quote refresh failed.",
+          await upsertSecurityPriceRow(sql, quote);
+          await updateSecurityPriceRefreshMetadata(sql, {
+            securityId: security.id,
+            quoteCurrency: quote.currency,
+            quoteTimestamp: quote.quoteTimestamp,
           });
-          continue;
+          refreshedSymbols.push(security.displaySymbol);
+          if (!latestPriceDate || quote.priceDate > latestPriceDate) {
+            latestPriceDate = quote.priceDate;
+          }
         }
 
-        await upsertSecurityPriceRow(sql, quote);
-        await updateSecurityPriceRefreshMetadata(sql, {
-          securityId: security.id,
-          quoteCurrency: quote.currency,
-          quoteTimestamp: quote.quoteTimestamp,
-        });
-        refreshedSymbols.push(security.displaySymbol);
-        if (!latestPriceDate || quote.priceDate > latestPriceDate) {
-          latestPriceDate = quote.priceDate;
-        }
-      }
-
-      return {
-        totalTrackedStocks: securities.length,
-        totalTrackedFxPairs: trackedFxPairs.length,
-        refreshedCount: refreshedSymbols.length,
-        skippedCount: skippedSymbols.length,
-        refreshedSymbols,
-        skippedSymbols,
-        skippedDetails,
-        refreshedFxPairs,
-        skippedFxPairs,
-        latestPriceDate,
-        generatedAt: new Date().toISOString(),
-      };
+        return {
+          totalTrackedStocks: stockSecurities.length,
+          totalTrackedFunds: fundSecurities.length,
+          totalTrackedFxPairs: trackedFxPairs.length,
+          refreshedCount: refreshedSymbols.length,
+          skippedCount: skippedSymbols.length,
+          refreshedSymbols,
+          skippedSymbols,
+          skippedDetails,
+          refreshedFxPairs,
+          skippedFxPairs,
+          latestPriceDate,
+          generatedAt: new Date().toISOString(),
+        };
+      });
     });
-  });
 }

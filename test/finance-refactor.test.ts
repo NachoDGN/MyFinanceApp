@@ -6487,6 +6487,88 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
   assert.equal(holding?.quoteTimestamp, "2026-04-02T16:00:00Z");
 });
 
+test("holding rows prefer official fund NAVs over newer portfolio snapshot quotes from the next day", () => {
+  const investmentAccount = createInvestmentAccount({
+    id: "brokerage-fund-nav-next-day-priority",
+    defaultCurrency: "EUR",
+  });
+  const dataset = createDataset({
+    accounts: [investmentAccount],
+    securities: [
+      createSecurity({
+        id: "security-vanguard-small-cap",
+        providerName: "manual_fund_nav",
+        providerSymbol: "IE00B42W4L06",
+        canonicalSymbol: "VANIEUI",
+        displaySymbol: "VANIEUI",
+        name: "Vanguard Global Small-cap Index Fund EUR Acc",
+        exchangeName: "VANGUARD",
+        micCode: null,
+        assetType: "other",
+        quoteCurrency: "EUR",
+        country: "IE",
+        isin: "IE00B42W4L06",
+      }),
+    ],
+    securityPrices: [
+      createSecurityPrice({
+        securityId: "security-vanguard-small-cap",
+        priceDate: "2026-04-17",
+        quoteTimestamp: "2026-04-17T08:00:00Z",
+        price: "395.358",
+        currency: "EUR",
+        sourceName: "llm_web_search",
+        marketState: "latest_published_nav",
+        rawJson: {
+          source: "portfolio_snapshot",
+          priceType: "delayed",
+        },
+        createdAt: "2026-04-17T08:00:00Z",
+      }),
+      createSecurityPrice({
+        securityId: "security-vanguard-small-cap",
+        priceDate: "2026-04-16",
+        quoteTimestamp: "2026-04-16T18:00:00Z",
+        price: "398.03",
+        currency: "EUR",
+        sourceName: "ft_markets_nav",
+        marketState: "reference_nav",
+        rawJson: {
+          priceType: "nav",
+        },
+        createdAt: "2026-04-16T18:00:00Z",
+      }),
+    ],
+    investmentPositions: [
+      createInvestmentPosition({
+        accountId: "brokerage-fund-nav-next-day-priority",
+        securityId: "security-vanguard-small-cap",
+        openQuantity: "5.87",
+        openCostBasisEur: "1707.01",
+        avgCostEur: "290.80",
+        realizedPnlEur: "0.00",
+        dividendsEur: "0.00",
+        interestEur: "0.00",
+        feesEur: "0.00",
+        lastTradeDate: "2026-04-10",
+        lastRebuiltAt: "2026-04-17T08:10:00Z",
+        unrealizedComplete: true,
+      }),
+    ],
+  });
+
+  const [holding] = buildHoldingRows(
+    dataset,
+    { kind: "consolidated" },
+    "2026-04-17",
+  );
+
+  assert.equal(holding?.currentPrice, "398.03");
+  assert.equal(holding?.currentPriceCurrency, "EUR");
+  assert.equal(holding?.currentValueEur, "2336.44");
+  assert.equal(holding?.quoteTimestamp, "2026-04-16T18:00:00Z");
+});
+
 test("holding freshness is stale when the latest delayed quote is older than five days", () => {
   const investmentAccount = createInvestmentAccount({
     id: "brokerage-1",
