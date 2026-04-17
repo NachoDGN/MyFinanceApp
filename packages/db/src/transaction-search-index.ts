@@ -21,7 +21,7 @@ import { serializeVector } from "./transaction-embedding-search";
 
 const TRANSACTION_SEARCH_EMBEDDING_DIMENSIONS = 3072;
 const TRANSACTION_SEARCH_EMBEDDING_BATCH_SIZE = 8;
-const TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY = 4;
+const MAX_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY = 200;
 const TRANSACTION_SEARCH_SUMMARY_WINDOW_CHAR_LIMIT = 18_000;
 const EMPTY_UUID = "00000000-0000-0000-0000-000000000000";
 const TRANSACTION_SEARCH_EMBEDDING_ZERO_VECTOR = Array.from(
@@ -120,6 +120,63 @@ type QueueTransactionSearchIndexPayload = {
 
 function uniq(values: readonly string[] | undefined) {
   return [...new Set((values ?? []).filter(Boolean))];
+}
+
+function readQueuedIdList(
+  payloadJson: Record<string, unknown>,
+  keys: readonly string[],
+) {
+  const values: string[] = [];
+
+  for (const key of keys) {
+    const value = payloadJson[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      values.push(value.trim());
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      values.push(
+        ...value.filter(
+          (entry): entry is string =>
+            typeof entry === "string" && entry.trim() !== "",
+        ),
+      );
+    }
+  }
+
+  return uniq(values);
+}
+
+export function normalizeTransactionSearchIndexJobPayload(
+  payloadJson: Record<string, unknown>,
+) {
+  return {
+    transactionIds: readQueuedIdList(payloadJson, [
+      "transactionIds",
+      "transactionId",
+    ]),
+    importBatchIds: readQueuedIdList(payloadJson, [
+      "importBatchIds",
+      "importBatchId",
+    ]),
+    accountIds: readQueuedIdList(payloadJson, ["accountIds", "accountId"]),
+    entityIds: readQueuedIdList(payloadJson, ["entityIds", "entityId"]),
+    trigger:
+      typeof payloadJson.trigger === "string" ? payloadJson.trigger : "unknown",
+  } satisfies Required<QueueTransactionSearchIndexPayload>;
+}
+
+export function getTransactionSearchContextualizationConcurrency(
+  rowCount: number,
+) {
+  const normalizedCount = Number.isFinite(rowCount)
+    ? Math.max(1, Math.floor(rowCount))
+    : 1;
+  return Math.min(
+    normalizedCount,
+    MAX_TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY,
+  );
 }
 
 function startOfMonthIso(value: string) {
@@ -1291,7 +1348,7 @@ export async function syncTransactionSearchIndex(
           )
         : await mapWithConcurrency(
             group.rows,
-            TRANSACTION_SEARCH_CONTEXTUALIZATION_CONCURRENCY,
+            getTransactionSearchContextualizationConcurrency(group.rows.length),
             async (row) => {
               try {
                 return await contextualizeTransactionRow(
@@ -1436,30 +1493,8 @@ export async function processTransactionSearchIndexJob(
   userId: string,
   payloadJson: Record<string, unknown>,
 ) {
-  const transactionIds = Array.isArray(payloadJson.transactionIds)
-    ? payloadJson.transactionIds.filter(
-        (value): value is string =>
-          typeof value === "string" && value.trim() !== "",
-      )
-    : [];
-  const importBatchIds = Array.isArray(payloadJson.importBatchIds)
-    ? payloadJson.importBatchIds.filter(
-        (value): value is string =>
-          typeof value === "string" && value.trim() !== "",
-      )
-    : [];
-  const accountIds = Array.isArray(payloadJson.accountIds)
-    ? payloadJson.accountIds.filter(
-        (value): value is string =>
-          typeof value === "string" && value.trim() !== "",
-      )
-    : [];
-  const entityIds = Array.isArray(payloadJson.entityIds)
-    ? payloadJson.entityIds.filter(
-        (value): value is string =>
-          typeof value === "string" && value.trim() !== "",
-      )
-    : [];
+  const { transactionIds, importBatchIds, accountIds, entityIds, trigger } =
+    normalizeTransactionSearchIndexJobPayload(payloadJson);
 
   const result = await syncTransactionSearchIndex(sql, userId, {
     transactionIds,
@@ -1471,8 +1506,7 @@ export async function processTransactionSearchIndexJob(
 
   return {
     ...result,
-    trigger:
-      typeof payloadJson.trigger === "string" ? payloadJson.trigger : "unknown",
+    trigger,
   };
 }
 

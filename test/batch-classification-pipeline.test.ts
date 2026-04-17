@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { buildPromptProfilePreview } from "../packages/llm/src/prompts";
 import {
+  getBatchClassificationFirstPassConcurrency,
   getBatchClassificationPhase,
   isTrustedBatchResolution,
   shouldEscalateBatchTransaction,
@@ -86,4 +87,10 @@ test("transaction analyzer prompt previews expose batch-context placeholders", (
     investmentPreview.userPrompt,
     /Retriever context for this row: \{\{retrieval_context\}\}\./,
   );
+});
+
+test("batch classification first pass concurrency scales with import size up to 200", () => {
+  assert.equal(getBatchClassificationFirstPassConcurrency(1), 1);
+  assert.equal(getBatchClassificationFirstPassConcurrency(12), 12);
+  assert.equal(getBatchClassificationFirstPassConcurrency(229), 200);
 });

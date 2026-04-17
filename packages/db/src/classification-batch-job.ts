@@ -28,7 +28,7 @@ import { mapFromSql, readOptionalRecord } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 import { updateTransactionRecord } from "./transaction-record";
 
-const DEFAULT_FIRST_PASS_CONCURRENCY = 4;
+const MAX_FIRST_PASS_CONCURRENCY = 200;
 const DEFAULT_TRUSTED_RESOLUTION_CONFIDENCE = 0.85;
 const DEFAULT_ESCALATION_SIMILARITY_THRESHOLD = 0.8;
 const DEFAULT_ESCALATION_CONTEXT_LIMIT = 5;
@@ -69,14 +69,13 @@ type BatchClassificationProgress = {
   updatedAt: string;
 };
 
-export function getBatchClassificationFirstPassConcurrency() {
-  const parsed = Number(
-    process.env.BATCH_TRANSACTION_CLASSIFICATION_CONCURRENCY ??
-      `${DEFAULT_FIRST_PASS_CONCURRENCY}`,
-  );
-  return Number.isFinite(parsed) && parsed > 0
-    ? Math.max(1, Math.floor(parsed))
-    : DEFAULT_FIRST_PASS_CONCURRENCY;
+export function getBatchClassificationFirstPassConcurrency(
+  transactionCount: number,
+) {
+  const normalizedCount = Number.isFinite(transactionCount)
+    ? Math.max(1, Math.floor(transactionCount))
+    : 1;
+  return Math.min(normalizedCount, MAX_FIRST_PASS_CONCURRENCY);
 }
 
 export function getTrustedBatchResolutionConfidence() {
@@ -494,7 +493,9 @@ export async function processClassificationJob(
     phase: "parallel_first_pass",
   });
 
-  const firstPassConcurrency = getBatchClassificationFirstPassConcurrency();
+  const firstPassConcurrency = getBatchClassificationFirstPassConcurrency(
+    pendingTransactions.length,
+  );
   const firstPassResults = await mapWithConcurrency(
     pendingTransactions,
     firstPassConcurrency,
