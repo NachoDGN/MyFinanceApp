@@ -321,6 +321,41 @@ function buildRevolutDeterministicClassification(
   return null;
 }
 
+function buildStructuredInvestmentTradeClassification(
+  transaction: Transaction,
+): DeterministicClassification | null {
+  if (
+    !transaction.securityId ||
+    (!transaction.quantity && !transaction.unitPriceOriginal)
+  ) {
+    return null;
+  }
+
+  const numericAmount = Number(transaction.amountOriginal);
+  if (!Number.isFinite(numericAmount) || numericAmount === 0) {
+    return null;
+  }
+
+  const transactionClass =
+    numericAmount < 0 ? "investment_trade_buy" : "investment_trade_sell";
+  const categoryCode =
+    transactionClass === "investment_trade_buy"
+      ? "stock_buy"
+      : "uncategorized_investment";
+
+  return buildDeterministicResult(transaction, {
+    transactionClass,
+    categoryCode,
+    classificationStatus: "investment_parser",
+    classificationSource: "investment_parser",
+    classificationConfidence: "0.93",
+    explanation:
+      "Inferred an investment trade from structured import fields tied to a resolved security.",
+    needsReview: false,
+    reviewReason: null,
+  });
+}
+
 export function buildDeterministicClassification(
   dataset: DomainDataset,
   account: Account,
@@ -486,6 +521,12 @@ export function buildDeterministicClassification(
         unitPriceOriginal:
           transaction.unitPriceOriginal ?? parsed.unitPriceOriginal ?? null,
       });
+    }
+
+    const structuredTrade =
+      buildStructuredInvestmentTradeClassification(transaction);
+    if (structuredTrade) {
+      return structuredTrade;
     }
   }
 

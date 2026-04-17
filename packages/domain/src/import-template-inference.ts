@@ -47,7 +47,7 @@ export function getImportTemplateInferenceConfig() {
       process.env.OPENAI_TRANSACTION_MODEL ??
       process.env.LLM_RULES_MODEL ??
       process.env.OPENAI_RULES_MODEL ??
-      "gpt-5.4",
+      "gemini-3-flash-preview",
   };
 }
 

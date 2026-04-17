@@ -18,6 +18,7 @@ import {
   getAllowedCategoryCodesForAccount,
   getDatasetLatestDate,
   normalizeDescription,
+  normalizeSecurityIdentifier,
   normalizeInvestmentMatchingText,
   resolveConstrainedEconomicEntityId,
 } from "@myfinance/domain";
@@ -254,13 +255,26 @@ function buildReviewPropagationContextText(transaction: Transaction) {
     .join(" ");
 }
 
+function extractImportedSecurityIsin(transaction: Transaction) {
+  const rawPayload = readOptionalRecord(transaction.rawPayload);
+  const imported = readOptionalRecord(rawPayload?._import);
+  return (
+    normalizeSecurityIdentifier(
+      readOptionalString(imported?.security_isin) ??
+        extractIsinFromText(readOptionalString(imported?.external_reference)),
+    ) || null
+  );
+}
+
 function extractTransactionIsinEvidence(transaction: Transaction) {
   const llmPayload = readOptionalRecord(transaction.llmPayload);
   const llmNode = readOptionalRecord(llmPayload?.llm);
   const rawOutput = readOptionalRecord(llmNode?.rawOutput);
   const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
+  const importedSecurityIsin = extractImportedSecurityIsin(transaction);
 
   return extractIsinFromText(
+    importedSecurityIsin,
     readRawOutputString(rawOutput, "resolved_instrument_isin"),
     transaction.manualNotes,
     readOptionalString(reviewContext?.previousUserContext),
@@ -988,21 +1002,42 @@ function buildPersistedInvestmentSecurityMappings(
     return [] as PersistedSecurityMapping[];
   }
 
+  const importedSecurityIsin = extractImportedSecurityIsin(transaction);
   const candidateAliases = new Set(
     [
       deterministic.securityHint,
       transaction.descriptionRaw,
       transaction.descriptionClean,
+      importedSecurityIsin,
     ]
       .map((value) => normalizeDescription(value ?? "").comparison)
       .filter(Boolean),
   );
-  if (candidateAliases.size === 0) {
-    return [] as PersistedSecurityMapping[];
-  }
-
   const seenSecurityIds = new Set<string>();
   const persistedMappings: PersistedSecurityMapping[] = [];
+
+  if (importedSecurityIsin) {
+    const security = dataset.securities.find(
+      (candidate) =>
+        normalizeSecurityIdentifier(candidate.isin) === importedSecurityIsin,
+    );
+    if (security) {
+      seenSecurityIds.add(security.id);
+      persistedMappings.push({
+        securityId: security.id,
+        matchedAlias: importedSecurityIsin,
+        aliasSource: "import_field",
+        confidence: "1.00",
+        providerSymbol: security.providerSymbol,
+        displaySymbol: security.displaySymbol,
+        securityName: security.name,
+        isin: security.isin ?? null,
+      });
+    }
+  }
+  if (candidateAliases.size === 0) {
+    return persistedMappings;
+  }
 
   for (const alias of dataset.securityAliases) {
     const normalizedAlias = normalizeDescription(

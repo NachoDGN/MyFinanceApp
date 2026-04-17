@@ -3322,6 +3322,134 @@ test("investment rebuild derives quantity from stored NAV history for exact fund
   );
 });
 
+test("investment rebuild replaces stale mutual-fund quantities when stored NAV disagrees materially", async () => {
+  let fetchCalls = 0;
+
+  await withRuntimeOverrides(
+    {
+      env: {
+        TWELVE_DATA_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+      },
+      fetch: async () => {
+        fetchCalls += 1;
+        return jsonResponse({ status: "error" }, { status: 404 });
+      },
+    },
+    async () => {
+      const account = createAccount({
+        id: "broker-stale-fund-quantity",
+        assetDomain: "investment",
+        accountType: "brokerage_account",
+        institutionName: "Broker",
+        displayName: "Brokerage",
+      });
+      const transaction = createTransaction({
+        id: "us500-fund-buy-stale-qty",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-03",
+        postedDate: "2026-03-03",
+        amountOriginal: "-99.58",
+        amountBaseEur: "-99.58",
+        currencyOriginal: "EUR",
+        descriptionRaw: "VANGUARD US 500 STOCK INDEX EU @ 1.",
+        descriptionClean: "VANGUARD US 500 STOCK INDEX EU @ 1.",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        classificationStatus: "investment_parser",
+        classificationSource: "investment_parser",
+        classificationConfidence: "0.96",
+        securityId: "security-manual-us500",
+        quantity: "1.00000000",
+        unitPriceOriginal: "99.58000000",
+        needsReview: false,
+        reviewReason: null,
+        llmPayload: {
+          llm: {
+            rawOutput: {
+              resolved_instrument_name:
+                "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+              resolved_instrument_isin: "IE0032126645",
+              current_price_type: "NAV",
+            },
+          },
+          reviewContext: {
+            trigger: "manual_review_update",
+            userProvidedContext:
+              "Exact ISIN is IE0032126645 for the Vanguard U.S. 500 Stock Index Fund EUR Acc purchase.",
+          },
+        },
+      });
+      const dataset = createDataset({
+        accounts: [account],
+        transactions: [transaction],
+        securities: [
+          {
+            id: "security-manual-us500",
+            providerName: "manual_fund_nav",
+            providerSymbol: "IE0032126645",
+            canonicalSymbol: "VANUIEI",
+            displaySymbol: "VANUIEI",
+            name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+            exchangeName: "VANGUARD",
+            micCode: null,
+            assetType: "other",
+            quoteCurrency: "EUR",
+            country: "IE",
+            isin: "IE0032126645",
+            figi: null,
+            active: true,
+            metadataJson: {
+              instrumentType: "mutual_fund",
+              shareClass: "EUR Acc",
+            },
+            lastPriceRefreshAt: null,
+            createdAt: "2026-03-01T00:00:00Z",
+          },
+        ],
+        securityPrices: [
+          {
+            securityId: "security-manual-us500",
+            priceDate: "2026-03-03",
+            quoteTimestamp: "2026-03-03T16:00:00Z",
+            price: "49.79000000",
+            currency: "EUR",
+            sourceName: "manual_nav_import",
+            isRealtime: false,
+            isDelayed: true,
+            marketState: "official_nav",
+            rawJson: {
+              priceType: "nav",
+            },
+            createdAt: "2026-03-03T16:00:00Z",
+          },
+        ],
+      });
+
+      const rebuilt = await prepareInvestmentRebuild(dataset, "2026-03-03");
+      const patch = rebuilt.transactionPatches.find(
+        (candidate) => candidate.id === "us500-fund-buy-stale-qty",
+      );
+
+      assert.equal(fetchCalls, 0);
+      assert.equal(patch?.quantity, "2.00000000");
+      assert.equal(patch?.unitPriceOriginal, "49.79000000");
+      assert.equal(patch?.needsReview ?? false, false);
+      assert.equal(patch?.reviewReason ?? null, null);
+      assert.equal(
+        (
+          patch?.rebuildEvidence as {
+            quantityDerivedFromHistoricalPrice?: boolean;
+          } | null
+        )?.quantityDerivedFromHistoricalPrice,
+        true,
+      );
+    },
+  );
+});
+
 test("investment rebuild uses FT fallback immediately and queues fund NAV backfill coverage work", async () => {
   const expectedToday = new Date().toISOString().slice(0, 10);
   let fetchCalls = 0;
@@ -3954,7 +4082,14 @@ test("investment rebuild remaps stale fund securities from camelized review outp
     assert.equal(rebuilt.insertedSecurities[0]?.isin, "IE0008248803");
     assert.notEqual(patch?.securityId, staleSecurityId);
     assert.equal(patch?.securityId, rebuilt.insertedSecurities[0]?.id);
-    assert.match(patch?.reviewReason ?? "", /IE0008248803/);
+    assert.equal(patch?.reviewReason ?? null, null);
+    assert.ok(
+      rebuilt.insertedAliases.some(
+        (alias) =>
+          alias.securityId === patch?.securityId &&
+          alias.aliasTextNormalized === "IE0008248803",
+      ),
+    );
   } finally {
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) {

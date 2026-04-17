@@ -1,6 +1,7 @@
 import { differenceInCalendarDays, parse } from "date-fns";
 import Decimal from "decimal.js";
 
+import { normalizeSecurityIdentifier } from "./text";
 import type {
   DomainDataset,
   HoldingAdjustment,
@@ -21,6 +22,7 @@ export interface FundOrderHistoryRow {
   cadence: string;
   status: string;
   quantity: string | null;
+  securityIsin?: string | null;
 }
 
 export interface FundOrderHistoryIssue {
@@ -121,11 +123,58 @@ export function parseMyInvestorFundOrderHistoryText(
           : normalizeSpanishDecimal(
               quantityText.replace(/participaciones?/i, ""),
             ),
+      securityIsin: null,
     });
     index += 6;
   }
 
   return rows;
+}
+
+export function parseMyInvestorFundOrderHistoryRows(
+  rows: ReadonlyArray<{
+    transaction_date?: string | null;
+    amount_original_signed?: string | null;
+    transaction_type_raw?: string | null;
+    quantity?: string | null;
+    security_isin?: string | null;
+  }>,
+): FundOrderHistoryRow[] {
+  return rows
+    .map((row) => {
+      const orderDate = String(row.transaction_date ?? "").slice(0, 10);
+      if (!orderDate) {
+        throw new Error("Fund-order spreadsheet row is missing transaction_date.");
+      }
+
+      const amountText = String(row.amount_original_signed ?? "").trim();
+      if (!amountText) {
+        throw new Error(
+          `Fund-order spreadsheet row ${orderDate} is missing amount_original_signed.`,
+        );
+      }
+
+      const securityIsin =
+        normalizeSecurityIdentifier(row.security_isin) || null;
+
+      return {
+        orderDate,
+        orderKind: "Spreadsheet import",
+        amountEur: new Decimal(amountText).abs().toFixed(8),
+        fundName: "",
+        cadence: "Unknown",
+        status: String(row.transaction_type_raw ?? "").trim() || FINALIZED_STATUS,
+        quantity: row.quantity
+          ? new Decimal(String(row.quantity)).abs().toFixed(8)
+          : null,
+        securityIsin,
+      } satisfies FundOrderHistoryRow;
+    })
+    .sort((left, right) =>
+      `${left.orderDate}:${left.securityIsin ?? left.fundName}:${left.amountEur}`.localeCompare(
+        `${right.orderDate}:${right.securityIsin ?? right.fundName}:${right.amountEur}`,
+      ),
+    );
 }
 
 export function buildFundOrderHistoryImportPlan(
@@ -153,24 +202,24 @@ export function buildFundOrderHistoryImportPlan(
     dataset,
     accountId,
   );
-  const securityByNormalizedName = buildFundSecurityLookup(dataset);
+  const securityLookup = buildFundSecurityLookup(dataset);
   const usedTransactionIds = new Set<string>();
 
   for (const row of finalizedRows
     .slice()
     .sort((left, right) =>
-      `${left.orderDate}:${left.fundName}:${left.amountEur}`.localeCompare(
-        `${right.orderDate}:${right.fundName}:${right.amountEur}`,
+      `${left.orderDate}:${left.securityIsin ?? left.fundName}:${left.amountEur}`.localeCompare(
+        `${right.orderDate}:${right.securityIsin ?? right.fundName}:${right.amountEur}`,
       ),
     )) {
-    const resolvedSecurity = securityByNormalizedName.get(
-      normalizeFundOrderText(row.fundName),
-    );
+    const resolvedSecurity = resolveFundOrderSecurity(row, securityLookup);
+    const resolvedFundName =
+      resolvedSecurity?.name || row.fundName || row.securityIsin || "Unknown fund";
 
     if (!resolvedSecurity) {
       unresolvedRows.push({
         row,
-        reason: `No fund security matched "${row.fundName}".`,
+        reason: `No fund security matched "${row.securityIsin ?? row.fundName}".`,
       });
       continue;
     }
@@ -179,7 +228,7 @@ export function buildFundOrderHistoryImportPlan(
     if (!quantity) {
       unresolvedRows.push({
         row,
-        reason: `No quantity was available for "${row.fundName}".`,
+        reason: `No quantity was available for "${resolvedFundName}".`,
       });
       continue;
     }
@@ -217,7 +266,7 @@ export function buildFundOrderHistoryImportPlan(
     if (!bestMatch) {
       openingPositions.push({
         securityId: resolvedSecurity.id,
-        fundName: row.fundName,
+        fundName: resolvedFundName,
         orderDate: row.orderDate,
         orderKind: row.orderKind,
         quantity,
@@ -230,7 +279,7 @@ export function buildFundOrderHistoryImportPlan(
     matchedTransactionPatches.push({
       transactionId: bestMatch.transaction.id,
       securityId: resolvedSecurity.id,
-      fundName: row.fundName,
+      fundName: resolvedFundName,
       orderDate: row.orderDate,
       transactionDate: bestMatch.transaction.transactionDate,
       postedDate:
@@ -366,6 +415,7 @@ function normalizeFundOrderText(value: string) {
 
 function buildFundSecurityLookup(dataset: DomainDataset) {
   const byName = new Map<string, Security>();
+  const byIsin = new Map<string, Security>();
   const exactNameMatches = dataset.securities
     .filter((security) => security.name.includes("Vanguard"))
     .sort((left, right) => {
@@ -379,9 +429,30 @@ function buildFundSecurityLookup(dataset: DomainDataset) {
     if (!byName.has(key)) {
       byName.set(key, security);
     }
+    const normalizedIsin = normalizeSecurityIdentifier(security.isin);
+    if (normalizedIsin && !byIsin.has(normalizedIsin)) {
+      byIsin.set(normalizedIsin, security);
+    }
   }
 
-  return byName;
+  return { byName, byIsin };
+}
+
+function resolveFundOrderSecurity(
+  row: FundOrderHistoryRow,
+  lookup: ReturnType<typeof buildFundSecurityLookup>,
+) {
+  const normalizedIsin = normalizeSecurityIdentifier(row.securityIsin);
+  if (normalizedIsin && lookup.byIsin.has(normalizedIsin)) {
+    return lookup.byIsin.get(normalizedIsin) ?? null;
+  }
+
+  const normalizedFundName = normalizeFundOrderText(row.fundName);
+  if (normalizedFundName && lookup.byName.has(normalizedFundName)) {
+    return lookup.byName.get(normalizedFundName) ?? null;
+  }
+
+  return null;
 }
 
 function normalizeExistingOpeningAdjustment(

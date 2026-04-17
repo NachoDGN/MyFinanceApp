@@ -57,6 +57,7 @@ type ResolvedTransactionPatch = {
 };
 
 const MAX_HISTORICAL_PRICE_DRIFT_DAYS = 7;
+const FUND_HISTORICAL_PRICE_OVERRIDE_TOLERANCE = new Decimal("0.10");
 
 function isEnvFlagEnabled(name: string) {
   return /^(1|true|yes)$/i.test(process.env[name] ?? "");
@@ -194,6 +195,17 @@ function normalizeReviewTrigger(value: unknown) {
     : null;
 }
 
+function extractImportedSecurityIsin(transaction: Transaction) {
+  const rawPayload = readOptionalRecord(transaction.rawPayload);
+  const imported = readOptionalRecord(rawPayload?._import);
+  return (
+    normalizeSecurityIdentifier(
+      readOptionalString(imported?.security_isin) ??
+        extractIsinFromText(readOptionalString(imported?.external_reference)),
+    ) || null
+  );
+}
+
 function normalizedSecurityNameMatches(
   left: string | null | undefined,
   right: string | null | undefined,
@@ -220,6 +232,7 @@ function buildSecurityResolutionContext(
   const rawOutput = readOptionalRecord(llmNode?.rawOutput);
   const reviewContext = readOptionalRecord(llmPayload?.reviewContext);
   const reviewTrigger = normalizeReviewTrigger(reviewContext?.trigger);
+  const importedSecurityIsin = extractImportedSecurityIsin(transaction);
   const propagatedExactIsinRaw = readRawOutputString(
     rawOutput,
     "resolved_instrument_isin",
@@ -247,6 +260,7 @@ function buildSecurityResolutionContext(
     : null;
   const resolvedInstrumentIsin = normalizeSecurityIdentifier(
     propagatedExactIsinRaw ??
+      importedSecurityIsin ??
       extractIsinFromText(
         transaction.manualNotes,
         priorReviewUserContext,
@@ -1499,6 +1513,47 @@ function inferQuantityFromPrice(
   return amountInQuoteCurrency.div(tradePrice.price).toFixed(8);
 }
 
+function shouldReplaceFundQuantityFromHistoricalPrice(input: {
+  dataset: DomainDataset;
+  transaction: Transaction;
+  resolvedSecurity: Security;
+  resolutionContext: SecurityResolutionContext;
+  quantity: string | null;
+  historicalPrice: SecurityPrice | null;
+}) {
+  if (!input.quantity || !input.historicalPrice) {
+    return false;
+  }
+  if (!securityLooksLikeFund(input.resolvedSecurity, input.resolutionContext)) {
+    return false;
+  }
+
+  const impliedUnitPrice = inferImpliedUnitPrice(
+    input.dataset,
+    input.transaction,
+    input.quantity,
+    input.historicalPrice.currency,
+  );
+  if (!impliedUnitPrice) {
+    return false;
+  }
+
+  const implied = new Decimal(impliedUnitPrice);
+  const historical = new Decimal(input.historicalPrice.price);
+  if (implied.lte(0) || historical.lte(0)) {
+    return false;
+  }
+
+  const lowerBound = new Decimal(1).minus(
+    FUND_HISTORICAL_PRICE_OVERRIDE_TOLERANCE,
+  );
+  const upperBound = new Decimal(1).plus(
+    FUND_HISTORICAL_PRICE_OVERRIDE_TOLERANCE,
+  );
+  const ratio = implied.div(historical);
+  return ratio.lessThan(lowerBound) || ratio.greaterThan(upperBound);
+}
+
 function amountInSecurityQuoteCurrency(
   dataset: DomainDataset,
   transaction: Transaction,
@@ -2322,15 +2377,30 @@ export async function prepareInvestmentRebuild(
 
     let quantityDerivedFromHistoricalPrice = false;
     if (resolvedSecurity && historicalPrice) {
-      if (!quantity) {
-        quantity = inferQuantityFromPrice(
+      if (
+        !quantity ||
+        shouldReplaceFundQuantityFromHistoricalPrice({
+          dataset: workingDataset,
+          transaction,
+          resolvedSecurity,
+          resolutionContext,
+          quantity,
+          historicalPrice,
+        })
+      ) {
+        const historicalQuantity = inferQuantityFromPrice(
           workingDataset,
           transaction,
           historicalPrice,
         );
-        quantityDerivedFromHistoricalPrice = Boolean(quantity);
+        if (historicalQuantity) {
+          quantity = historicalQuantity;
+          quantityDerivedFromHistoricalPrice = true;
+        }
       }
-      unitPriceOriginal = unitPriceOriginal ?? historicalPrice.price;
+      unitPriceOriginal = quantityDerivedFromHistoricalPrice
+        ? historicalPrice.price
+        : (unitPriceOriginal ?? historicalPrice.price);
     }
 
     if (isInvestmentTradeTransaction(transaction.transactionClass)) {

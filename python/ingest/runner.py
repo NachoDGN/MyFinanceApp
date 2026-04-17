@@ -828,10 +828,16 @@ def sanitize_numeric_text(text: str, decimal_hint: str | None, thousands_hint: s
                 clean = clean.replace(",", "")
         elif "," in clean:
             head, tail = clean.rsplit(",", 1)
-            clean = f"{head.replace(',', '')}.{tail}" if len(tail) in (1, 2) else clean.replace(",", "")
+            use_decimal = len(tail) in (1, 2) or (
+                len(tail) == 3 and head.lstrip("+-") in {"", "0"}
+            )
+            clean = f"{head.replace(',', '')}.{tail}" if use_decimal else clean.replace(",", "")
         elif "." in clean:
             head, tail = clean.rsplit(".", 1)
-            clean = f"{head.replace('.', '')}.{tail}" if len(tail) in (1, 2) else clean.replace(".", "")
+            use_decimal = len(tail) in (1, 2) or (
+                len(tail) == 3 and head.lstrip("+-") in {"", "0"}
+            )
+            clean = f"{head.replace('.', '')}.{tail}" if use_decimal else clean.replace(".", "")
 
     if negative and not clean.startswith("-"):
         clean = f"-{clean}"
@@ -1176,6 +1182,8 @@ def canonicalize_pdf_statement(
                         row.get("transaction_type_raw"),
                     )
                     or None,
+                    "security_isin": normalize_text(row.get("security_isin"))
+                    or None,
                     "security_symbol": None,
                     "security_name": None,
                     "quantity": None,
@@ -1386,6 +1394,7 @@ def canonicalize_frame(
     balance_series = resolve_series(frame, column_map.get("balance_original"))
     external_reference_series = resolve_series(frame, column_map.get("external_reference"))
     transaction_type_series = resolve_series(frame, column_map.get("transaction_type_raw"))
+    security_isin_series = resolve_series(frame, column_map.get("security_isin"))
     security_symbol_series = resolve_series(frame, column_map.get("security_symbol"))
     security_name_series = resolve_series(frame, column_map.get("security_name"))
     quantity_series = resolve_series(frame, column_map.get("quantity"))
@@ -1435,6 +1444,9 @@ def canonicalize_frame(
             transaction_type_raw = normalize_text(
                 transaction_type_series.iloc[index] if transaction_type_series is not None else None
             )
+            security_isin = normalize_text(
+                security_isin_series.iloc[index] if security_isin_series is not None else None
+            )
             security_symbol = normalize_text(
                 security_symbol_series.iloc[index] if security_symbol_series is not None else None
             )
@@ -1447,7 +1459,17 @@ def canonicalize_frame(
 
             if not description:
                 description = TEXT_JOIN_SEPARATOR.join(
-                    [piece for piece in [transaction_type_raw, security_symbol, security_name, external_reference] if piece]
+                    [
+                        piece
+                        for piece in [
+                            transaction_type_raw,
+                            security_name,
+                            security_symbol,
+                            security_isin,
+                            external_reference,
+                        ]
+                        if piece
+                    ]
                 ).strip()
             if not description:
                 raise ValueError("Missing description.")
@@ -1491,6 +1513,7 @@ def canonicalize_frame(
                     "balance_original": decimal_to_string(balance),
                     "external_reference": external_reference or None,
                     "transaction_type_raw": transaction_type_raw or None,
+                    "security_isin": security_isin or None,
                     "security_symbol": security_symbol or None,
                     "security_name": security_name or None,
                     "quantity": decimal_to_string(quantity),

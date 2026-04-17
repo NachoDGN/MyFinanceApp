@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildFundOrderHistoryImportPlan,
+  parseMyInvestorFundOrderHistoryRows,
   parseMyInvestorFundOrderHistoryText,
   reconcileFundOrderHistoryImportPlan,
   type Security,
@@ -59,6 +60,7 @@ Rechazada
     cadence: "Puntual",
     status: "Finalizada",
     quantity: "4.87000000",
+    securityIsin: null,
   });
   assert.deepEqual(rows[1], {
     orderDate: "2026-04-01",
@@ -68,7 +70,50 @@ Rechazada
     cadence: "Puntual",
     status: "Rechazada",
     quantity: null,
+    securityIsin: null,
   });
+});
+
+test("parseMyInvestorFundOrderHistoryRows normalizes spreadsheet-derived fund history rows", () => {
+  const rows = parseMyInvestorFundOrderHistoryRows([
+    {
+      transaction_date: "2026-03-21",
+      amount_original_signed: "-100",
+      transaction_type_raw: "Finalizada",
+      security_isin: "IE0032126645",
+      quantity: "1.44",
+    },
+    {
+      transaction_date: "2026-04-01",
+      amount_original_signed: "-200",
+      transaction_type_raw: "Rechazada",
+      security_isin: "IE0031786696",
+      quantity: null,
+    },
+  ]);
+
+  assert.deepEqual(rows, [
+    {
+      orderDate: "2026-03-21",
+      orderKind: "Spreadsheet import",
+      amountEur: "100.00000000",
+      fundName: "",
+      cadence: "Unknown",
+      status: "Finalizada",
+      quantity: "1.44000000",
+      securityIsin: "IE0032126645",
+    },
+    {
+      orderDate: "2026-04-01",
+      orderKind: "Spreadsheet import",
+      amountEur: "200.00000000",
+      fundName: "",
+      cadence: "Unknown",
+      status: "Rechazada",
+      quantity: null,
+      securityIsin: "IE0031786696",
+    },
+  ]);
 });
 
 test("buildFundOrderHistoryImportPlan patches matched buys and imports older missing rows", () => {
@@ -156,6 +201,63 @@ Rechazada
     quantity: "79.19000000",
     costBasisEur: "3822.41000000",
   });
+});
+
+test("buildFundOrderHistoryImportPlan matches spreadsheet rows by ISIN when fund names are absent", () => {
+  const dataset = createDataset({
+    securities: [us500Security],
+    transactions: [
+      createTransaction({
+        id: "tx-us500-2024-07",
+        accountId: "investment-account-1",
+        transactionDate: "2024-07-03",
+        postedDate: "2024-07-08",
+        amountOriginal: "-299.00",
+        amountBaseEur: "-299.00",
+        descriptionRaw: "VANGUARD US 500 STOCK EUR INS",
+        transactionClass: "investment_trade_buy",
+        securityId: us500Security.id,
+        quantity: "4.00000000",
+        unitPriceOriginal: "74.75000000",
+      }),
+    ],
+  });
+
+  const rows = parseMyInvestorFundOrderHistoryRows([
+    {
+      transaction_date: "2024-07-01",
+      amount_original_signed: "-300",
+      transaction_type_raw: "Finalizada",
+      security_isin: "IE0032126645",
+      quantity: "4.87",
+    },
+    {
+      transaction_date: "2023-10-19",
+      amount_original_signed: "-3822.41",
+      transaction_type_raw: "Finalizada",
+      security_isin: "IE0032126645",
+      quantity: "79.19",
+    },
+  ]);
+
+  const plan = buildFundOrderHistoryImportPlan(
+    dataset,
+    "investment-account-1",
+    rows,
+  );
+
+  assert.equal(plan.unresolvedRows.length, 0);
+  assert.equal(plan.matchedTransactionPatches.length, 1);
+  assert.equal(plan.openingPositions.length, 1);
+  assert.equal(
+    plan.matchedTransactionPatches[0]?.fundName,
+    "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+  );
+  assert.equal(
+    plan.openingPositions[0]?.fundName,
+    "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+  );
+  assert.equal(plan.openingPositions[0]?.quantity, "79.19000000");
 });
 
 test("reconcileFundOrderHistoryImportPlan deletes stale fallback adjustments and skips existing openings", () => {

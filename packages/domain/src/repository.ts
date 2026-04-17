@@ -7,7 +7,15 @@ import { promisify } from "node:util";
 import { Decimal } from "decimal.js";
 
 import { todayIso } from "./finance";
-import { normalizeSecurityText } from "./text";
+import {
+  parseMyInvestorFundOrderHistoryRows,
+  type FundOrderHistoryRow,
+} from "./fund-order-history";
+import {
+  extractIsinFromText,
+  normalizeSecurityIdentifier,
+  normalizeSecurityText,
+} from "./text";
 import { isCreditCardSettlementText } from "./transaction-review";
 import type {
   AddOpeningPositionInput,
@@ -85,6 +93,7 @@ type CanonicalImportRow = {
   balance_original?: string | null;
   external_reference?: string | null;
   transaction_type_raw?: string | null;
+  security_isin?: string | null;
   security_symbol?: string | null;
   security_name?: string | null;
   quantity?: string | null;
@@ -434,6 +443,71 @@ export async function previewSpreadsheetTable(input: {
   }
 }
 
+export async function parseMyInvestorFundOrderHistorySpreadsheet(
+  filePath: string,
+  accountId = "fund-order-history-preview",
+): Promise<FundOrderHistoryRow[]> {
+  const workbookPreview = await inspectSpreadsheetWorkbook(filePath);
+  if (!["csv", "xls", "xlsx"].includes(workbookPreview.fileKind)) {
+    throw new Error("Fund-order spreadsheet imports only support CSV and Excel files.");
+  }
+
+  const sheetName =
+    workbookPreview.fileKind === "csv"
+      ? null
+      : (workbookPreview.sheetPreviews[0]?.sheetName ?? null);
+  const template = {
+    file_kind: workbookPreview.fileKind,
+    sheet_name: sheetName,
+    header_row_index: 1,
+    rows_to_skip_before_header: 0,
+    rows_to_skip_after_header: 0,
+    delimiter:
+      workbookPreview.fileKind === "csv"
+        ? (workbookPreview.delimiter ?? ",")
+        : null,
+    encoding:
+      workbookPreview.fileKind === "csv"
+        ? (workbookPreview.encoding ?? "utf-8")
+        : null,
+    default_currency: "EUR",
+    column_map_json: {
+      transaction_date: "Fecha de la orden",
+      amount_original_signed: "Importe estimado",
+      transaction_type_raw: "Estado",
+      security_isin: "ISIN",
+      quantity: "Nº de participaciones",
+    },
+    sign_logic_json: {
+      mode: "signed_amount",
+      invert_sign: true,
+    },
+    normalization_rules_json: {
+      date_day_first: true,
+      start_column_index: 0,
+      start_column_letter: "A",
+    },
+  };
+
+  try {
+    const { stdout } = await execFileAsync(
+      resolvePythonBin(),
+      buildRunnerArgs("preview", {
+        "file-path": filePath,
+        "account-id": accountId,
+        "template-id": "fund-order-history-template",
+        "reference-date": todayIso(),
+        "template-json": JSON.stringify(template),
+      }),
+    );
+
+    const result = JSON.parse(stdout) as DeterministicImportResult;
+    return parseMyInvestorFundOrderHistoryRows(result.normalizedRows ?? []);
+  } catch (error) {
+    throw normalizeRunnerError(error);
+  }
+}
+
 export async function runDeterministicImport(
   mode: "preview" | "commit",
   input: ImportExecutionInput,
@@ -506,13 +580,29 @@ function matchesRoundedWholeValue(left: string, right: string) {
 
 function resolveSecurityId(
   dataset: DomainDataset,
-  row: Pick<CanonicalImportRow, "security_symbol" | "security_name">,
+  row: Pick<
+    CanonicalImportRow,
+    "external_reference" | "security_isin" | "security_symbol" | "security_name"
+  >,
 ) {
+  const securityIsin =
+    normalizeSecurityIdentifier(row.security_isin) ||
+    extractIsinFromText(row.external_reference);
   const symbol = normalizeFingerprintText(row.security_symbol);
   const securityName = normalizeFingerprintText(row.security_name);
 
-  if (!symbol && !securityName) {
+  if (!securityIsin && !symbol && !securityName) {
     return null;
+  }
+
+  if (securityIsin) {
+    const exactSecurity = dataset.securities.find(
+      (security) =>
+        normalizeSecurityIdentifier(security.isin) === securityIsin,
+    );
+    if (exactSecurity) {
+      return exactSecurity.id;
+    }
   }
 
   const directMatch = dataset.securities.find((security) => {
@@ -524,6 +614,9 @@ function resolveSecurityId(
     ].map((value) => normalizeFingerprintText(value));
 
     return (
+      (securityIsin &&
+        normalizeFingerprintText(security.isin) ===
+          normalizeFingerprintText(securityIsin)) ||
       (symbol && candidates.includes(symbol)) ||
       (securityName && candidates.includes(securityName))
     );
@@ -535,6 +628,7 @@ function resolveSecurityId(
   const aliasMatch = dataset.securityAliases.find((alias) => {
     const aliasText = normalizeFingerprintText(alias.aliasTextNormalized);
     return (
+      (securityIsin && aliasText === normalizeFingerprintText(securityIsin)) ||
       (symbol && aliasText === symbol) ||
       (securityName && aliasText === securityName)
     );
@@ -627,6 +721,7 @@ function buildImportFingerprint(
     currencyOriginal: string;
     descriptionRaw: string;
     externalReference: string;
+    securityIsin: string | null;
     quantity: string | null;
     unitPriceOriginal: string | null;
     securitySymbol: string | null;
@@ -634,6 +729,8 @@ function buildImportFingerprint(
     transactionTypeRaw: string | null;
   },
 ) {
+  const fingerprintReference =
+    row.externalReference || row.securityIsin || "";
   return createHash("sha256")
     .update(
       [
@@ -643,7 +740,7 @@ function buildImportFingerprint(
         row.amountOriginal,
         row.currencyOriginal,
         normalizeFingerprintText(row.descriptionRaw),
-        normalizeFingerprintText(row.externalReference),
+        normalizeFingerprintText(fingerprintReference),
         normalizeFingerprintText(row.quantity),
         normalizeFingerprintText(row.unitPriceOriginal),
         normalizeFingerprintText(row.securitySymbol),
@@ -764,9 +861,20 @@ export function buildImportedTransactions(
     const quantity = row.quantity
       ? new Decimal(String(row.quantity)).toFixed(8)
       : null;
+    const securityIsin =
+      normalizeSecurityIdentifier(row.security_isin) ||
+      extractIsinFromText(externalReference) ||
+      null;
     const unitPriceOriginal = row.unit_price_original
       ? new Decimal(String(row.unit_price_original)).toFixed(8)
-      : null;
+      : quantity &&
+          !new Decimal(quantity).eq(0) &&
+          !new Decimal(amountOriginal).eq(0)
+        ? new Decimal(amountOriginal)
+            .abs()
+            .div(new Decimal(quantity).abs())
+            .toFixed(8)
+        : null;
     const securitySymbol = String(row.security_symbol ?? "").trim() || null;
     const securityName = String(row.security_name ?? "").trim() || null;
     const transactionTypeRaw =
@@ -778,6 +886,7 @@ export function buildImportedTransactions(
       currencyOriginal,
       descriptionRaw,
       externalReference,
+      securityIsin,
       quantity,
       unitPriceOriginal,
       securitySymbol,
@@ -806,6 +915,7 @@ export function buildImportedTransactions(
         balance_original: row.balance_original ?? null,
         external_reference: externalReference || null,
         transaction_type_raw: transactionTypeRaw,
+        security_isin: securityIsin,
         security_symbol: securitySymbol,
         security_name: securityName,
         quantity,

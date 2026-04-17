@@ -39,6 +39,7 @@ export const canonicalFieldKeys = [
   "balance_original",
   "external_reference",
   "transaction_type_raw",
+  "security_isin",
   "security_symbol",
   "security_name",
   "quantity",
@@ -95,6 +96,11 @@ export const canonicalFieldOptions = [
     key: "transaction_type_raw",
     label: "Transaction type",
     detail: "Provider-specific type code or label",
+  },
+  {
+    key: "security_isin",
+    label: "Security ISIN",
+    detail: "Exact instrument ISIN when the file includes one",
   },
   {
     key: "security_symbol",

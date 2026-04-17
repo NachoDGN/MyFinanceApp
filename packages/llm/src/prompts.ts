@@ -470,12 +470,15 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
         description:
           "Instructions for mapping headers and sign logic from a table preview.",
         defaultValue: [
-          "Infer the canonical column mapping and sign logic for a bank-import table.",
+          "Infer the canonical column mapping and sign logic for a bank, brokerage, or investment order-history import table.",
           "Return one strict JSON object only.",
           "Only map headers that are clearly present in the preview.",
           "Use only the exact source headers shown in the preview.",
+          "If a header clearly contains an exact security identifier such as ISIN, map it to security_isin instead of external_reference.",
+          "Use external_reference only for trade ids, transfer ids, provider references, or other non-security identifiers.",
           "Choose one sign logic mode and fill only the fields needed for that mode.",
           "If debits and credits are already signed in one column, use signed_amount.",
+          "For investment order-history tables that list securities plus share quantities but no signed cash direction, treat subscription or purchase amounts as cash outflows and set invert_sign to true when the amount column represents cash spent.",
           "Always include every field in column_map and sign_logic. Use null when a field does not apply.",
           "If the date format is ambiguous, prefer the interpretation that stays consistent with the sheet and does not create impossible future transaction dates relative to the reference date.",
         ].join(" "),

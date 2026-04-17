@@ -60,6 +60,34 @@ function buildXlsxTemplate(sheetName: string) {
   };
 }
 
+function buildInvestmentCsvTemplate() {
+  return {
+    file_kind: "csv",
+    header_row_index: 1,
+    rows_to_skip_before_header: 0,
+    rows_to_skip_after_header: 0,
+    delimiter: ";",
+    encoding: "utf-8",
+    default_currency: "EUR",
+    column_map_json: {
+      transaction_date: "Date",
+      amount_original_signed: "Amount",
+      transaction_type_raw: "Status",
+      security_isin: "ISIN",
+      quantity: "Quantity",
+    },
+    sign_logic_json: {
+      mode: "signed_amount",
+      invert_sign: false,
+    },
+    normalization_rules_json: {
+      date_day_first: true,
+      start_column_index: 0,
+      start_column_letter: "A",
+    },
+  };
+}
+
 async function runPreview(filePath: string, template = buildCsvTemplate()) {
   const { stdout } = await execFileAsync(
     "./.venv/bin/python",
@@ -176,6 +204,39 @@ test("deterministic import reinterprets typed Excel dates through their displaye
       preview.normalizedRows.map((row) => row.description_raw),
       ["AMD", "INTEL", "LITE"],
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deterministic import preserves security ISIN fields and comma-decimal quantities", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "myfinance-import-dates-"));
+  const csvPath = join(directory, "fund-orders.csv");
+
+  try {
+    await writeFile(
+      csvPath,
+      [
+        "Date;ISIN;Quantity;Amount;Status",
+        "04/04/2026;IE0032126645;0,558;-38,75;Finalizada",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const preview = await runPreview(csvPath, buildInvestmentCsvTemplate());
+    const row = preview.normalizedRows[0] as
+      | {
+          transaction_date: string;
+          description_raw: string;
+          quantity?: string;
+          security_isin?: string;
+        }
+      | undefined;
+
+    assert.equal(row?.transaction_date, "2026-04-04");
+    assert.equal(row?.description_raw, "Finalizada IE0032126645");
+    assert.equal(row?.security_isin, "IE0032126645");
+    assert.equal(row?.quantity, "0.558");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

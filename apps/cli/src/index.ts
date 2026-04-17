@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
+import { extname } from "node:path";
 
 import { Command } from "commander";
 
@@ -17,6 +18,7 @@ import {
   FinanceDomainService,
   getScopeLatestDate,
   isCanonicalFieldKey,
+  parseMyInvestorFundOrderHistorySpreadsheet,
   parseMyInvestorFundOrderHistoryText,
   reconcileFundOrderHistoryImportPlan,
   resolvePeriodSelection,
@@ -641,8 +643,7 @@ positionsCommand
         throw new Error(`Unknown entity slug: ${options.entity}`);
       }
 
-      const sourceText = readFundHistoryText(options.file);
-      const parsedRows = parseMyInvestorFundOrderHistoryText(sourceText);
+      const parsedRows = await readFundHistoryRows(options.file, options.account);
       const plan = buildFundOrderHistoryImportPlan(
         dataset,
         options.account,
@@ -779,4 +780,13 @@ function readFundHistoryText(filePath: string) {
   } catch {
     return buffer.toString("latin1");
   }
+}
+
+async function readFundHistoryRows(filePath: string, accountId: string) {
+  const extension = extname(filePath).toLowerCase();
+  if ([".csv", ".xls", ".xlsx"].includes(extension)) {
+    return parseMyInvestorFundOrderHistorySpreadsheet(filePath, accountId);
+  }
+
+  return parseMyInvestorFundOrderHistoryText(readFundHistoryText(filePath));
 }

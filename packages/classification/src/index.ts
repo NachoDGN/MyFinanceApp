@@ -334,7 +334,10 @@ function getResolvedTransactionReviewModel() {
 }
 
 export function getBatchEscalationReviewModel() {
-  return process.env.BATCH_TRANSACTION_ESCALATION_LLM?.trim() || "gpt-5.4";
+  return (
+    process.env.BATCH_TRANSACTION_ESCALATION_LLM?.trim() ||
+    "gemini-3-flash-preview"
+  );
 }
 
 function normalizeCashCategoryCode(
@@ -365,7 +368,7 @@ export function getInvestmentTransactionClassifierConfig(
       : isFollowupInvestmentReviewTrigger(trigger)
         ? process.env.INVESTMENT_TRANSACTION_FOLLOWUP_REVIEW_LLM?.trim() ||
           process.env.INVESTMENT_TRANSACTION_MANUAL_REVIEW_LLM?.trim() ||
-          "gpt-5.4"
+          "gemini-3-flash-preview"
         : (process.env.INVESTMENT_TRANSACTION_REVIEW_LLM ?? "gpt-5.4-mini");
   return {
     ...base,
