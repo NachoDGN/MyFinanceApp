@@ -60,7 +60,10 @@ import {
 } from "@myfinance/domain";
 import { type PromptProfileOverrides } from "@myfinance/llm";
 import { withInvestmentMutationLock } from "./investment-mutation-lock";
-import { applyInvestmentRebuild } from "./investment-rebuild-runner";
+import {
+  applyInvestmentRebuild,
+  applyInvestmentRebuildWithinLock,
+} from "./investment-rebuild-runner";
 import { processFundNavBackfillJob } from "./fund-nav-backfill";
 import { processReviewPropagationJob } from "./review-propagation-job";
 export {
@@ -599,7 +602,7 @@ export async function reanalyzeTransactionReview(
           stage: "investment_rebuild",
           message: "Rebuilding investment positions and fetching dated prices.",
         });
-        await applyInvestmentRebuild(sql, userId, {
+        await applyInvestmentRebuildWithinLock(sql, userId, {
           onProgress: input.onProgress,
           historicalLookupTransactionIds: [input.transactionId],
         });

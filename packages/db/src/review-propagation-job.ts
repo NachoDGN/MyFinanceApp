@@ -6,7 +6,7 @@ import { type PromptProfileOverrides } from "@myfinance/llm";
 
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
 import { loadDatasetForUser } from "./dataset-loader";
-import { applyInvestmentRebuild } from "./investment-rebuild-runner";
+import { applyInvestmentRebuildWithinLock } from "./investment-rebuild-runner";
 import { withInvestmentMutationLock } from "./investment-mutation-lock";
 import { queueJob } from "./job-state";
 import {
@@ -17,6 +17,7 @@ import {
   mergePropagatedContextHistory,
   replaceTransactionInDataset,
   selectReviewPropagationCandidateMatches,
+  shouldRunInvestmentRebuildAfterReviewPropagation,
   type PropagatedContextEntry,
   type ResolvedSourcePrecedent,
 } from "./review-propagation-support";
@@ -28,7 +29,10 @@ import { type SqlClient } from "./sql-runtime";
 import {
   readTransactionReviewContext,
 } from "./transaction-embedding-search";
-import { executeTransactionEnrichmentPipeline } from "./transaction-enrichment";
+import {
+  executeTransactionEnrichmentPipeline,
+  selectTransactionRowById,
+} from "./transaction-enrichment";
 import { updateTransactionRecord } from "./transaction-record";
 
 type ReviewPropagationMode =
@@ -133,6 +137,29 @@ async function applyReviewPropagationToCandidate(
         },
       },
     });
+  const shouldRunInvestmentRebuild =
+    input.account.assetDomain === "investment" &&
+    shouldRunInvestmentRebuildAfterReviewPropagation(
+      input.currentCandidate,
+      afterTransaction,
+    );
+  const shouldRunImmediateInvestmentRebuild =
+    shouldRunInvestmentRebuild && input.currentCandidate.needsReview === false;
+  let nextAfterTransaction = afterTransaction;
+
+  if (shouldRunImmediateInvestmentRebuild) {
+    await applyInvestmentRebuildWithinLock(sql, input.userId, {
+      historicalLookupTransactionIds: [afterTransaction.id],
+    });
+    const refreshedRow = await selectTransactionRowById(
+      sql,
+      input.userId,
+      afterTransaction.id,
+    );
+    if (refreshedRow) {
+      nextAfterTransaction = mapFromSql<Transaction>(refreshedRow);
+    }
+  }
   const auditEvent = createAuditEvent(
     "worker",
     "job:review_propagation",
@@ -149,8 +176,9 @@ async function applyReviewPropagationToCandidate(
   );
 
   return {
-    afterTransaction,
-    shouldRunInvestmentRebuild: input.account.assetDomain === "investment",
+    afterTransaction: nextAfterTransaction,
+    shouldRunInvestmentRebuild:
+      shouldRunInvestmentRebuild && !shouldRunImmediateInvestmentRebuild,
     shouldQueueMetricRefresh: true,
   };
 }
@@ -402,10 +430,11 @@ export async function processReviewPropagationJob(
       }
     }
 
-    let rebuilt: Awaited<ReturnType<typeof applyInvestmentRebuild>> | null =
-      null;
+    let rebuilt:
+      | Awaited<ReturnType<typeof applyInvestmentRebuildWithinLock>>
+      | null = null;
     if (mode === "resolved_source_rereview" && shouldRunInvestmentRebuild) {
-      rebuilt = await applyInvestmentRebuild(sql, userId, {
+      rebuilt = await applyInvestmentRebuildWithinLock(sql, userId, {
         historicalLookupTransactionIds: appliedTransactionIds,
       });
     }

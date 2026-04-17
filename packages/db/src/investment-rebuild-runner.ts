@@ -258,47 +258,63 @@ async function replaceInvestmentArtifacts(
   }
 }
 
+async function applyInvestmentRebuildInternal(
+  sql: SqlClient,
+  userId: string,
+  options?: ApplyInvestmentRebuildOptions,
+) {
+  const latestDataset = await loadDatasetForUser(sql, userId);
+  const referenceDate = getDatasetLatestDate(latestDataset);
+  const rebuilt = await prepareInvestmentRebuild(latestDataset, referenceDate, {
+    onProgress: options?.onProgress,
+    historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
+  });
+  const latestTransactionsById = new Map(
+    latestDataset.transactions.map((transaction) => [
+      transaction.id,
+      transaction,
+    ]),
+  );
+
+  await insertSecurities(sql, rebuilt.insertedSecurities);
+  await insertSecurityAliases(sql, rebuilt.insertedAliases);
+  await upsertSecurityPrices(sql, rebuilt.upsertedPrices);
+  await queueFundNavBackfillJobs(sql, rebuilt.fundNavBackfillRequests);
+  await applyTransactionPatches(sql, {
+    userId,
+    latestTransactionsById,
+    transactionPatches: rebuilt.transactionPatches,
+  });
+  await replaceInvestmentArtifacts(sql, {
+    userId,
+    positions: rebuilt.positions,
+    snapshots: rebuilt.snapshots,
+  });
+
+  return {
+    referenceDate,
+    rebuiltPositions: rebuilt.positions.length,
+    rebuiltSnapshots: rebuilt.snapshots.length,
+    updatedTransactions: rebuilt.transactionPatches.length,
+    insertedSecurities: rebuilt.insertedSecurities.length,
+    upsertedPrices: rebuilt.upsertedPrices.length,
+  };
+}
+
+export async function applyInvestmentRebuildWithinLock(
+  sql: SqlClient,
+  userId: string,
+  options?: ApplyInvestmentRebuildOptions,
+) {
+  return applyInvestmentRebuildInternal(sql, userId, options);
+}
+
 export async function applyInvestmentRebuild(
   sql: SqlClient,
   userId: string,
   options?: ApplyInvestmentRebuildOptions,
 ) {
   return withInvestmentMutationLock(sql, userId, async () => {
-    const latestDataset = await loadDatasetForUser(sql, userId);
-    const referenceDate = getDatasetLatestDate(latestDataset);
-    const rebuilt = await prepareInvestmentRebuild(latestDataset, referenceDate, {
-      onProgress: options?.onProgress,
-      historicalLookupTransactionIds: options?.historicalLookupTransactionIds,
-    });
-    const latestTransactionsById = new Map(
-      latestDataset.transactions.map((transaction) => [
-        transaction.id,
-        transaction,
-      ]),
-    );
-
-    await insertSecurities(sql, rebuilt.insertedSecurities);
-    await insertSecurityAliases(sql, rebuilt.insertedAliases);
-    await upsertSecurityPrices(sql, rebuilt.upsertedPrices);
-    await queueFundNavBackfillJobs(sql, rebuilt.fundNavBackfillRequests);
-    await applyTransactionPatches(sql, {
-      userId,
-      latestTransactionsById,
-      transactionPatches: rebuilt.transactionPatches,
-    });
-    await replaceInvestmentArtifacts(sql, {
-      userId,
-      positions: rebuilt.positions,
-      snapshots: rebuilt.snapshots,
-    });
-
-    return {
-      referenceDate,
-      rebuiltPositions: rebuilt.positions.length,
-      rebuiltSnapshots: rebuilt.snapshots.length,
-      updatedTransactions: rebuilt.transactionPatches.length,
-      insertedSecurities: rebuilt.insertedSecurities.length,
-      upsertedPrices: rebuilt.upsertedPrices.length,
-    };
+    return applyInvestmentRebuildInternal(sql, userId, options);
   });
 }
