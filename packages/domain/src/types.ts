@@ -750,6 +750,64 @@ export interface TransactionListResponse {
   generatedAt: string;
 }
 
+export type TransactionQuestionEvidenceType =
+  | "transaction"
+  | "ledger_query"
+  | "source_batch"
+  | "import_batch"
+  | "audit_event";
+
+export interface TransactionQuestionEvidence {
+  id: string;
+  type: TransactionQuestionEvidenceType;
+  title: string;
+  summary: string;
+  transactionId?: string | null;
+  sourceId?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface TransactionQuestionTraceEvent {
+  stepIndex: number;
+  actor: "executor" | "tool" | "system";
+  eventType:
+    | "decision"
+    | "tool_call"
+    | "tool_result"
+    | "final_answer"
+    | "error";
+  summary: string;
+  latencyMs?: number | null;
+}
+
+export interface TransactionQuestionAnswerResponse {
+  schemaVersion: "v1";
+  runId: string | null;
+  question: string;
+  answer: string;
+  answerType:
+    | "single_transaction"
+    | "aggregate"
+    | "comparison"
+    | "clarification"
+    | "no_result";
+  confidence: number | null;
+  insufficiencyReason: string | null;
+  citations: TransactionQuestionEvidence[];
+  evidence: TransactionQuestionEvidence[];
+  trace: TransactionQuestionTraceEvent[];
+  warnings: string[];
+  generatedAt: string;
+}
+
+export interface AnswerTransactionQuestionInput {
+  question: string;
+  scope: Scope;
+  period: PeriodSelection;
+  referenceDate: string;
+  currency: CurrencyCode;
+}
+
 export interface HoldingsResponse {
   schemaVersion: "v1";
   scope: Scope;

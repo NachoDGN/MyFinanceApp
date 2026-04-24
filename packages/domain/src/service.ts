@@ -1,6 +1,7 @@
 import type {
   AccountListResponse,
   AddOpeningPositionInput,
+  AnswerTransactionQuestionInput,
   ApplyRuleDraftInput,
   CreateAccountInput,
   CreateEntityInput,
@@ -326,5 +327,9 @@ export class FinanceDomainService {
 
   runPendingJobs(apply: boolean) {
     return this.repository.runPendingJobs(apply);
+  }
+
+  answerTransactionQuestion(input: AnswerTransactionQuestionInput) {
+    return this.repository.answerTransactionQuestion(input);
   }
 }

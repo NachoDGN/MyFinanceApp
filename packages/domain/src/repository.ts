@@ -1,5 +1,6 @@
 import type {
   AddOpeningPositionInput,
+  AnswerTransactionQuestionInput,
   ApplyRuleDraftInput,
   AuditEvent,
   CreateAccountInput,
@@ -28,6 +29,7 @@ import type {
   ResetWorkspaceResult,
   Scope,
   Transaction,
+  TransactionQuestionAnswerResponse,
   UpdateAccountInput,
   UpdateEntityInput,
   UpdateManualInvestmentInput,
@@ -173,6 +175,9 @@ export interface FinanceRepository {
     input: CreditCardStatementImportInput,
   ): Promise<CreditCardStatementImportResult>;
   runPendingJobs(apply: boolean): Promise<JobRunResult>;
+  answerTransactionQuestion(
+    input: AnswerTransactionQuestionInput,
+  ): Promise<TransactionQuestionAnswerResponse>;
 }
 
 export function getAccountById(

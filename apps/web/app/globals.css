@@ -1886,6 +1886,160 @@ textarea {
   flex-wrap: wrap;
 }
 
+.transaction-agent-open-button {
+  cursor: pointer;
+}
+
+.transaction-agent-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 14, 22, 0.48);
+  backdrop-filter: blur(10px);
+}
+
+.transaction-agent-modal {
+  width: min(920px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: auto;
+  display: grid;
+  gap: 20px;
+  padding: 30px;
+  border-radius: var(--radius-lg);
+  background: #ffffff;
+  border: 1px solid rgba(12, 18, 28, 0.1);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.22);
+}
+
+.transaction-agent-header,
+.transaction-agent-actions,
+.transaction-agent-answer-meta {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.transaction-agent-form {
+  display: grid;
+  gap: 14px;
+}
+
+.transaction-agent-question {
+  min-height: 108px;
+}
+
+.transaction-agent-examples {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.transaction-agent-example {
+  border: 1px solid rgba(12, 18, 28, 0.1);
+  background: #fafafa;
+  color: var(--color-text-main);
+  border-radius: var(--radius-pill);
+  padding: 9px 13px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.transaction-agent-example:hover {
+  border-color: rgba(255, 75, 43, 0.28);
+  color: var(--color-accent);
+}
+
+.transaction-agent-example:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.transaction-agent-result,
+.transaction-agent-answer-card,
+.transaction-agent-panel,
+.transaction-agent-evidence-list,
+.transaction-agent-trace,
+.transaction-agent-warning-list {
+  display: grid;
+  gap: 14px;
+}
+
+.transaction-agent-answer-card,
+.transaction-agent-panel {
+  padding: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(12, 18, 28, 0.08);
+  background: #fbfbfb;
+}
+
+.transaction-agent-answer-card p {
+  margin: 0;
+  color: var(--color-text-main);
+  font-size: 18px;
+  line-height: 1.55;
+  font-weight: 650;
+}
+
+.transaction-agent-evidence-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: 16px;
+}
+
+.transaction-agent-panel h3 {
+  margin: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.transaction-agent-evidence-row {
+  display: grid;
+  gap: 4px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(12, 18, 28, 0.08);
+  color: inherit;
+  text-decoration: none;
+}
+
+.transaction-agent-evidence-row:last-child {
+  border-bottom: none;
+}
+
+.transaction-agent-evidence-row span {
+  font-weight: 700;
+}
+
+.transaction-agent-evidence-row small,
+.transaction-agent-trace-row span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.transaction-agent-trace-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(12, 18, 28, 0.08);
+}
+
+.transaction-agent-trace-row:last-child {
+  border-bottom: none;
+}
+
+.transaction-agent-trace-row p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .spending-merchant-list {
   margin-top: 20px;
   display: grid;
@@ -2827,6 +2981,15 @@ textarea {
   .import-review-modal-card {
     padding: 24px;
     border-radius: 24px;
+  }
+
+  .transaction-agent-modal {
+    padding: 22px;
+    border-radius: 22px;
+  }
+
+  .transaction-agent-evidence-grid {
+    grid-template-columns: 1fr;
   }
 
   .investment-review-section {

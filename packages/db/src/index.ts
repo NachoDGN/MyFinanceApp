@@ -19,6 +19,7 @@ import {
   isCreditCardSettlementTransaction,
   UNCATEGORIZED_TRANSACTION_REVIEW_REASON,
   type AddOpeningPositionInput,
+  type AnswerTransactionQuestionInput,
   type Account,
   type ApplyRuleDraftInput,
   type AuditEvent,
@@ -224,6 +225,15 @@ export {
   type SearchTransactionsResult,
   type TransactionSearchResultRow,
 } from "./transaction-search";
+import { runTransactionQuestionAgent } from "./transaction-agent";
+export {
+  runTransactionQuestionAgent,
+} from "./transaction-agent";
+export type {
+  TransactionAgentDecision,
+  TransactionAgentSettings,
+  TransactionAgentToolName,
+} from "./transaction-agent-types";
 export {
   TRANSACTION_SELECT_COLUMN_NAMES,
   TRANSACTION_SELECT_COLUMNS,
@@ -816,6 +826,16 @@ class SqlFinanceRepository implements FinanceRepository {
   }) {
     return withSeededUserSession((sql) =>
       searchTransactions(sql, this.userId, input),
+    );
+  }
+
+  async answerTransactionQuestion(input: AnswerTransactionQuestionInput) {
+    const dataset = await this.getDataset();
+    return withSeededUserSession((sql) =>
+      runTransactionQuestionAgent(sql, this.userId, {
+        ...input,
+        dataset,
+      }),
     );
   }
 
