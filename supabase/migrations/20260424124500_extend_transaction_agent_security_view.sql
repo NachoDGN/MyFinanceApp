@@ -1,0 +1,62 @@
+create or replace view public.agent_ledger_transactions
+with (security_invoker = true)
+as
+select
+  t.id as transaction_id,
+  t.user_id,
+  t.account_id,
+  a.display_name as account_name,
+  a.institution_name,
+  a.account_type,
+  t.account_entity_id,
+  ae.display_name as account_entity_name,
+  ae.entity_kind as account_entity_kind,
+  t.economic_entity_id,
+  ee.display_name as economic_entity_name,
+  ee.entity_kind as economic_entity_kind,
+  t.import_batch_id,
+  t.transaction_date,
+  t.posted_date,
+  t.amount_original,
+  t.currency_original,
+  t.amount_base_eur,
+  t.fx_rate_to_eur,
+  t.description_raw,
+  t.description_clean,
+  t.merchant_normalized,
+  t.counterparty_name,
+  t.transaction_class,
+  t.category_code,
+  c.display_name as category_name,
+  t.subcategory_code,
+  t.transfer_group_id,
+  t.related_account_id,
+  t.related_transaction_id,
+  t.transfer_match_status,
+  t.cross_entity_flag,
+  t.reimbursement_status,
+  t.classification_status,
+  t.classification_source,
+  t.classification_confidence,
+  t.needs_review,
+  t.review_reason,
+  t.exclude_from_analytics,
+  t.correction_of_transaction_id,
+  t.voided_at,
+  t.manual_notes,
+  t.credit_card_statement_status,
+  t.created_at,
+  t.updated_at,
+  t.security_id,
+  s.display_symbol as security_display_symbol,
+  s.canonical_symbol as security_canonical_symbol,
+  s.provider_symbol as security_provider_symbol,
+  s.name as security_name,
+  t.quantity,
+  t.unit_price_original
+from public.transactions t
+join public.accounts a on a.id = t.account_id
+join public.entities ae on ae.id = t.account_entity_id
+join public.entities ee on ee.id = t.economic_entity_id
+left join public.categories c on c.code = t.category_code
+left join public.securities s on s.id = t.security_id;

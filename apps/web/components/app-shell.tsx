@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { buildHref } from "../lib/queries";
 import { ImportReviewModalHost } from "./import-review-modal-host";
+import { TransactionSearchModalHost } from "./transaction-search-modal-host";
 
 const primaryNav = [
   { href: "/", label: "Dashboard" },
@@ -173,6 +174,7 @@ export function AppShell({
           >
             USD
           </a>
+          <TransactionSearchModalHost state={state} />
         </div>
       </div>
       <ImportReviewModalHost />
