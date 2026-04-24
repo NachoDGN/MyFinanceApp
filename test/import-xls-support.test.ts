@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import {
   inspectSpreadsheetWorkbook,
   validateSpreadsheetFile,
-} from "../packages/domain/src/repository.ts";
+} from "../packages/ingestion/src/index.ts";
 
 const execFileAsync = promisify(execFile);
 const legacyWorkbookFixturePath = join(

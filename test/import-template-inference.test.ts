@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   getImportTemplateInferenceConfig,
   inferImportTemplateDraft,
-} from "../packages/domain/src/import-template-inference.ts";
+} from "../packages/ingestion/src/import-template-inference.ts";
 
 test("import template inference falls back to the configured rules model", () => {
   const previousImportModel = process.env.OPENAI_IMPORT_TEMPLATE_MODEL;
@@ -269,7 +269,8 @@ test("inferImportTemplateDraft resolves inferred xlsx sheet names to an existing
         sheetPreviews: [
           {
             sheetName: "Movimientos",
-            previewCsv: "row,A,B,C\n1,MyInvestor movimientos,,\n2,Fecha,Concepto,Importe",
+            previewCsv:
+              "row,A,B,C\n1,MyInvestor movimientos,,\n2,Fecha,Concepto,Importe",
           },
         ],
       }),

@@ -41,6 +41,9 @@ importers:
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@myfinance/ingestion':
+        specifier: workspace:*
+        version: link:../../packages/ingestion
       '@myfinance/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data
@@ -65,6 +68,9 @@ importers:
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@myfinance/ingestion':
+        specifier: workspace:*
+        version: link:../../packages/ingestion
       '@myfinance/llm':
         specifier: workspace:*
         version: link:../../packages/llm
@@ -143,9 +149,15 @@ importers:
       '@myfinance/domain':
         specifier: workspace:*
         version: link:../domain
+      '@myfinance/ingestion':
+        specifier: workspace:*
+        version: link:../ingestion
       '@myfinance/llm':
         specifier: workspace:*
         version: link:../llm
+      '@myfinance/market-data':
+        specifier: workspace:*
+        version: link:../market-data
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0
@@ -176,6 +188,18 @@ importers:
       zod:
         specifier: ^3.24.2
         version: 3.25.76
+
+  packages/ingestion:
+    dependencies:
+      '@myfinance/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@myfinance/llm':
+        specifier: workspace:*
+        version: link:../llm
+      decimal.js:
+        specifier: ^10.4.3
+        version: 10.6.0
 
   packages/llm:
     dependencies:

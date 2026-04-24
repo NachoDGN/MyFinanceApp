@@ -7,45 +7,14 @@ import {
   endOfMonthIso,
   formatBaseEurAmountForDisplay,
 } from "../../lib/currency";
+import {
+  formatMonthLabel,
+  formatMonthRange,
+  formatPercentLabel,
+  getPeriodLabel,
+} from "../../lib/dashboard";
 import { formatCurrency } from "../../lib/formatters";
 import { getIncomeModel } from "../../lib/queries";
-
-function formatMonthLabel(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-  }).format(new Date(`${value}T00:00:00Z`));
-}
-
-function formatMonthRange(start: string, end: string) {
-  return `${formatMonthLabel(start)} ${start.slice(0, 4)} — ${formatMonthLabel(end)} ${end.slice(0, 4)}`;
-}
-
-function getPeriodLabel(period: {
-  preset: string;
-  start: string;
-  end: string;
-}) {
-  if (period.preset === "all") {
-    return "All Time";
-  }
-  if (period.preset === "mtd") {
-    return "Month to Date";
-  }
-  if (period.preset === "ytd") {
-    return "Year to Date";
-  }
-  if (period.preset === "week") {
-    return "Week to Date";
-  }
-  if (period.preset === "24m") {
-    return "Trailing 24 Months";
-  }
-  return `${formatMonthLabel(period.start)} ${period.start.slice(0, 4)} — ${formatMonthLabel(period.end)} ${period.end.slice(0, 4)}`;
-}
-
-function formatPercentLabel(value: string | null | undefined) {
-  return `${Number(value ?? 0).toFixed(2)}%`;
-}
 
 export default async function IncomePage({
   searchParams,
@@ -104,7 +73,10 @@ export default async function IncomePage({
   );
   const chartRangeLabel =
     chartRows.length > 0
-      ? formatMonthRange(chartRows[0].month, chartRows[chartRows.length - 1].month)
+      ? formatMonthRange(
+          chartRows[0].month,
+          chartRows[chartRows.length - 1].month,
+        )
       : "No income data";
   const currentPeriodIncome = Number(model.incomeMetric?.valueBaseEur ?? 0);
   const completenessPercent = Number(model.incomeCompletenessPercent);
@@ -375,7 +347,8 @@ export default async function IncomePage({
                   model.investmentIncome,
                   model.currency,
                   model.referenceDate,
-                )}.
+                )}
+                .
               </div>
             </div>
           </article>
@@ -396,11 +369,15 @@ export default async function IncomePage({
           ]}
           rows={model.transactions.map((row) => [
             row.transactionDate,
-            model.dataset.entities.find((entity) => entity.id === row.economicEntityId)
-              ?.displayName ?? row.economicEntityId,
-            model.dataset.accounts.find((account) => account.id === row.accountId)
-              ?.displayName ?? row.accountId,
-            row.counterpartyName ?? row.merchantNormalized ?? row.descriptionRaw,
+            model.dataset.entities.find(
+              (entity) => entity.id === row.economicEntityId,
+            )?.displayName ?? row.economicEntityId,
+            model.dataset.accounts.find(
+              (account) => account.id === row.accountId,
+            )?.displayName ?? row.accountId,
+            row.counterpartyName ??
+              row.merchantNormalized ??
+              row.descriptionRaw,
             row.transactionClass,
             row.categoryCode ?? "—",
             formatCurrency(

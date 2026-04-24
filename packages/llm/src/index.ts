@@ -3,6 +3,7 @@ export * from "./config";
 export * from "./embeddings";
 export * from "./provider-api-error";
 export * from "./prompts";
+export * from "./structured-task";
 export * from "./types";
 export * from "./tasks/analyze-bank-transaction";
 export * from "./tasks/infer-spreadsheet-layout";

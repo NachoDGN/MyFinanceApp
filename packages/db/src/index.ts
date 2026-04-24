@@ -16,11 +16,7 @@ import {
   isUncategorizedCategoryCode,
   needsCreditCardStatementUpload,
   parseRuleDraftRequest,
-  buildImportedTransactions,
   isCreditCardSettlementTransaction,
-  normalizeImportExecutionInput,
-  runDeterministicImport,
-  sanitizeImportResult,
   UNCATEGORIZED_TRANSACTION_REVIEW_REASON,
   type AddOpeningPositionInput,
   type Account,
@@ -57,13 +53,14 @@ import {
   type UpdateWorkspaceProfileInput,
   type UpdateTransactionInput,
 } from "@myfinance/domain";
-import { type PromptProfileOverrides } from "@myfinance/llm";
-import { withInvestmentMutationLock } from "./investment-mutation-lock";
 import {
-  applyInvestmentRebuild,
-  applyInvestmentRebuildWithinLock,
-} from "./investment-rebuild-runner";
-import { processFundNavBackfillJob } from "./fund-nav-backfill";
+  buildImportedTransactions,
+  normalizeImportExecutionInput,
+  runDeterministicImport,
+  sanitizeImportResult,
+} from "@myfinance/ingestion";
+import { withInvestmentMutationLock } from "./investment-mutation-lock";
+import { applyInvestmentRebuildWithinLock } from "./investment-rebuild-runner";
 import { processReviewPropagationJob } from "./review-propagation-job";
 export {
   refreshOwnedStockPrices,
@@ -82,15 +79,7 @@ import {
   commitPreparedImportBatch,
   sumPreparedTransactionAmountBaseEur,
 } from "./import-batches";
-import {
-  claimNextQueuedJob,
-  completeJob,
-  failJob,
-  queueJob,
-  recoverStaleRunningJobs,
-  supportsJobType,
-  updateRunningJobPayload,
-} from "./job-state";
+import { queueJob, supportsJobType } from "./job-state";
 import {
   deactivateLearnedReviewExample,
   learnedReviewExamplesTableExists,
@@ -108,8 +97,7 @@ export {
   type ImportReviewQueueReadiness,
 } from "./import-review-queue";
 import { loadPromptOverrides } from "./prompt-profiles";
-import { processRevolutSyncJob } from "./revolut-sync-job";
-import { processClassificationJob } from "./classification-batch-job";
+import { runFinanceJobQueue } from "./job-runner";
 export {
   deactivateLearnedReviewExample,
   listLearnedReviewExamples,
@@ -217,7 +205,6 @@ export {
 } from "./transaction-search-fusion";
 import {
   markTransactionSearchRowsStale,
-  processTransactionSearchIndexJob,
   queueTransactionSearchIndexJob,
 } from "./transaction-search-index";
 export {
@@ -745,10 +732,9 @@ export async function reanalyzeTransactionReview(
       ) {
         await input.onProgress?.({
           stage: "review_propagation",
-          message:
-            shouldIncludeResolvedTargets
-              ? "Propagating the correction to similar transactions, including already-resolved matches."
-              : "Propagating the correction to similar unresolved transactions.",
+          message: shouldIncludeResolvedTargets
+            ? "Propagating the correction to similar transactions, including already-resolved matches."
+            : "Propagating the correction to similar unresolved transactions.",
         });
         const reviewPropagationPayload = {
           sourceTransactionId: afterTransaction.id,
@@ -3137,318 +3123,10 @@ class SqlFinanceRepository implements FinanceRepository {
   }
 
   async runPendingJobs(apply: boolean): Promise<JobRunResult> {
-    const result = await withSeededUserSession(async (sql) => {
-      if (apply) {
-        await recoverStaleRunningJobs(sql);
-      }
-
-      const queued = await sql`
-        select * from public.jobs
-        where status = 'queued'
-          and available_at <= ${new Date().toISOString()}
-        order by available_at asc, created_at asc
-      `;
-      const processedJobs: JobRunResult["processedJobs"] = [];
-      if (apply && queued.length > 0) {
-        const workerId = `worker:${process.pid}:${randomUUID()}`;
-        let cachedPromptOverrides: PromptProfileOverrides | null = null;
-        const getPromptOverridesCached = async () => {
-          if (!cachedPromptOverrides) {
-            cachedPromptOverrides = await loadPromptOverrides(sql, this.userId);
-          }
-          return cachedPromptOverrides;
-        };
-
-        while (true) {
-          const job = await claimNextQueuedJob(sql, workerId);
-          if (!job) {
-            break;
-          }
-
-          const startedAt =
-            typeof job.started_at === "string"
-              ? job.started_at
-              : new Date().toISOString();
-          const payloadJson = parseJsonColumn<Record<string, unknown>>(
-            job.payload_json ?? {},
-          );
-
-          try {
-            if (job.job_type === "rule_parse") {
-              const requestText =
-                typeof payloadJson.requestText === "string"
-                  ? payloadJson.requestText
-                  : "";
-              if (!requestText) {
-                throw new Error("Rule draft job is missing requestText.");
-              }
-
-              const parsedRule = await parseRuleDraftRequest(
-                requestText,
-                await loadDatasetForUser(sql, this.userId),
-                await getPromptOverridesCached(),
-              );
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                parsedRule,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "rule_parse",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "classification") {
-              const importBatchId =
-                typeof payloadJson.importBatchId === "string"
-                  ? payloadJson.importBatchId
-                  : "";
-              if (!importBatchId) {
-                throw new Error("Classification job is missing importBatchId.");
-              }
-              const promptOverrides = await getPromptOverridesCached();
-              let currentJobPayload = { ...payloadJson };
-              const resultPayload = await processClassificationJob(
-                sql,
-                this.userId,
-                {
-                  importBatchId,
-                  payloadJson,
-                  promptOverrides,
-                  onProgress: async (nextPayloadJson) => {
-                    currentJobPayload = nextPayloadJson;
-                    await updateRunningJobPayload(
-                      sql,
-                      job.id,
-                      currentJobPayload,
-                    );
-                  },
-                },
-              );
-              await completeJob(sql, job.id, startedAt, {
-                ...currentJobPayload,
-                ...resultPayload,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "classification",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "bank_sync") {
-              const resultPayload = await processRevolutSyncJob(
-                sql,
-                this.userId,
-                payloadJson,
-              );
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                ...resultPayload,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "bank_sync",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "transaction_search_index") {
-              const resultPayload = await processTransactionSearchIndexJob(
-                sql,
-                this.userId,
-                payloadJson,
-              );
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                ...resultPayload,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "transaction_search_index",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "position_rebuild") {
-              const rebuilt = await applyInvestmentRebuild(sql, this.userId);
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                ...rebuilt,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "position_rebuild",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "fund_nav_backfill") {
-              const resultPayload = await processFundNavBackfillJob(
-                sql,
-                payloadJson,
-              );
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                ...resultPayload,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "fund_nav_backfill",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "metric_refresh") {
-              await refreshFinanceAnalyticsArtifacts(sql);
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                refreshedAt: new Date().toISOString(),
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "metric_refresh",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "review_reanalyze") {
-              const transactionId =
-                typeof payloadJson.transactionId === "string"
-                  ? payloadJson.transactionId
-                  : "";
-              const reviewContext =
-                typeof payloadJson.reviewContext === "string"
-                  ? payloadJson.reviewContext
-                  : "";
-              const actorName =
-                typeof payloadJson.actorName === "string"
-                  ? payloadJson.actorName
-                  : "worker-review-editor";
-              const reviewMode =
-                payloadJson.reviewMode === "manual_resolved_review" ||
-                payloadJson.reviewMode === "manual_review_update"
-                  ? (payloadJson.reviewMode as ReviewReanalysisMode)
-                  : undefined;
-              const sourceChannel =
-                typeof payloadJson.sourceChannel === "string" &&
-                ["web", "cli", "worker", "system"].includes(
-                  payloadJson.sourceChannel,
-                )
-                  ? (payloadJson.sourceChannel as
-                      | "web"
-                      | "cli"
-                      | "worker"
-                      | "system")
-                  : "worker";
-              const selectedCategoryCode =
-                typeof payloadJson.selectedCategoryCode === "string" &&
-                payloadJson.selectedCategoryCode.trim() !== ""
-                  ? payloadJson.selectedCategoryCode.trim()
-                  : null;
-              const propagateResolvedMatches =
-                payloadJson.propagateResolvedMatches === true;
-              if (!transactionId || (!reviewContext && !selectedCategoryCode)) {
-                throw new Error(
-                  "Review reanalysis job is missing transactionId or review input.",
-                );
-              }
-              const reportProgress = async (
-                progress: ReviewReanalysisProgress,
-              ) => {
-                const nextPayloadJson = {
-                  ...payloadJson,
-                  progress: {
-                    ...progress,
-                    updatedAt: new Date().toISOString(),
-                  },
-                };
-                console.log(
-                  `[review_reanalyze] ${job.id} ${progress.stage}: ${progress.message}`,
-                );
-                await updateRunningJobPayload(sql, job.id, nextPayloadJson);
-              };
-              await reportProgress({
-                stage: "load_context",
-                message: "Loading transaction context.",
-              });
-              const resultPayload = await reanalyzeTransactionReview({
-                transactionId,
-                reviewContext,
-                selectedCategoryCode,
-                actorName,
-                sourceChannel,
-                reviewMode,
-                propagateResolvedMatches,
-                onProgress: reportProgress,
-              });
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                ...resultPayload,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "review_reanalyze",
-                status: "completed",
-              });
-              continue;
-            }
-
-            if (job.job_type === "review_propagation") {
-              const resultPayload = await processReviewPropagationJob(
-                sql,
-                this.userId,
-                payloadJson,
-                await getPromptOverridesCached(),
-              );
-              await completeJob(sql, job.id, startedAt, {
-                ...payloadJson,
-                ...resultPayload,
-              });
-              processedJobs.push({
-                id: job.id,
-                jobType: "review_propagation",
-                status: "completed",
-              });
-              continue;
-            }
-
-            await completeJob(sql, job.id, startedAt, payloadJson);
-            processedJobs.push({
-              id: job.id,
-              jobType: job.job_type,
-              status: "completed",
-            });
-          } catch (error) {
-            await failJob(sql, job.id, startedAt, error);
-            processedJobs.push({
-              id: job.id,
-              jobType: job.job_type,
-              status: "failed",
-            });
-          }
-        }
-      }
-      return {
-        schemaVersion: "v1" as const,
-        applied: apply,
-        processedJobs: apply
-          ? processedJobs
-          : queued.map((job) => ({
-              id: job.id,
-              jobType: job.job_type,
-              status: job.status,
-            })),
-        generatedAt: new Date().toISOString(),
-      };
+    const result = await runFinanceJobQueue({
+      apply,
+      userId: this.userId,
+      reanalyzeTransactionReview,
     });
     return result;
   }

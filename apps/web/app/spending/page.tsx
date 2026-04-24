@@ -8,6 +8,13 @@ import {
   endOfMonthIso,
   formatBaseEurAmountForDisplay,
 } from "../../lib/currency";
+import {
+  formatDeltaBadge,
+  formatMonthLabel,
+  formatMonthRange,
+  formatPercentLabel,
+  getPeriodLabel,
+} from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
 import { getSpendingModel } from "../../lib/queries";
 
@@ -84,62 +91,6 @@ function formatStatementDateParts(value: string) {
   };
 }
 
-function formatMonthLabel(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-  }).format(new Date(`${value}T00:00:00Z`));
-}
-
-function formatMonthRange(start: string, end: string) {
-  return `${formatMonthLabel(start)} ${start.slice(0, 4)} — ${formatMonthLabel(end)} ${end.slice(0, 4)}`;
-}
-
-function getPeriodLabel(period: {
-  preset: string;
-  start: string;
-  end: string;
-}) {
-  if (period.preset === "all") {
-    return "All Time";
-  }
-  if (period.preset === "mtd") {
-    return "Month to Date";
-  }
-  if (period.preset === "ytd") {
-    return "Year to Date";
-  }
-  if (period.preset === "week") {
-    return "Week to Date";
-  }
-  if (period.preset === "24m") {
-    return "Trailing 24 Months";
-  }
-  return `${formatMonthLabel(period.start)} ${period.start.slice(0, 4)} — ${formatMonthLabel(period.end)} ${period.end.slice(0, 4)}`;
-}
-
-function formatPercentLabel(value: number | string | null | undefined) {
-  const numeric =
-    typeof value === "number" ? value : Number(value ?? 0);
-  if (!Number.isFinite(numeric)) {
-    return "0.00%";
-  }
-
-  return `${numeric.toFixed(2)}%`;
-}
-
-function formatDeltaBadge(deltaPercent: string | null | undefined) {
-  if (!deltaPercent) {
-    return "0.00%";
-  }
-
-  const numeric = Number(deltaPercent);
-  if (!Number.isFinite(numeric)) {
-    return "0.00%";
-  }
-
-  return `${numeric.toFixed(2)}%`;
-}
-
 export default async function SpendingPage({
   searchParams,
 }: {
@@ -175,16 +126,16 @@ export default async function SpendingPage({
         ? fallbackFxMonths[0]
         : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
       : null;
-  const chartMax = Math.max(
-    ...chartRows.map((row) => row.spendingDisplay),
-    1,
-  );
+  const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
   const chartAxisValues = [1, 0.66, 0.33, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
   const chartRangeLabel =
     chartRows.length > 0
-      ? formatMonthRange(chartRows[0].month, chartRows[chartRows.length - 1].month)
+      ? formatMonthRange(
+          chartRows[0].month,
+          chartRows[chartRows.length - 1].month,
+        )
       : "No spending data";
   const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
   const coveragePercent = Number(model.coverage);

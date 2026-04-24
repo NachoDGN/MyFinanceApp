@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { renderSpreadsheetTableStartPromptFromInput } from "../prompts";
+import { runStructuredPromptTask } from "../structured-task";
 import type { LLMTaskClient } from "../types";
 
 export const spreadsheetTableStartResponseSchema = z.object({
@@ -59,9 +60,7 @@ export async function inferSpreadsheetTableStart(
     })),
     promptOverrides: input.promptOverrides ?? null,
   });
-  return client.generateJson({
-    systemPrompt: prompt.systemPrompt,
-    userPrompt: prompt.userPrompt,
+  return runStructuredPromptTask(client, prompt, {
     modelName,
     responseSchema: spreadsheetTableStartResponseSchema,
     responseJsonSchema: spreadsheetTableStartJsonSchema,

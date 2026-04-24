@@ -4,13 +4,12 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { getDbRuntimeConfig, getPromptOverrides } from "@myfinance/db";
+import { resolveAccountAssetDomain, type Account } from "@myfinance/domain";
 import {
   inferImportTemplateDraft,
   logImportDebug,
-  resolveAccountAssetDomain,
-  type Account,
   validateSpreadsheetFile,
-} from "@myfinance/domain";
+} from "@myfinance/ingestion";
 
 import { domain, repository } from "./action-service";
 import { NEW_SPREADSHEET_TEMPLATE_ID } from "../app/import-constants";
@@ -20,9 +19,7 @@ import {
 } from "./action-schemas";
 import { revalidateTemplatePaths } from "./api-revalidate";
 
-export function toAssetDomain(
-  accountType: Account["accountType"],
-) {
+export function toAssetDomain(accountType: Account["accountType"]) {
   return resolveAccountAssetDomain(accountType);
 }
 
@@ -67,7 +64,9 @@ export function toAccountPatch(fields: {
   };
 }
 
-type UploadedFileValidation = Awaited<ReturnType<typeof validateSpreadsheetFile>>;
+type UploadedFileValidation = Awaited<
+  ReturnType<typeof validateSpreadsheetFile>
+>;
 
 async function withUploadedImportFile<T>(
   formData: FormData,
@@ -345,7 +344,9 @@ async function withUploadedImport<T>(
   });
 }
 
-export async function commitCreditCardStatementImportUpload(formData: FormData) {
+export async function commitCreditCardStatementImportUpload(
+  formData: FormData,
+) {
   const fields = creditCardStatementFieldsSchema.parse({
     settlementTransactionId: formData.get("settlementTransactionId"),
     templateId: formData.get("templateId"),

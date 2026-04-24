@@ -21,7 +21,10 @@
       "@myfinance/db": ["packages/db/src/index.ts"],
       "@myfinance/domain": ["packages/domain/src/index.ts"],
       "@myfinance/domain/client": ["packages/domain/src/client.ts"],
-      "@myfinance/domain/template-config": ["packages/domain/src/template-config.ts"],
+      "@myfinance/domain/template-config": [
+        "packages/domain/src/template-config.ts"
+      ],
+      "@myfinance/ingestion": ["packages/ingestion/src/index.ts"],
       "@myfinance/llm": ["packages/llm/src/index.ts"],
       "@myfinance/market-data": ["packages/market-data/src/index.ts"]
     }

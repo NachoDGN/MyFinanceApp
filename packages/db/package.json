@@ -11,7 +11,9 @@
   "dependencies": {
     "@myfinance/classification": "workspace:*",
     "@myfinance/domain": "workspace:*",
+    "@myfinance/ingestion": "workspace:*",
     "@myfinance/llm": "workspace:*",
+    "@myfinance/market-data": "workspace:*",
     "decimal.js": "^10.4.3",
     "google-auth-library": "^9.15.1",
     "postgres": "^3.4.5",

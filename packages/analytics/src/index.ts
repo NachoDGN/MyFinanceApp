@@ -6,7 +6,6 @@ import type {
   InsightCard,
   MetricResult,
   PeriodSelection,
-  QualitySummary,
   Scope,
   Transaction,
 } from "@myfinance/domain";
@@ -17,24 +16,20 @@ import {
   filterTransactionsByReferenceDate,
   filterTransactionsByScope,
   getLatestAccountBalances,
-  getLatestInvestmentCashBalances,
   getPreviousComparablePeriod,
   needsCreditCardStatementUpload,
-  resolveAccountStaleThresholdDays,
-  getScopeLatestDate,
-  isTransactionPendingEnrichment,
   isTransactionResolvedForAnalytics,
   isCryptoCurrency,
   isUnmatchedCreditCardSettlementTransaction,
   needsTransactionManualReview,
+  buildHoldingsSnapshot,
+  buildQualitySummary,
   resolveFxRate,
-  resolveScopeQuoteFreshness,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   shiftIsoDate,
   startOfMonthIso,
   startOfTrailingMonthsIso,
-  summarizeQuoteFreshness,
   todayIso,
   normalizeMatcherText,
 } from "@myfinance/domain";
@@ -528,81 +523,6 @@ function flowMetric(
     .toFixed(2);
 }
 
-function qualitySummary(
-  dataset: DomainDataset,
-  scope: Scope,
-  referenceDate: string,
-  period: PeriodSelection = resolvePeriodSelection({
-    preset: "mtd",
-    referenceDate,
-  }),
-): QualitySummary {
-  const scopedTransactions = filterTransactionsByReferenceDate(
-    filterTransactionsByScope(dataset, scope),
-    referenceDate,
-  );
-  const scopedAccounts =
-    scope.kind === "consolidated"
-      ? dataset.accounts
-      : scope.kind === "entity" && scope.entityId
-        ? dataset.accounts.filter(
-            (account) => account.entityId === scope.entityId,
-          )
-        : scope.kind === "account" && scope.accountId
-          ? dataset.accounts.filter((account) => account.id === scope.accountId)
-          : dataset.accounts;
-  const staleAccounts = scopedAccounts
-    .map((account) => {
-      const lastImportDate = account.lastImportedAt
-        ? new Date(account.lastImportedAt)
-        : null;
-      const threshold = resolveAccountStaleThresholdDays(
-        dataset.profile,
-        account.assetDomain,
-        account.staleAfterDays,
-      );
-      const ageDays = lastImportDate
-        ? Math.floor(
-            (Date.parse(`${referenceDate}T12:00:00Z`) -
-              lastImportDate.getTime()) /
-              86400000,
-          )
-        : threshold + 1;
-      return { account, ageDays, threshold };
-    })
-    .filter((row) => row.ageDays > row.threshold)
-    .map((row) => ({
-      accountId: row.account.id,
-      accountName: row.account.displayName,
-      staleSinceDays: row.ageDays,
-    }));
-
-  return {
-    pendingEnrichmentCount: scopedTransactions.filter((row) =>
-      isTransactionPendingEnrichment(row),
-    ).length,
-    pendingReviewCount: scopedTransactions.filter((row) =>
-      needsTransactionManualReview(row),
-    ).length,
-    unclassifiedAmountMtdEur: filterTransactionsByPeriod(
-      scopedTransactions,
-      period,
-    )
-      .filter((row) => row.categoryCode?.startsWith("uncategorized"))
-      .reduce((sum, row) => sum.plus(amountMagnitudeEur(row)), new Decimal(0))
-      .toFixed(2),
-    staleAccountsCount: staleAccounts.length,
-    staleAccounts,
-    latestImportDateByAccount: scopedAccounts.map((account) => ({
-      accountId: account.id,
-      accountName: account.displayName,
-      latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
-    })),
-    latestDataDateByScope: getScopeLatestDate(dataset, scope, referenceDate),
-    priceFreshness: resolveScopeQuoteFreshness(dataset, scope, referenceDate),
-  };
-}
-
 export function buildMetricResult(
   dataset: DomainDataset,
   scope: Scope,
@@ -706,20 +626,20 @@ export function buildMetricResult(
       break;
     case "pending_review_count":
       valueBaseEur = String(
-        qualitySummary(dataset, scope, referenceDate).pendingReviewCount,
+        buildQualitySummary(dataset, scope, { referenceDate })
+          .pendingReviewCount,
       );
       break;
     case "unclassified_amount_mtd":
-      valueBaseEur = qualitySummary(
-        dataset,
-        scope,
+      valueBaseEur = buildQualitySummary(dataset, scope, {
         referenceDate,
-        currentPeriod,
-      ).unclassifiedAmountMtdEur;
+        period: currentPeriod,
+      }).unclassifiedAmountMtdEur;
       break;
     case "stale_accounts_count":
       valueBaseEur = String(
-        qualitySummary(dataset, scope, referenceDate).staleAccountsCount,
+        buildQualitySummary(dataset, scope, { referenceDate })
+          .staleAccountsCount,
       );
       break;
     default:
@@ -792,7 +712,10 @@ export function buildInsights(
       period,
     },
   );
-  const quality = qualitySummary(dataset, scope, referenceDate, period);
+  const quality = buildQualitySummary(dataset, scope, {
+    referenceDate,
+    period,
+  });
   const holdings = buildLiveHoldingRows(dataset, scope, referenceDate)
     .filter((row) => row.currentValueEur)
     .sort(
@@ -917,12 +840,12 @@ export function buildDashboardSummary(
             resolveScopedSeriesStartDate(dataset, input.scope, referenceDate),
             period.end,
           )
-      : buildTrailingMonthlyFlowSeries(
-          dataset,
-          input.scope,
-          referenceDate,
-          period.preset === "24m" ? 24 : 6,
-        );
+        : buildTrailingMonthlyFlowSeries(
+            dataset,
+            input.scope,
+            referenceDate,
+            period.preset === "24m" ? 24 : 6,
+          );
 
   const scopedTransactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, input.scope),
@@ -1019,7 +942,10 @@ export function buildDashboardSummary(
       referenceDate,
       period,
     }),
-    quality: qualitySummary(dataset, input.scope, referenceDate, period),
+    quality: buildQualitySummary(dataset, input.scope, {
+      referenceDate,
+      period,
+    }),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -1135,7 +1061,8 @@ function aggregateIncomeSourceRows(transactions: Transaction[]) {
       continue;
     }
 
-    const key = canonicalizeIncomeSourceLabel(label) || normalizeMatcherText(label);
+    const key =
+      canonicalizeIncomeSourceLabel(label) || normalizeMatcherText(label);
     const existing = totals.get(key) ?? {
       amount: new Decimal(0),
       aliasTotals: new Map<string, Decimal>(),
@@ -1176,52 +1103,6 @@ function averageMonthlySeries(
     .reduce((sum, row) => sum.plus(row[key]), new Decimal(0))
     .div(rows.length)
     .toFixed(2);
-}
-
-function buildHoldingsSnapshot(
-  dataset: DomainDataset,
-  scope: Scope,
-  referenceDate: string,
-) {
-  const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
-  const cryptoBalances = buildCryptoBalanceRows(dataset, scope, referenceDate);
-  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-  const brokerageCashEur = getLatestInvestmentCashBalances(
-    dataset,
-    referenceDate,
-  )
-    .filter((snapshot) => {
-      const account = dataset.accounts.find(
-        (candidate) => candidate.id === snapshot.accountId,
-      );
-      return (
-        account?.assetDomain === "investment" &&
-        entityIds.has(account.entityId) &&
-        (scope.kind !== "account" || account.id === scope.accountId)
-      );
-    })
-    .reduce(
-      (sum, snapshot) => sum.plus(snapshot.balanceBaseEur),
-      new Decimal(0),
-    )
-    .toFixed(2);
-  const quoteStates = [
-    ...holdings.map((row) => row.quoteFreshness),
-    ...cryptoBalances.map((row) => row.quoteFreshness),
-  ];
-
-  return {
-    schemaVersion: "v1" as const,
-    scope,
-    holdings,
-    cryptoBalances,
-    quoteFreshness:
-      quoteStates.length === 0
-        ? ("fresh" as const)
-        : summarizeQuoteFreshness(quoteStates),
-    brokerageCashEur,
-    generatedAt: new Date().toISOString(),
-  };
 }
 
 export function findMetric(
@@ -1442,12 +1323,12 @@ export function buildIncomeReadModel(
               ),
               summary.period.end,
             )
-        : buildTrailingMonthlyIncomeComposition(
-            dataset,
-            input.scope,
-            context.referenceDate,
-            summary.monthlySeries.length,
-          ),
+          : buildTrailingMonthlyIncomeComposition(
+              dataset,
+              input.scope,
+              context.referenceDate,
+              summary.monthlySeries.length,
+            ),
     topSourceShare,
     activeSourceCount: sourceRows.length,
     ytdIncomeTotal: flowMetric(dataset, input.scope, ytdPeriod, "income"),
@@ -1523,6 +1404,7 @@ export function buildInvestmentsReadModel(
   );
 
   return {
+    scope: input.scope,
     holdings,
     investmentRows,
     processedRows,

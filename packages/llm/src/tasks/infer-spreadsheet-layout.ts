@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { renderSpreadsheetLayoutPromptFromInput } from "../prompts";
+import { runStructuredPromptTask } from "../structured-task";
 import type { LLMTaskClient } from "../types";
 
 export const spreadsheetColumnMapSchema = z.object({
@@ -155,9 +156,7 @@ export async function inferSpreadsheetLayout(
     tablePreviewCsv: input.tablePreviewCsv,
     promptOverrides: input.promptOverrides ?? null,
   });
-  return client.generateJson({
-    systemPrompt: prompt.systemPrompt,
-    userPrompt: prompt.userPrompt,
+  return runStructuredPromptTask(client, prompt, {
     modelName,
     responseSchema: spreadsheetLayoutResponseSchema,
     responseJsonSchema: spreadsheetLayoutJsonSchema,

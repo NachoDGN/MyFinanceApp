@@ -4,6 +4,32 @@ export function formatMonthLabel(value: string) {
   }).format(new Date(`${value}T00:00:00Z`));
 }
 
+export function formatMonthRange(start: string, end: string) {
+  return `${formatMonthLabel(start)} ${start.slice(0, 4)} — ${formatMonthLabel(end)} ${end.slice(0, 4)}`;
+}
+
+export function getPeriodLabel(period: {
+  preset: string;
+  start: string;
+  end: string;
+}) {
+  if (period.preset === "all") return "All Time";
+  if (period.preset === "mtd") return "Month to Date";
+  if (period.preset === "ytd") return "Year to Date";
+  if (period.preset === "week") return "Week to Date";
+  if (period.preset === "24m") return "Trailing 24 Months";
+  return formatMonthRange(period.start, period.end);
+}
+
+export function formatPercentLabel(value: number | string | null | undefined) {
+  const numeric = typeof value === "number" ? value : Number(value ?? 0);
+  if (!Number.isFinite(numeric)) {
+    return "0.00%";
+  }
+
+  return `${numeric.toFixed(2)}%`;
+}
+
 export function buildTrendPoints(
   values: number[],
   width: number,

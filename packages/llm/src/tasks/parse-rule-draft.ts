@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { renderRuleDraftParserPromptFromInput } from "../prompts";
+import { runStructuredPromptTask } from "../structured-task";
 import type { LLMTaskClient } from "../types";
 
 const ruleDraftScopeSchema = z
@@ -138,7 +139,10 @@ export async function parseRuleDraftWithLLM(
     allowedTransactionClasses: input.allowedTransactionClasses.join(", "),
     allowedCategoryCodes: input.allowedCategoryCodes.join(", "),
     entities: input.entities
-      .map((entity) => `${entity.displayName} [slug=${entity.slug}, id=${entity.id}]`)
+      .map(
+        (entity) =>
+          `${entity.displayName} [slug=${entity.slug}, id=${entity.id}]`,
+      )
       .join("; "),
     accounts: input.accounts
       .map(
@@ -149,9 +153,7 @@ export async function parseRuleDraftWithLLM(
     requestText: input.requestText,
     promptOverrides: input.promptOverrides ?? null,
   });
-  return client.generateJson({
-    systemPrompt: prompt.systemPrompt,
-    userPrompt: prompt.userPrompt,
+  return runStructuredPromptTask(client, prompt, {
     modelName,
     responseSchema: ruleDraftResponseSchema,
     responseJsonSchema: ruleDraftJsonSchema,

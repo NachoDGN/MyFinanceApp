@@ -24,7 +24,6 @@ import {
 import { prepareInvestmentRebuild } from "../packages/db/src/investment-rebuild.ts";
 import {
   buildHoldingRows,
-  buildImportedTransactions,
   createTemplateConfig,
   FinanceDomainService,
   getDatasetLatestDate,
@@ -35,6 +34,7 @@ import {
   rebuildInvestmentState,
   resolvePeriodSelection,
 } from "../packages/domain/src/index.ts";
+import { buildImportedTransactions } from "../packages/ingestion/src/index.ts";
 import {
   buildReviewPropagationUserContext,
   buildResolvedSourcePrecedent,

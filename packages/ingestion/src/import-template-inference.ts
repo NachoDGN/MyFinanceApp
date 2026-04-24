@@ -10,14 +10,18 @@ import {
 } from "@myfinance/llm";
 
 import { logImportDebug } from "./import-debug";
-import { todayIso } from "./finance";
 import {
   columnLetterToIndex,
   inspectSpreadsheetWorkbook,
   previewSpreadsheetTable,
-} from "./repository";
-import { canonicalFieldKeys, isWorkbookFileKind } from "./template-config";
-import type { Account, ImportTemplate } from "./types";
+} from "./runner";
+import {
+  canonicalFieldKeys,
+  isWorkbookFileKind,
+  todayIso,
+  type Account,
+  type ImportTemplate,
+} from "@myfinance/domain";
 
 export interface InferImportTemplateDraftInput {
   userId: string;

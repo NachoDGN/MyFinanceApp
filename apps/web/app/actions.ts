@@ -11,8 +11,8 @@ import {
 import {
   buildWorkspaceSettingsJson,
   createTemplateConfig,
-  logImportDebug,
 } from "@myfinance/domain";
+import { logImportDebug } from "@myfinance/ingestion";
 import { domain } from "../lib/action-service";
 import {
   accountSchema,

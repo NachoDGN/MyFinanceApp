@@ -2,11 +2,8 @@ import {
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
 } from "@myfinance/classification";
-import {
-  getImportTemplateInferenceConfig,
-  getRuleParserConfig,
-  type AuditEvent,
-} from "@myfinance/domain";
+import { getRuleParserConfig, type AuditEvent } from "@myfinance/domain";
+import { getImportTemplateInferenceConfig } from "@myfinance/ingestion";
 import {
   buildPromptProfilePreview,
   listPromptProfileDefinitions,

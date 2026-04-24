@@ -15,6 +15,7 @@
     "@myfinance/classification": "workspace:*",
     "@myfinance/db": "workspace:*",
     "@myfinance/domain": "workspace:*",
+    "@myfinance/ingestion": "workspace:*",
     "@myfinance/market-data": "workspace:*",
     "commander": "^13.1.0",
     "zod": "^3.24.2"

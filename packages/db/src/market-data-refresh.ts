@@ -7,6 +7,12 @@ import {
   type Security,
   type SecurityPrice,
 } from "@myfinance/domain";
+import {
+  isWeekendIso,
+  readPayloadBoolean,
+  readPayloadString,
+  readPayloadTimestamp,
+} from "@myfinance/market-data";
 
 import { fetchFtFundPriceAtOrBeforeDate } from "./ft-fund-history";
 import { loadDatasetForUser } from "./dataset-loader";
@@ -19,66 +25,6 @@ import {
 } from "./sql-runtime";
 
 const MAX_CURRENT_FUND_NAV_DRIFT_DAYS = 15;
-
-function readPayloadField<T>(
-  payload: Record<string, unknown>,
-  keys: string[],
-): T | null {
-  for (const key of keys) {
-    if (key in payload) {
-      return payload[key] as T;
-    }
-  }
-  return null;
-}
-
-function readPayloadString(payload: Record<string, unknown>, keys: string[]) {
-  const value = readPayloadField<unknown>(payload, keys);
-  if (typeof value === "string" && value.trim() !== "") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return null;
-}
-
-function readPayloadBoolean(payload: Record<string, unknown>, keys: string[]) {
-  const value = readPayloadField<unknown>(payload, keys);
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    if (value.toLowerCase() === "true") return true;
-    if (value.toLowerCase() === "false") return false;
-  }
-  return null;
-}
-
-function readPayloadTimestamp(
-  payload: Record<string, unknown>,
-  keys: string[],
-) {
-  const value = readPayloadField<unknown>(payload, keys);
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value * 1000).toISOString();
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const trimmed = value.trim();
-    if (/^\d+$/.test(trimmed)) {
-      return new Date(Number(trimmed) * 1000).toISOString();
-    }
-
-    const normalized = trimmed.includes("T")
-      ? trimmed
-      : trimmed.replace(" ", "T");
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toISOString();
-    }
-  }
-  return null;
-}
-
-function isWeekendIso(value: string) {
-  const date = new Date(`${value}T00:00:00Z`);
-  const day = date.getUTCDay();
-  return day === 0 || day === 6;
-}
 
 function isRefreshableOwnedStockSecurity(security: Security) {
   return (
@@ -94,9 +40,9 @@ function isRefreshableOwnedFundSecurity(security: Security) {
       : "";
   return Boolean(
     security.isin?.trim() &&
-      security.quoteCurrency?.trim() &&
-      (security.providerName === "manual_fund_nav" ||
-        instrumentType.includes("fund")),
+    security.quoteCurrency?.trim() &&
+    (security.providerName === "manual_fund_nav" ||
+      instrumentType.includes("fund")),
   );
 }
 
@@ -129,7 +75,8 @@ export function selectOwnedFundNavRefreshSecurities(
 
   return dataset.securities.filter(
     (security) =>
-      ownedSecurityIds.has(security.id) && isRefreshableOwnedFundSecurity(security),
+      ownedSecurityIds.has(security.id) &&
+      isRefreshableOwnedFundSecurity(security),
   );
 }
 
@@ -140,18 +87,20 @@ export function selectTrackedEurFxPairs(
   const accountsById = new Map(
     dataset.accounts.map((account) => [account.id, account]),
   );
-  const balanceCurrencies = getLatestAccountBalances(dataset, referenceDate)
-    .flatMap((snapshot) => {
-      const account = accountsById.get(snapshot.accountId);
-      if (!account || account.accountType === "credit_card") {
-        return [];
-      }
+  const balanceCurrencies = getLatestAccountBalances(
+    dataset,
+    referenceDate,
+  ).flatMap((snapshot) => {
+    const account = accountsById.get(snapshot.accountId);
+    if (!account || account.accountType === "credit_card") {
+      return [];
+    }
 
-      const currency = (snapshot.balanceCurrency ?? account.defaultCurrency)
-        .trim()
-        .toUpperCase();
-      return currency && currency !== "EUR" ? [currency] : [];
-    });
+    const currency = (snapshot.balanceCurrency ?? account.defaultCurrency)
+      .trim()
+      .toUpperCase();
+    return currency && currency !== "EUR" ? [currency] : [];
+  });
   const holdingCurrencies = selectOwnedStockPriceRefreshSecurities(
     dataset,
     referenceDate,
@@ -415,110 +364,110 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
     );
   }
 
-    return withSeededUserContext(async (sql) => {
-      return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
-        const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
-        const stockSecurities = selectOwnedStockPriceRefreshSecurities(dataset);
-        const fundSecurities = selectOwnedFundNavRefreshSecurities(dataset);
-        const trackedFxPairs = selectTrackedEurFxPairs(dataset);
-        const requestDate = new Date().toISOString().slice(0, 10);
-        const refreshedSymbols: string[] = [];
-        const skippedSymbols: string[] = [];
-        const skippedDetails: Array<{ symbol: string; reason: string }> = [];
-        const refreshedFxPairs: string[] = [];
-        const skippedFxPairs: Array<{ symbol: string; reason: string }> = [];
-        let latestPriceDate: string | null = null;
+  return withSeededUserContext(async (sql) => {
+    return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
+      const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
+      const stockSecurities = selectOwnedStockPriceRefreshSecurities(dataset);
+      const fundSecurities = selectOwnedFundNavRefreshSecurities(dataset);
+      const trackedFxPairs = selectTrackedEurFxPairs(dataset);
+      const requestDate = new Date().toISOString().slice(0, 10);
+      const refreshedSymbols: string[] = [];
+      const skippedSymbols: string[] = [];
+      const skippedDetails: Array<{ symbol: string; reason: string }> = [];
+      const refreshedFxPairs: string[] = [];
+      const skippedFxPairs: Array<{ symbol: string; reason: string }> = [];
+      let latestPriceDate: string | null = null;
 
-        for (const baseCurrency of trackedFxPairs) {
-          const pair = `${baseCurrency}/EUR`;
-          const { fxRate, reason } = await fetchLatestFxRate(
-            baseCurrency,
-            "EUR",
-            apiKey,
-            requestDate,
-          );
-          if (!fxRate) {
-            skippedFxPairs.push({
-              symbol: pair,
-              reason: reason ?? "FX refresh failed.",
-            });
-            continue;
-          }
-
-          await upsertFxRateRow(sql, fxRate);
-          refreshedFxPairs.push(pair);
-          if (!latestPriceDate || fxRate.asOfDate > latestPriceDate) {
-            latestPriceDate = fxRate.asOfDate;
-          }
-        }
-
-        for (const security of stockSecurities) {
-          const { quote, reason } = await fetchLatestOwnedStockPrice(
-            security,
-            apiKey,
-            requestDate,
-          );
-          if (!quote) {
-            skippedSymbols.push(security.displaySymbol);
-            skippedDetails.push({
-              symbol: security.displaySymbol,
-              reason: reason ?? "Quote refresh failed.",
-            });
-            continue;
-          }
-
-          await upsertSecurityPriceRow(sql, quote);
-          await updateSecurityPriceRefreshMetadata(sql, {
-            securityId: security.id,
-            quoteCurrency: quote.currency,
-            quoteTimestamp: quote.quoteTimestamp,
+      for (const baseCurrency of trackedFxPairs) {
+        const pair = `${baseCurrency}/EUR`;
+        const { fxRate, reason } = await fetchLatestFxRate(
+          baseCurrency,
+          "EUR",
+          apiKey,
+          requestDate,
+        );
+        if (!fxRate) {
+          skippedFxPairs.push({
+            symbol: pair,
+            reason: reason ?? "FX refresh failed.",
           });
-          refreshedSymbols.push(security.displaySymbol);
-          if (!latestPriceDate || quote.priceDate > latestPriceDate) {
-            latestPriceDate = quote.priceDate;
-          }
+          continue;
         }
 
-        for (const security of fundSecurities) {
-          const { quote, reason } = await fetchLatestOwnedFundNav(
-            security,
-            requestDate,
-          );
-          if (!quote) {
-            skippedSymbols.push(security.displaySymbol);
-            skippedDetails.push({
-              symbol: security.displaySymbol,
-              reason: reason ?? "Fund NAV refresh failed.",
-            });
-            continue;
-          }
+        await upsertFxRateRow(sql, fxRate);
+        refreshedFxPairs.push(pair);
+        if (!latestPriceDate || fxRate.asOfDate > latestPriceDate) {
+          latestPriceDate = fxRate.asOfDate;
+        }
+      }
 
-          await upsertSecurityPriceRow(sql, quote);
-          await updateSecurityPriceRefreshMetadata(sql, {
-            securityId: security.id,
-            quoteCurrency: quote.currency,
-            quoteTimestamp: quote.quoteTimestamp,
+      for (const security of stockSecurities) {
+        const { quote, reason } = await fetchLatestOwnedStockPrice(
+          security,
+          apiKey,
+          requestDate,
+        );
+        if (!quote) {
+          skippedSymbols.push(security.displaySymbol);
+          skippedDetails.push({
+            symbol: security.displaySymbol,
+            reason: reason ?? "Quote refresh failed.",
           });
-          refreshedSymbols.push(security.displaySymbol);
-          if (!latestPriceDate || quote.priceDate > latestPriceDate) {
-            latestPriceDate = quote.priceDate;
-          }
+          continue;
         }
 
-        return {
-          totalTrackedStocks: stockSecurities.length,
-          totalTrackedFunds: fundSecurities.length,
-          totalTrackedFxPairs: trackedFxPairs.length,
-          refreshedCount: refreshedSymbols.length,
-          skippedCount: skippedSymbols.length,
-          refreshedSymbols,
-          skippedSymbols,
-          skippedDetails,
-          refreshedFxPairs,
-          skippedFxPairs,
-          latestPriceDate,
-          generatedAt: new Date().toISOString(),
-        };
-      });
+        await upsertSecurityPriceRow(sql, quote);
+        await updateSecurityPriceRefreshMetadata(sql, {
+          securityId: security.id,
+          quoteCurrency: quote.currency,
+          quoteTimestamp: quote.quoteTimestamp,
+        });
+        refreshedSymbols.push(security.displaySymbol);
+        if (!latestPriceDate || quote.priceDate > latestPriceDate) {
+          latestPriceDate = quote.priceDate;
+        }
+      }
+
+      for (const security of fundSecurities) {
+        const { quote, reason } = await fetchLatestOwnedFundNav(
+          security,
+          requestDate,
+        );
+        if (!quote) {
+          skippedSymbols.push(security.displaySymbol);
+          skippedDetails.push({
+            symbol: security.displaySymbol,
+            reason: reason ?? "Fund NAV refresh failed.",
+          });
+          continue;
+        }
+
+        await upsertSecurityPriceRow(sql, quote);
+        await updateSecurityPriceRefreshMetadata(sql, {
+          securityId: security.id,
+          quoteCurrency: quote.currency,
+          quoteTimestamp: quote.quoteTimestamp,
+        });
+        refreshedSymbols.push(security.displaySymbol);
+        if (!latestPriceDate || quote.priceDate > latestPriceDate) {
+          latestPriceDate = quote.priceDate;
+        }
+      }
+
+      return {
+        totalTrackedStocks: stockSecurities.length,
+        totalTrackedFunds: fundSecurities.length,
+        totalTrackedFxPairs: trackedFxPairs.length,
+        refreshedCount: refreshedSymbols.length,
+        skippedCount: skippedSymbols.length,
+        refreshedSymbols,
+        skippedSymbols,
+        skippedDetails,
+        refreshedFxPairs,
+        skippedFxPairs,
+        latestPriceDate,
+        generatedAt: new Date().toISOString(),
+      };
     });
+  });
 }

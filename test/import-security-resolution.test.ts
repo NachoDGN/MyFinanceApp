@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildDeterministicClassification } from "../packages/classification/src/deterministic-classification.ts";
-import { buildImportedTransactions } from "../packages/domain/src/index.ts";
+import { buildImportedTransactions } from "../packages/ingestion/src/index.ts";
 import {
   createDataset,
   createInvestmentAccount,

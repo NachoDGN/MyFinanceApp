@@ -15,7 +15,7 @@ export interface MarketDataProvider {
   ): Promise<FxRate | null>;
 }
 
-function readPayloadField<T>(
+export function readPayloadField<T>(
   payload: Record<string, unknown>,
   keys: string[],
 ): T | null {
@@ -27,14 +27,20 @@ function readPayloadField<T>(
   return null;
 }
 
-function readPayloadString(payload: Record<string, unknown>, keys: string[]) {
+export function readPayloadString(
+  payload: Record<string, unknown>,
+  keys: string[],
+) {
   const value = readPayloadField<unknown>(payload, keys);
   if (typeof value === "string" && value.trim() !== "") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return null;
 }
 
-function readPayloadBoolean(payload: Record<string, unknown>, keys: string[]) {
+export function readPayloadBoolean(
+  payload: Record<string, unknown>,
+  keys: string[],
+) {
   const value = readPayloadField<unknown>(payload, keys);
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -44,7 +50,7 @@ function readPayloadBoolean(payload: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
-function readPayloadTimestamp(
+export function readPayloadTimestamp(
   payload: Record<string, unknown>,
   keys: string[],
 ) {
@@ -52,7 +58,27 @@ function readPayloadTimestamp(
   if (typeof value === "number" && Number.isFinite(value)) {
     return new Date(value * 1000).toISOString();
   }
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) {
+      return new Date(Number(trimmed) * 1000).toISOString();
+    }
+
+    const normalized = trimmed.includes("T")
+      ? trimmed
+      : trimmed.replace(" ", "T");
+    const parsed = new Date(normalized);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
   return null;
+}
+
+export function isWeekendIso(value: string) {
+  const date = new Date(`${value}T00:00:00Z`);
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
 }
 
 function isWeekend(date: Date) {

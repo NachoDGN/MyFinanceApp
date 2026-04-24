@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { validateSpreadsheetFile } from "../packages/domain/src/repository.ts";
+import { validateSpreadsheetFile } from "../packages/ingestion/src/index.ts";
 
 const execFileAsync = promisify(execFile);
 

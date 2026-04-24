@@ -31,110 +31,20 @@ import type {
 } from "./types";
 import type { FinanceRepository } from "./repository";
 import {
-  buildCryptoBalanceRows,
-  buildLiveHoldingRows,
   filterTransactionsByPeriod,
   filterTransactionsByReferenceDate,
   filterTransactionsByScope,
   getLatestAccountBalances,
-  getLatestInvestmentCashBalances,
-  getScopeLatestDate,
-  resolveScopeQuoteFreshness,
   resolvePeriodSelection,
-  resolveScopeEntityIds,
-  summarizeQuoteFreshness,
   todayIso,
 } from "./finance";
+import { buildHoldingsSnapshot } from "./holdings";
+import { buildQualitySummary } from "./quality";
 import { isRuleParserConfigured } from "./rule-drafts";
-import {
-  isTransactionPendingEnrichment,
-  needsTransactionManualReview,
-} from "./transaction-review";
-import { resolveAccountStaleThresholdDays } from "./workspace-settings";
 
 function toIsoTimestamp(value: string | Date | null | undefined) {
   if (!value) return "";
   return value instanceof Date ? value.toISOString() : value;
-}
-
-function ageInDays(
-  referenceDate: string,
-  timestamp: string | null | undefined,
-) {
-  if (!timestamp) return null;
-  return Math.floor(
-    (Date.parse(`${referenceDate}T12:00:00Z`) - new Date(timestamp).getTime()) /
-      86400000,
-  );
-}
-
-function buildQualitySummary(
-  dataset: Awaited<ReturnType<FinanceRepository["getDataset"]>>,
-  scope: Scope,
-  options: {
-    referenceDate?: string;
-    period?: TransactionListResponse["period"];
-  } = {},
-) {
-  const referenceDate = options.referenceDate ?? todayIso();
-  const period =
-    options.period ?? resolvePeriodSelection({ preset: "mtd", referenceDate });
-  const scopedTransactions = filterTransactionsByReferenceDate(
-    filterTransactionsByScope(dataset, scope),
-    referenceDate,
-  );
-  const scopedAccounts =
-    scope.kind === "consolidated"
-      ? dataset.accounts
-      : scope.kind === "entity" && scope.entityId
-        ? dataset.accounts.filter(
-            (account) => account.entityId === scope.entityId,
-          )
-        : scope.kind === "account" && scope.accountId
-          ? dataset.accounts.filter((account) => account.id === scope.accountId)
-          : dataset.accounts;
-  const staleAccounts = scopedAccounts
-    .map((account) => {
-      const threshold = resolveAccountStaleThresholdDays(
-        dataset.profile,
-        account.assetDomain,
-        account.staleAfterDays,
-      );
-      const ageDays =
-        ageInDays(referenceDate, account.lastImportedAt) ?? threshold + 1;
-      return { account, ageDays, threshold };
-    })
-    .filter((row) => row.ageDays > row.threshold)
-    .map((row) => ({
-      accountId: row.account.id,
-      accountName: row.account.displayName,
-      staleSinceDays: row.ageDays,
-    }));
-
-  return {
-    pendingEnrichmentCount: scopedTransactions.filter((row) =>
-      isTransactionPendingEnrichment(row),
-    ).length,
-    pendingReviewCount: scopedTransactions.filter((row) =>
-      needsTransactionManualReview(row),
-    ).length,
-    unclassifiedAmountMtdEur: filterTransactionsByPeriod(
-      scopedTransactions,
-      period,
-    )
-      .filter((row) => row.categoryCode?.startsWith("uncategorized"))
-      .reduce((sum, row) => sum + Math.abs(Number(row.amountBaseEur)), 0)
-      .toFixed(2),
-    staleAccountsCount: staleAccounts.length,
-    staleAccounts,
-    latestImportDateByAccount: scopedAccounts.map((account) => ({
-      accountId: account.id,
-      accountName: account.displayName,
-      latestImportDate: account.lastImportedAt?.slice(0, 10) ?? null,
-    })),
-    latestDataDateByScope: getScopeLatestDate(dataset, scope, referenceDate),
-    priceFreshness: resolveScopeQuoteFreshness(dataset, scope, referenceDate),
-  } as const;
 }
 
 export class FinanceDomainService {
@@ -309,43 +219,7 @@ export class FinanceDomainService {
     referenceDate = todayIso(),
   ): Promise<HoldingsResponse> {
     const dataset = await this.repository.getDataset();
-    const holdings = buildLiveHoldingRows(dataset, scope, referenceDate);
-    const cryptoBalances = buildCryptoBalanceRows(
-      dataset,
-      scope,
-      referenceDate,
-    );
-    const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
-    const brokerageCashEur = getLatestInvestmentCashBalances(
-      dataset,
-      referenceDate,
-    )
-      .filter((row) => {
-        const account = dataset.accounts.find(
-          (candidate) => candidate.id === row.accountId,
-        );
-        return (
-          account?.assetDomain === "investment" &&
-          entityIds.has(account.entityId) &&
-          (scope.kind !== "account" || account.id === scope.accountId)
-        );
-      })
-      .reduce((sum, row) => sum + Number(row.balanceBaseEur), 0)
-      .toFixed(2);
-    const quoteStates = [
-      ...holdings.map((row) => row.quoteFreshness),
-      ...cryptoBalances.map((row) => row.quoteFreshness),
-    ];
-
-    return {
-      schemaVersion: "v1",
-      scope,
-      holdings,
-      cryptoBalances,
-      quoteFreshness: summarizeQuoteFreshness(quoteStates),
-      brokerageCashEur,
-      generatedAt: new Date().toISOString(),
-    };
+    return buildHoldingsSnapshot(dataset, scope, referenceDate);
   }
 
   previewImport(input: Parameters<FinanceRepository["previewImport"]>[0]) {

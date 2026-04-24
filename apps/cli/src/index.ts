@@ -18,7 +18,6 @@ import {
   FinanceDomainService,
   getScopeLatestDate,
   isCanonicalFieldKey,
-  parseMyInvestorFundOrderHistorySpreadsheet,
   parseMyInvestorFundOrderHistoryText,
   reconcileFundOrderHistoryImportPlan,
   resolvePeriodSelection,
@@ -26,6 +25,7 @@ import {
   todayIso,
   type TemplateColumnMapping,
 } from "@myfinance/domain";
+import { parseMyInvestorFundOrderHistorySpreadsheet } from "@myfinance/ingestion";
 import { createMarketDataProvider } from "@myfinance/market-data";
 
 const repository = createFinanceRepository();
@@ -643,7 +643,10 @@ positionsCommand
         throw new Error(`Unknown entity slug: ${options.entity}`);
       }
 
-      const parsedRows = await readFundHistoryRows(options.file, options.account);
+      const parsedRows = await readFundHistoryRows(
+        options.file,
+        options.account,
+      );
       const plan = buildFundOrderHistoryImportPlan(
         dataset,
         options.account,

@@ -444,9 +444,8 @@ function getOpenAiTransactionFallbackModel(
 ) {
   const explicitOpenAiModel = process.env.OPENAI_TRANSACTION_MODEL?.trim();
   const fallbackModel =
-    account.assetDomain === "investment"
-      ? getInvestmentReviewModel(trigger)
-      : explicitOpenAiModel || "gpt-5.4-mini";
+    explicitOpenAiModel ||
+    (account.assetDomain === "investment" ? "gpt-5.4-mini" : "gpt-5.4-mini");
 
   if (!fallbackModel || !isModelConfigured(fallbackModel)) {
     return null;
@@ -456,7 +455,9 @@ function getOpenAiTransactionFallbackModel(
     return null;
   }
 
-  if (fallbackModel.trim().toLowerCase() === primaryModel.trim().toLowerCase()) {
+  if (
+    fallbackModel.trim().toLowerCase() === primaryModel.trim().toLowerCase()
+  ) {
     return null;
   }
 
@@ -485,6 +486,14 @@ function shouldRetryTransactionClassificationWithOpenAiFallback(
   }
 
   if (result.statusCode === 429) {
+    return true;
+  }
+
+  if (
+    result.failureKind === "empty_text" ||
+    result.failureKind === "malformed_json" ||
+    result.failureKind === "schema_validation"
+  ) {
     return true;
   }
 
@@ -527,6 +536,11 @@ async function requestLlmClassification(
   const model =
     options?.modelNameOverride?.trim() ||
     getTransactionReviewModel(account, options?.trigger);
+  const fallbackModel = getOpenAiTransactionFallbackModel(
+    account,
+    options?.trigger,
+    model,
+  );
   const providerContext = extractProviderContext(transaction);
   const providerMerchantName = readOptionalString(
     readOptionalRecord(providerContext?.merchant)?.name,
@@ -583,7 +597,7 @@ async function requestLlmClassification(
           reviewReason: match.transaction.reviewReason ?? null,
           similarityScore: match.score.toFixed(2),
         })));
-  if (!isModelConfigured(model)) {
+  if (!isModelConfigured(model) && !fallbackModel) {
     const completedAt = new Date().toISOString();
     return {
       analysisStatus: "skipped",
@@ -667,15 +681,11 @@ async function requestLlmClassification(
     reviewContext,
   } as const;
 
-  const fallbackModel = getOpenAiTransactionFallbackModel(
-    account,
-    options?.trigger,
-    model,
-  );
   const initialModel =
     fallbackModel &&
-    resolveModelProvider(model) === "gemini" &&
-    isTransactionModelQuotaExhausted(model)
+    (!isModelConfigured(model) ||
+      (resolveModelProvider(model) === "gemini" &&
+        isTransactionModelQuotaExhausted(model)))
       ? fallbackModel
       : model;
 

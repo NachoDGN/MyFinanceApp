@@ -3,15 +3,17 @@ import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 
 import {
-  buildImportedTransactions,
-  normalizeImportExecutionInput,
-  runDeterministicImport,
-  sanitizeImportResult,
   type DomainDataset,
   type ImportCommitResult,
   type ImportPreviewResult,
   type Transaction,
 } from "@myfinance/domain";
+import {
+  buildImportedTransactions,
+  normalizeImportExecutionInput,
+  runDeterministicImport,
+  sanitizeImportResult,
+} from "@myfinance/ingestion";
 
 import { queueJob, supportsJobType } from "./job-state";
 import { serializeJson } from "./sql-json";
