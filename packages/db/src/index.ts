@@ -306,6 +306,18 @@ function normalizeOptionalTextValue(value: string | null | undefined) {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
+function assertNoDeleteBlockers(
+  blockerRow: Record<string, unknown>,
+  messagePrefix: string,
+) {
+  const blockers = Object.entries(blockerRow)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`);
+  if (blockers.length > 0) {
+    throw new Error(`${messagePrefix} ${blockers.join(", ")}.`);
+  }
+}
+
 function buildManualReviewContext(input: {
   reviewContext: string | null;
   selectedCategory: { code: string; displayName: string } | null;
@@ -854,21 +866,11 @@ class SqlFinanceRepository implements FinanceRepository {
           >,
           afterJson as unknown as Record<string, unknown>,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: "Updated workspace profile defaults.",
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(
+          sql,
+          auditEvent,
+          "Updated workspace profile defaults.",
+        );
       }
 
       return {
@@ -952,21 +954,11 @@ class SqlFinanceRepository implements FinanceRepository {
           null,
           afterJson,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: `Created entity ${input.entity.displayName}.`,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(
+          sql,
+          auditEvent,
+          `Created entity ${input.entity.displayName}.`,
+        );
       }
 
       return {
@@ -1045,21 +1037,11 @@ class SqlFinanceRepository implements FinanceRepository {
           ) as unknown as Record<string, unknown>,
           afterJson as unknown as Record<string, unknown>,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: `Updated entity ${afterJson.displayName}.`,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(
+          sql,
+          auditEvent,
+          `Updated entity ${afterJson.displayName}.`,
+        );
         await markTransactionSearchRowsStale(sql, {
           userId: this.userId,
           entityIds: [input.entityId],
@@ -1138,17 +1120,10 @@ class SqlFinanceRepository implements FinanceRepository {
           ) as portfolio_snapshots
         from target
       `;
-      const blockerRow = blockers[0] as Record<string, number>;
-      const activeBlockers = Object.entries(blockerRow).filter(
-        ([, count]) => Number(count) > 0,
+      assertNoDeleteBlockers(
+        blockers[0] as Record<string, unknown>,
+        "Entity cannot be removed because it is still referenced by",
       );
-      if (activeBlockers.length > 0) {
-        throw new Error(
-          `Entity cannot be removed because it is still referenced by ${activeBlockers
-            .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`)
-            .join(", ")}.`,
-        );
-      }
 
       if (input.apply) {
         await sql`
@@ -1168,21 +1143,11 @@ class SqlFinanceRepository implements FinanceRepository {
           ) as unknown as Record<string, unknown>,
           null,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: `Removed entity ${beforeRow.display_name}.`,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(
+          sql,
+          auditEvent,
+          `Removed entity ${beforeRow.display_name}.`,
+        );
       }
 
       return {
@@ -1193,7 +1158,7 @@ class SqlFinanceRepository implements FinanceRepository {
   }
 
   async createAccount(input: CreateAccountInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const entityRows = await sql`
         select * from public.entities
         where id = ${input.account.entityId}
@@ -1290,31 +1255,15 @@ class SqlFinanceRepository implements FinanceRepository {
           null,
           afterJson,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: auditEvent.notes,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(sql, auditEvent);
       }
 
       return { applied: input.apply, accountId };
     });
-
-    return result;
   }
 
   async updateAccount(input: UpdateAccountInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const beforeRows = await sql`
         select *
         from public.accounts
@@ -1459,21 +1408,11 @@ class SqlFinanceRepository implements FinanceRepository {
           beforeAccount as unknown as Record<string, unknown>,
           afterJson as unknown as Record<string, unknown>,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: `Updated account ${afterJson.displayName}.`,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(
+          sql,
+          auditEvent,
+          `Updated account ${afterJson.displayName}.`,
+        );
         await markTransactionSearchRowsStale(sql, {
           userId: this.userId,
           accountIds: [input.accountId],
@@ -1487,12 +1426,10 @@ class SqlFinanceRepository implements FinanceRepository {
 
       return { applied: input.apply, accountId: input.accountId };
     });
-
-    return result;
   }
 
   async deleteAccount(input: DeleteAccountInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const before = await sql`
         select * from public.accounts
         where id = ${input.accountId}
@@ -1523,17 +1460,10 @@ class SqlFinanceRepository implements FinanceRepository {
           (select count(*)::int from public.daily_portfolio_snapshots where account_id = target.account_id) as portfolio_snapshots
         from target
       `;
-      const blockerRow = blockers[0] as Record<string, number>;
-      const activeBlockers = Object.entries(blockerRow).filter(
-        ([, count]) => Number(count) > 0,
+      assertNoDeleteBlockers(
+        blockers[0] as Record<string, unknown>,
+        "Account cannot be removed because it already has dependent data:",
       );
-      if (activeBlockers.length > 0) {
-        throw new Error(
-          `Account cannot be removed because it already has dependent data: ${activeBlockers
-            .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`)
-            .join(", ")}.`,
-        );
-      }
 
       const auditEvent = createAuditEvent(
         input.sourceChannel,
@@ -1551,33 +1481,17 @@ class SqlFinanceRepository implements FinanceRepository {
           where id = ${input.accountId}
             and user_id = ${this.userId}
         `;
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: auditEvent.notes,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(sql, auditEvent);
       }
 
       return { applied: input.apply, accountId: input.accountId };
     });
-
-    return result;
   }
 
   async resetWorkspace(
     input: ResetWorkspaceInput,
   ): Promise<ResetWorkspaceResult> {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const [
         portfolioSnapshots,
         investmentPositions,
@@ -1696,22 +1610,11 @@ class SqlFinanceRepository implements FinanceRepository {
           null,
           deleted,
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes:
-              "Cleared seeded demo finance data for a fresh local workspace.",
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(
+          sql,
+          auditEvent,
+          "Cleared seeded demo finance data for a fresh local workspace.",
+        );
       }
 
       return {
@@ -1719,8 +1622,6 @@ class SqlFinanceRepository implements FinanceRepository {
         deleted,
       };
     });
-
-    return result;
   }
 
   async updateTransaction(input: UpdateTransactionInput): Promise<{
@@ -1729,7 +1630,7 @@ class SqlFinanceRepository implements FinanceRepository {
     auditEvent: AuditEvent;
     generatedRuleId?: string;
   }> {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const beforeRow = await selectTransactionRowById(
         sql,
         this.userId,
@@ -1847,21 +1748,7 @@ class SqlFinanceRepository implements FinanceRepository {
       let generatedRuleId: string | undefined;
 
       if (input.apply) {
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: auditEvent.notes,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(sql, auditEvent);
 
         const beforeTransaction = mapFromSql<Transaction>(beforeRow);
         const afterTransaction = mapFromSql<Transaction>(after[0]);
@@ -1968,12 +1855,10 @@ class SqlFinanceRepository implements FinanceRepository {
         generatedRuleId,
       };
     });
-
-    return result;
   }
 
   async createRule(input: CreateRuleInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const ruleId = randomUUID();
       const dataset = await loadDatasetForUser(sql, this.userId);
       assertRuleOutputsAllowedForScope(
@@ -2017,29 +1902,14 @@ class SqlFinanceRepository implements FinanceRepository {
             outputsJson: input.outputsJson,
           },
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: auditEvent.notes,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(sql, auditEvent);
       }
       return { applied: input.apply, ruleId };
     });
-    return result;
   }
 
   async createTemplate(input: CreateTemplateInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const templateId = randomUUID();
       if (input.apply) {
         await sql`
@@ -2092,11 +1962,10 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, templateId };
     });
-    return result;
   }
 
   async deleteTemplate(input: DeleteTemplateInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const before = await sql`
         select * from public.import_templates
         where id = ${input.templateId}
@@ -2127,17 +1996,10 @@ class SqlFinanceRepository implements FinanceRepository {
           ) as import_batches
         from target
       `;
-      const blockerRow = blockers[0] as Record<string, number>;
-      const activeBlockers = Object.entries(blockerRow).filter(
-        ([, count]) => Number(count) > 0,
+      assertNoDeleteBlockers(
+        blockers[0] as Record<string, unknown>,
+        "Template cannot be removed because it already has dependent data:",
       );
-      if (activeBlockers.length > 0) {
-        throw new Error(
-          `Template cannot be removed because it already has dependent data: ${activeBlockers
-            .map(([key, count]) => `${key.replace(/_/g, " ")} (${count})`)
-            .join(", ")}.`,
-        );
-      }
 
       const auditEvent = createAuditEvent(
         input.sourceChannel,
@@ -2155,27 +2017,11 @@ class SqlFinanceRepository implements FinanceRepository {
           where id = ${input.templateId}
             and user_id = ${this.userId}
         `;
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: auditEvent.notes,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(sql, auditEvent);
       }
 
       return { applied: input.apply, templateId: input.templateId };
     });
-
-    return result;
   }
 
   async createCategory(input: CreateCategoryInput) {
@@ -2281,7 +2127,7 @@ class SqlFinanceRepository implements FinanceRepository {
   }
 
   async addOpeningPosition(input: AddOpeningPositionInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const adjustmentId = randomUUID();
       if (input.apply) {
         await sql`
@@ -2305,11 +2151,10 @@ class SqlFinanceRepository implements FinanceRepository {
       }
       return { applied: input.apply, adjustmentId };
     });
-    return result;
   }
 
   async deleteHoldingAdjustment(input: DeleteHoldingAdjustmentInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const beforeRow = await selectHoldingAdjustmentRowById(
         sql,
         this.userId,
@@ -2345,12 +2190,10 @@ class SqlFinanceRepository implements FinanceRepository {
 
       return { applied: input.apply, adjustmentId: input.adjustmentId };
     });
-
-    return result;
   }
 
   async createManualInvestment(input: CreateManualInvestmentInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const accountRows = await sql`
         select *
         from public.accounts
@@ -2430,12 +2273,10 @@ class SqlFinanceRepository implements FinanceRepository {
 
       return { applied: input.apply, manualInvestmentId, valuationId };
     });
-
-    return result;
   }
 
   async updateManualInvestment(input: UpdateManualInvestmentInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const beforeRow = await selectManualInvestmentRowById(
         sql,
         this.userId,
@@ -2515,14 +2356,12 @@ class SqlFinanceRepository implements FinanceRepository {
         manualInvestmentId: input.manualInvestmentId,
       };
     });
-
-    return result;
   }
 
   async recordManualInvestmentValuation(
     input: RecordManualInvestmentValuationInput,
   ) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const manualInvestment = await selectManualInvestmentRowById(
         sql,
         this.userId,
@@ -2589,12 +2428,10 @@ class SqlFinanceRepository implements FinanceRepository {
         valuationId,
       };
     });
-
-    return result;
   }
 
   async deleteManualInvestment(input: DeleteManualInvestmentInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const beforeRow = await selectManualInvestmentRowById(
         sql,
         this.userId,
@@ -2642,12 +2479,10 @@ class SqlFinanceRepository implements FinanceRepository {
         manualInvestmentId: input.manualInvestmentId,
       };
     });
-
-    return result;
   }
 
   async queueRuleDraft(input: QueueRuleDraftInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const jobId = randomUUID();
       if (input.apply) {
         await sql`
@@ -2676,29 +2511,14 @@ class SqlFinanceRepository implements FinanceRepository {
           null,
           { requestText: input.requestText },
         );
-        await sql`
-          insert into public.audit_events ${sql({
-            actor_type: auditEvent.actorType,
-            actor_id: auditEvent.actorId,
-            actor_name: auditEvent.actorName,
-            source_channel: auditEvent.sourceChannel,
-            command_name: auditEvent.commandName,
-            object_type: auditEvent.objectType,
-            object_id: auditEvent.objectId,
-            before_json: auditEvent.beforeJson,
-            after_json: auditEvent.afterJson,
-            created_at: auditEvent.createdAt,
-            notes: auditEvent.notes,
-          } as Record<string, unknown>)}
-        `;
+        await insertAuditEventRecord(sql, auditEvent);
       }
       return { applied: input.apply, jobId };
     });
-    return result;
   }
 
   async applyRuleDraft(input: ApplyRuleDraftInput) {
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const rows = await sql`
         select * from public.jobs
         where id = ${input.jobId}
@@ -2751,7 +2571,6 @@ class SqlFinanceRepository implements FinanceRepository {
 
       return { applied: input.apply, ruleId: createResult.ruleId };
     });
-    return result;
   }
 
   async previewImport(
@@ -2783,7 +2602,7 @@ class SqlFinanceRepository implements FinanceRepository {
 
   async commitImport(input: ImportExecutionInput): Promise<ImportCommitResult> {
     const normalizedInput = normalizeImportExecutionInput(input);
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const dataset = await loadDatasetForUser(sql, this.userId);
       const committed = await commitPreparedImportBatch(sql, {
         userId: this.userId,
@@ -2793,7 +2612,6 @@ class SqlFinanceRepository implements FinanceRepository {
       });
       return committed.preview;
     });
-    return result;
   }
 
   async commitCreditCardStatementImport(
@@ -2805,7 +2623,7 @@ class SqlFinanceRepository implements FinanceRepository {
       );
     }
 
-    const result = await withSeededUserContext(async (sql) => {
+    return withSeededUserContext(async (sql) => {
       const dataset = await loadDatasetForUser(sql, this.userId);
       const settlementTransaction = dataset.transactions.find(
         (candidate) => candidate.id === input.settlementTransactionId,
@@ -3118,17 +2936,14 @@ class SqlFinanceRepository implements FinanceRepository {
         statementNetAmountBaseEur,
       };
     });
-
-    return result;
   }
 
   async runPendingJobs(apply: boolean): Promise<JobRunResult> {
-    const result = await runFinanceJobQueue({
+    return runFinanceJobQueue({
       apply,
       userId: this.userId,
       reanalyzeTransactionReview,
     });
-    return result;
   }
 }
 

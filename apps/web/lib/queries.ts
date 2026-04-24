@@ -7,14 +7,12 @@ import {
 } from "@myfinance/analytics";
 import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
 import {
-  createFinanceRepository,
   getRevolutRuntimeStatus,
   listLearnedReviewExamples,
   listPromptProfiles,
 } from "@myfinance/db";
 import {
   type Entity,
-  FinanceDomainService,
   getScopeLatestDate,
   needsTransactionManualReview,
   parseWorkspaceSettings,
@@ -28,13 +26,11 @@ import {
   formatPercent,
   formatQuantity,
 } from "./formatters";
+import { domain as domainService, repository } from "./action-service";
 
 export type RawSearchParams =
   | Promise<Record<string, string | string[] | undefined>>
   | Record<string, string | string[] | undefined>;
-
-const repository = createFinanceRepository();
-const domainService = new FinanceDomainService(repository);
 
 function normalizeParam(
   params: Record<string, string | string[] | undefined>,
@@ -133,8 +129,7 @@ export async function resolveAppState(searchParams: RawSearchParams) {
         : { kind: "entity", entityId: requestedEntityId };
   const today = todayIsoInTimezone(dataset.profile.timezone);
   const latestReferenceDate = getScopeLatestDate(dataset, scope, today);
-  const referenceDate =
-    normalizeParam(params, "asOf") ?? latestReferenceDate;
+  const referenceDate = normalizeParam(params, "asOf") ?? latestReferenceDate;
   const period = resolvePeriodSelection({
     preset: periodParam,
     start: normalizeParam(params, "start"),

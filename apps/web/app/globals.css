@@ -2530,10 +2530,9 @@ textarea {
 .income-breakdown-head,
 .income-breakdown-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) minmax(
-      120px,
-      1fr
-    ) minmax(90px, 0.9fr);
+  grid-template-columns:
+    minmax(0, 2fr) minmax(0, 3fr) minmax(120px, 1fr)
+    minmax(90px, 0.9fr);
   gap: 16px;
   align-items: center;
 }
@@ -2672,13 +2671,8 @@ textarea {
   .prompt-profile-grid,
   .prompt-workbench-layout,
   .prompt-content-grid,
-  .spending-layout,
   .import-review-modal-summary {
     grid-template-columns: 1fr;
-  }
-
-  .spending-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .statement-detail-metrics {
@@ -2727,10 +2721,9 @@ textarea {
 
   .income-breakdown-head,
   .income-breakdown-row {
-    grid-template-columns: minmax(0, 1.6fr) minmax(0, 2fr) minmax(
-        110px,
-        1fr
-      ) 80px;
+    grid-template-columns:
+      minmax(0, 1.6fr) minmax(0, 2fr) minmax(110px, 1fr)
+      80px;
   }
 }
 
@@ -2788,16 +2781,6 @@ textarea {
     text-align: left;
   }
 
-  .spending-hero {
-    padding: 24px;
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .spending-hero-meta {
-    justify-items: start;
-  }
-
   .investment-price-refresh {
     width: 100%;
     align-items: flex-start;
@@ -2837,12 +2820,6 @@ textarea {
   .table-card,
   .banner-card,
   .details-section,
-  .spending-coverage-card,
-  .spending-breakdown-card,
-  .spending-trend-card,
-  .spending-stat-card,
-  .spending-merchants-card,
-  .spending-transactions-card,
   .statement-resolution-card {
     padding: 24px;
   }
@@ -2880,29 +2857,8 @@ textarea {
     padding-bottom: 12px;
   }
 
-  .spending-stat-grid {
-    grid-template-columns: 1fr;
-  }
-
   .statement-detail-metrics {
     grid-template-columns: 1fr;
-  }
-
-  .spending-primary-card {
-    padding: 24px;
-    min-height: 240px;
-  }
-
-  .spending-primary-value {
-    margin-top: 56px;
-  }
-
-  .spending-trend-chart {
-    overflow-x: auto;
-  }
-
-  .spending-trend-chart svg {
-    min-width: 620px;
   }
 
   .spending-merchant-row {

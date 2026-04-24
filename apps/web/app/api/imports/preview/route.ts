@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService } from "@myfinance/domain";
-
-const domain = new FinanceDomainService(createFinanceRepository());
+import { domain } from "../../../../lib/action-service";
 
 const importSchema = z.object({
   accountId: z.string(),

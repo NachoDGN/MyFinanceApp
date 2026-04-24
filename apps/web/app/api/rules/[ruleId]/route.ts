@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createFinanceRepository } from "@myfinance/db";
-
-const repository = createFinanceRepository();
+import { repository } from "../../../../lib/action-service";
 
 export async function GET(
   _request: NextRequest,

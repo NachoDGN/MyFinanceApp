@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createFinanceRepository } from "@myfinance/db";
 import { createMarketDataProvider } from "@myfinance/market-data";
-
-const repository = createFinanceRepository();
+import { repository } from "../../../../lib/action-service";
 
 export async function GET(request: NextRequest) {
   const dataset = await repository.getDataset();

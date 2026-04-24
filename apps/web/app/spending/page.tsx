@@ -1,5 +1,12 @@
 import { AppShell } from "../../components/app-shell";
 import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
+import {
+  FlowBreakdownCard,
+  FlowKpiGrid,
+  FlowPageHeader,
+  FlowSummaryCard,
+  FlowTrendChart,
+} from "../../components/flow-overview";
 import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
@@ -127,6 +134,15 @@ export default async function SpendingPage({
         : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
       : null;
   const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
+  const trendRows = chartRows.map((row) => ({
+    month: row.month,
+    segments: [
+      {
+        className: "income-bar-segment-operating",
+        height: (row.spendingDisplay / chartMax) * 100,
+      },
+    ],
+  }));
   const chartAxisValues = [1, 0.66, 0.33, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
@@ -179,21 +195,21 @@ export default async function SpendingPage({
       state={model.navigationState}
     >
       <div className="dashboard-grid income-editorial-shell">
-        <div className="income-editorial-watermark spending-editorial-watermark">
-          SPENDING
-        </div>
-
-        <div className="income-page-header span-12">
-          <div>
-            <h1 className="page-title">Spending Overview</h1>
-            <p className="page-subtitle">
+        <FlowPageHeader
+          watermark="SPENDING"
+          watermarkClassName="spending-editorial-watermark"
+          title="Spending Overview"
+          subtitle={
+            <>
               Primary spend KPIs exclude internal transfers and defer
               credit-card settlement liquidations until the matching card
               statement ledger is imported, so the dashboard reflects real
               merchant outflows instead of duplicate settlement payments.{" "}
               {scopeDescription}
-            </p>
-            {model.excludedCreditCardSettlementCount > 0 ? (
+            </>
+          }
+          notice={
+            model.excludedCreditCardSettlementCount > 0 ? (
               <div className="status-note">
                 Excluded {model.excludedCreditCardSettlementCount} credit-card
                 settlement payment
@@ -209,193 +225,108 @@ export default async function SpendingPage({
                 until the matching statement is uploaded against the settlement
                 row.
               </div>
-            ) : null}
-          </div>
-        </div>
+            ) : null
+          }
+        />
 
-        <div className="income-kpi-grid span-12">
-          <article className="income-kpi-card income-kpi-card-accent">
-            <div className="income-kpi-title">
-              <span>
-                {model.period.preset === "ytd"
+        <FlowKpiGrid
+          items={[
+            {
+              accent: true,
+              title:
+                model.period.preset === "ytd"
                   ? "Current-Year Spend"
-                  : "Current-Period Spend"}
-              </span>
-              <span className="income-kpi-icon">i</span>
-            </div>
-            <div className="income-kpi-value">
-              {formatCurrency(model.spendMetric?.valueDisplay, model.currency)}
-            </div>
-            <div className="income-kpi-badge accent">
-              {formatDeltaBadge(model.spendMetric?.deltaPercent)} vs prior
-            </div>
-          </article>
-
-          <article className="income-kpi-card">
-            <div className="income-kpi-title">
-              <span>Trailing 3-Month Avg</span>
-            </div>
-            <div className="income-kpi-value">
-              {formatBaseEurAmountForDisplay(
+                  : "Current-Period Spend",
+              icon: <span className="income-kpi-icon">i</span>,
+              value: formatCurrency(
+                model.spendMetric?.valueDisplay,
+                model.currency,
+              ),
+              badge: `${formatDeltaBadge(model.spendMetric?.deltaPercent)} vs prior`,
+              badgeTone: "accent",
+            },
+            {
+              title: "Trailing 3-Month Avg",
+              value: formatBaseEurAmountForDisplay(
                 model.dataset,
                 model.trailingThreeMonthAverage,
                 model.currency,
                 model.referenceDate,
-              )}
-            </div>
-            <div className="income-kpi-badge neutral">Average baseline</div>
-          </article>
-
-          <article className="income-kpi-card">
-            <div className="income-kpi-title">
-              <span>Top Category Concentration</span>
-            </div>
-            <div className="income-kpi-value">
-              {model.topCategory ? formatPercentLabel(topCategoryShare) : "N/A"}
-            </div>
-            <div className="income-kpi-badge neutral">
-              {model.topCategory?.label ?? "No categorized spend"}
-            </div>
-          </article>
-
-          <article className="income-kpi-card income-kpi-card-accent">
-            <div className="income-kpi-title">
-              <span>Coverage / Completeness</span>
-            </div>
-            <div className="income-kpi-value">
-              {Number.isFinite(coveragePercent)
+              ),
+              badge: "Average baseline",
+            },
+            {
+              title: "Top Category Concentration",
+              value: model.topCategory
+                ? formatPercentLabel(topCategoryShare)
+                : "N/A",
+              badge: model.topCategory?.label ?? "No categorized spend",
+            },
+            {
+              accent: true,
+              title: "Coverage / Completeness",
+              value: Number.isFinite(coveragePercent)
                 ? `${coveragePercent.toFixed(0)}%`
-                : "N/A"}
-            </div>
-            <div
-              className={`income-kpi-badge ${
-                coveragePercent >= 100 ? "accent" : "neutral"
-              }`}
-            >
-              {completenessLabel}
-            </div>
-          </article>
-        </div>
+                : "N/A",
+              badge: completenessLabel,
+              badgeTone: coveragePercent >= 100 ? "accent" : "neutral",
+            },
+          ]}
+        />
 
-        <section className="income-chart-card span-12">
-          <div className="income-chart-header">
-            <div>
-              <h2 className="income-chart-title">Monthly Spend Trend</h2>
-            </div>
-            <div className="income-kpi-badge neutral">{chartRangeLabel}</div>
-          </div>
-          {fallbackFxRangeLabel ? (
-            <div className="status-note" style={{ marginTop: 16 }}>
-              Historical {model.currency} conversion was unavailable for{" "}
-              {fallbackFxRangeLabel}, so the latest available FX up to{" "}
-              {model.referenceDate} is used to keep the full trend visible.
-            </div>
-          ) : null}
-
-          <div className="income-chart-body">
-            <div className="income-y-axis">
-              {chartAxisValues.map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-            <div className="income-grid-lines" aria-hidden="true">
-              {chartAxisValues.map((label) => (
-                <div className="income-grid-line" key={label} />
-              ))}
-            </div>
-            <div className="income-chart-bars">
-              {chartRows.map((row, index) => {
-                const height = Math.max(
-                  0,
-                  (row.spendingDisplay / chartMax) * 100,
-                );
-
-                return (
-                  <div className="income-bar-group" key={row.month}>
-                    <div
-                      className="income-bar-segment income-bar-segment-operating"
-                      style={{ height: `${height}%` }}
-                    />
-                    <div
-                      className={`income-bar-label ${
-                        index === chartRows.length - 1 ? "active" : ""
-                      }`}
-                    >
-                      {formatMonthLabel(row.month)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </section>
+        <FlowTrendChart
+          title="Monthly Spend Trend"
+          rangeLabel={chartRangeLabel}
+          fallbackFxRangeLabel={fallbackFxRangeLabel}
+          currency={model.currency}
+          referenceDate={model.referenceDate}
+          axisLabels={chartAxisValues}
+          rows={trendRows}
+        />
 
         <section className="income-bottom-grid span-12">
-          <article className="income-breakdown-card">
-            <div className="income-chart-header">
-              <h2 className="income-chart-title">
-                Spending Category Breakdown
-              </h2>
-              <div className="income-kpi-badge neutral">
-                {getPeriodLabel(model.period)}
+          <FlowBreakdownCard
+            title="Spending Category Breakdown"
+            periodLabel={getPeriodLabel(model.period)}
+            description="Resolved spending categories for the selected period, ordered by current-period share."
+            headers={["Category", "Distribution", "Volume", "Share"]}
+          >
+            {model.summary.spendingByCategory.length === 0 ? (
+              <div className="table-empty-state">
+                No resolved spending categories are available for this period.
               </div>
-            </div>
-            <div className="muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
-              Resolved spending categories for the selected period, ordered by
-              current-period share.
-            </div>
+            ) : (
+              model.summary.spendingByCategory.slice(0, 6).map((row) => {
+                const share =
+                  spendTotal > 0
+                    ? (Number(row.amountEur) / spendTotal) * 100
+                    : 0;
 
-            <div className="income-breakdown-table">
-              <div className="income-breakdown-head">
-                <div>Category</div>
-                <div>Distribution</div>
-                <div className="amount">Volume</div>
-                <div className="amount">Share</div>
-              </div>
-              {model.summary.spendingByCategory.length === 0 ? (
-                <div className="table-empty-state">
-                  No resolved spending categories are available for this period.
-                </div>
-              ) : (
-                model.summary.spendingByCategory.slice(0, 6).map((row) => {
-                  const share =
-                    spendTotal > 0
-                      ? (Number(row.amountEur) / spendTotal) * 100
-                      : 0;
-
-                  return (
-                    <div
-                      className="income-breakdown-row"
-                      key={row.categoryCode}
-                    >
-                      <div className="source-name">{row.label}</div>
-                      <div className="source-progress-track">
-                        <div
-                          className="source-progress-fill"
-                          style={{ width: `${Math.max(share, 0)}%` }}
-                        />
-                      </div>
-                      <div className="amount">
-                        {formatBaseEurAmountForDisplay(
-                          model.dataset,
-                          row.amountEur,
-                          model.currency,
-                          model.referenceDate,
-                        )}
-                      </div>
-                      <div className="amount">{formatPercentLabel(share)}</div>
+                return (
+                  <div className="income-breakdown-row" key={row.categoryCode}>
+                    <div className="source-name">{row.label}</div>
+                    <div className="source-progress-track">
+                      <div
+                        className="source-progress-fill"
+                        style={{ width: `${Math.max(share, 0)}%` }}
+                      />
                     </div>
-                  );
-                })
-              )}
-            </div>
-          </article>
+                    <div className="amount">
+                      {formatBaseEurAmountForDisplay(
+                        model.dataset,
+                        row.amountEur,
+                        model.currency,
+                        model.referenceDate,
+                      )}
+                    </div>
+                    <div className="amount">{formatPercentLabel(share)}</div>
+                  </div>
+                );
+              })
+            )}
+          </FlowBreakdownCard>
 
-          <article className="income-summary-card">
-            <div className="income-chart-header">
-              <h2 className="income-chart-title">Period Summary</h2>
-            </div>
-
+          <FlowSummaryCard>
             <div className="income-summary-stat">
               <div className="stat-label">Top Category</div>
               <div className="spending-summary-value">
@@ -446,7 +377,7 @@ export default async function SpendingPage({
                   : "No current-period spend available."}
               </div>
             </div>
-          </article>
+          </FlowSummaryCard>
         </section>
 
         <section className="income-chart-card spending-income-full-width">

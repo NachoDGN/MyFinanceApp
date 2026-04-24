@@ -13,36 +13,26 @@ const financeReadPaths = [
   "/transactions",
 ] as const;
 
-export function revalidateFinanceReadPaths() {
-  for (const path of financeReadPaths) {
+function revalidatePaths(paths: readonly string[]) {
+  for (const path of paths) {
     revalidatePath(path);
   }
 }
 
-export function revalidateWorkspacePaths() {
-  revalidateFinanceReadPaths();
-  revalidatePath("/imports");
-  revalidatePath("/rules");
-}
+export const revalidateFinanceReadPaths = () =>
+  revalidatePaths(financeReadPaths);
 
-export function revalidateImportPaths() {
-  revalidateFinanceReadPaths();
-  revalidatePath("/imports");
-}
+export const revalidateWorkspacePaths = () =>
+  revalidatePaths([...financeReadPaths, "/imports", "/rules"]);
 
-export function revalidateRulesPaths() {
-  revalidatePath("/rules");
-}
+export const revalidateImportPaths = () =>
+  revalidatePaths([...financeReadPaths, "/imports"]);
 
-export function revalidateAccountsPath() {
-  revalidatePath("/accounts");
-}
+export const revalidateRulesPaths = () => revalidatePath("/rules");
 
-export function revalidateTemplatePaths() {
-  revalidatePath("/templates");
-  revalidatePath("/imports");
-}
+export const revalidateAccountsPath = () => revalidatePath("/accounts");
 
-export function revalidatePromptPaths() {
-  revalidatePath("/prompts");
-}
+export const revalidateTemplatePaths = () =>
+  revalidatePaths(["/templates", "/imports"]);
+
+export const revalidatePromptPaths = () => revalidatePath("/prompts");

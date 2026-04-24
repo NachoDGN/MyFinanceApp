@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService } from "@myfinance/domain";
+import { domain } from "../../../lib/action-service";
 import { resolveAppState } from "../../../lib/queries";
-
-const domain = new FinanceDomainService(createFinanceRepository());
 
 export async function GET(request: NextRequest) {
   const state = await resolveAppState(

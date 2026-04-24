@@ -1,4 +1,11 @@
 import { AppShell } from "../../components/app-shell";
+import {
+  FlowBreakdownCard,
+  FlowKpiGrid,
+  FlowPageHeader,
+  FlowSummaryCard,
+  FlowTrendChart,
+} from "../../components/flow-overview";
 import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
@@ -68,6 +75,19 @@ export default async function IncomePage({
     ...chartRows.map((row) => row.totalIncomeDisplay),
     1,
   );
+  const trendRows = chartRows.map((row) => ({
+    month: row.month,
+    segments: [
+      {
+        className: "income-bar-segment-investment",
+        height: (row.investmentIncomeDisplay / chartMax) * 100,
+      },
+      {
+        className: "income-bar-segment-operating",
+        height: (row.operatingIncomeDisplay / chartMax) * 100,
+      },
+    ],
+  }));
   const chartAxisValues = [1, 0.66, 0.33, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
@@ -96,214 +116,123 @@ export default async function IncomePage({
       state={model.navigationState}
     >
       <div className="dashboard-grid income-editorial-shell">
-        <div className="income-editorial-watermark">INCOME</div>
-
-        <div className="income-page-header span-12">
-          <div>
-            <h1 className="page-title">Income Overview</h1>
-            <p className="page-subtitle">
+        <FlowPageHeader
+          watermark="INCOME"
+          title="Income Overview"
+          subtitle={
+            <>
               Primary income KPIs exclude reimbursements, refunds, owner
               contributions, loan proceeds, and internal transfers.{" "}
               {scopeDescription}
-            </p>
-          </div>
-        </div>
+            </>
+          }
+        />
 
-        <div className="income-kpi-grid span-12">
-          <article className="income-kpi-card income-kpi-card-accent">
-            <div className="income-kpi-title">
-              <span>
-                {model.period.preset === "ytd"
+        <FlowKpiGrid
+          items={[
+            {
+              accent: true,
+              title:
+                model.period.preset === "ytd"
                   ? "Current-Year Income"
-                  : "Current-Period Income"}
-              </span>
-              <span className="income-kpi-icon">i</span>
-            </div>
-            <div className="income-kpi-value">
-              {formatCurrency(model.incomeMetric?.valueDisplay, model.currency)}
-            </div>
-            <div className="income-kpi-badge accent">
-              {formatPercentLabel(model.incomeMetric?.deltaPercent)} vs prior
-            </div>
-          </article>
-
-          <article className="income-kpi-card">
-            <div className="income-kpi-title">
-              <span>Trailing 3-Month Avg</span>
-            </div>
-            <div className="income-kpi-value">
-              {formatBaseEurAmountForDisplay(
+                  : "Current-Period Income",
+              icon: <span className="income-kpi-icon">i</span>,
+              value: formatCurrency(
+                model.incomeMetric?.valueDisplay,
+                model.currency,
+              ),
+              badge: `${formatPercentLabel(model.incomeMetric?.deltaPercent)} vs prior`,
+              badgeTone: "accent",
+            },
+            {
+              title: "Trailing 3-Month Avg",
+              value: formatBaseEurAmountForDisplay(
                 model.dataset,
                 model.trailingThreeMonthAverage,
                 model.currency,
                 model.referenceDate,
-              )}
-            </div>
-            <div className="income-kpi-badge neutral">Average baseline</div>
-          </article>
-
-          <article className="income-kpi-card">
-            <div className="income-kpi-title">
-              <span>Top Source Concentration</span>
-            </div>
-            <div className="income-kpi-value">
-              {formatPercentLabel(model.topSourceShare)}
-            </div>
-            <div className="income-kpi-badge neutral">
-              {model.sourceRows[0]?.label ?? "No active sources"}
-            </div>
-          </article>
-
-          <article className="income-kpi-card income-kpi-card-accent">
-            <div className="income-kpi-title">
-              <span>Coverage / Completeness</span>
-            </div>
-            <div className="income-kpi-value">
-              {Number.isFinite(completenessPercent)
+              ),
+              badge: "Average baseline",
+            },
+            {
+              title: "Top Source Concentration",
+              value: formatPercentLabel(model.topSourceShare),
+              badge: model.sourceRows[0]?.label ?? "No active sources",
+            },
+            {
+              accent: true,
+              title: "Coverage / Completeness",
+              value: Number.isFinite(completenessPercent)
                 ? `${completenessPercent.toFixed(0)}%`
-                : "N/A"}
-            </div>
-            <div
-              className={`income-kpi-badge ${
-                completenessPercent >= 100 ? "accent" : "neutral"
-              }`}
-            >
-              {completenessLabel}
-            </div>
-          </article>
-        </div>
+                : "N/A",
+              badge: completenessLabel,
+              badgeTone: completenessPercent >= 100 ? "accent" : "neutral",
+            },
+          ]}
+        />
 
-        <section className="income-chart-card span-12">
-          <div className="income-chart-header">
-            <div>
-              <h2 className="income-chart-title">Monthly Inflow Trend</h2>
-            </div>
-            <div className="income-kpi-badge neutral">{chartRangeLabel}</div>
-          </div>
-          {fallbackFxRangeLabel ? (
-            <div className="status-note" style={{ marginTop: 16 }}>
-              Historical {model.currency} conversion was unavailable for{" "}
-              {fallbackFxRangeLabel}, so the latest available FX up to{" "}
-              {model.referenceDate} is used to keep the full trend visible.
-            </div>
-          ) : null}
-
-          <div className="income-chart-body">
-            <div className="income-y-axis">
-              {chartAxisValues.map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-            <div className="income-grid-lines" aria-hidden="true">
-              {chartAxisValues.map((label) => (
-                <div className="income-grid-line" key={label} />
-              ))}
-            </div>
-            <div className="income-chart-bars">
-              {chartRows.map((row, index) => {
-                const operatingHeight = Math.max(
-                  0,
-                  (row.operatingIncomeDisplay / chartMax) * 100,
-                );
-                const investmentHeight = Math.max(
-                  0,
-                  (row.investmentIncomeDisplay / chartMax) * 100,
-                );
-
-                return (
-                  <div className="income-bar-group" key={row.month}>
-                    <div
-                      className="income-bar-segment income-bar-segment-investment"
-                      style={{ height: `${investmentHeight}%` }}
-                    />
-                    <div
-                      className="income-bar-segment income-bar-segment-operating"
-                      style={{ height: `${operatingHeight}%` }}
-                    />
-                    <div
-                      className={`income-bar-label ${
-                        index === chartRows.length - 1 ? "active" : ""
-                      }`}
-                    >
-                      {formatMonthLabel(row.month)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </section>
+        <FlowTrendChart
+          title="Monthly Inflow Trend"
+          rangeLabel={chartRangeLabel}
+          fallbackFxRangeLabel={fallbackFxRangeLabel}
+          currency={model.currency}
+          referenceDate={model.referenceDate}
+          axisLabels={chartAxisValues}
+          rows={trendRows}
+        />
 
         <section className="income-bottom-grid span-12">
-          <article className="income-breakdown-card">
-            <div className="income-chart-header">
-              <h2 className="income-chart-title">Income Source Breakdown</h2>
-              <div className="income-kpi-badge neutral">
-                {getPeriodLabel(model.period)}
+          <FlowBreakdownCard
+            title="Income Source Breakdown"
+            periodLabel={getPeriodLabel(model.period)}
+            description="Grouped by normalized payer/counterparty names for the selected period."
+            headers={["Source", "Distribution", "Volume", "Share"]}
+          >
+            {model.sourceRows.length === 0 ? (
+              <div className="table-empty-state">
+                No resolved income sources are available for this period.
               </div>
-            </div>
-            <div className="muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
-              Grouped by normalized payer/counterparty names for the selected
-              period.
-            </div>
+            ) : (
+              model.sourceRows.map((row) => {
+                const amountDisplay =
+                  convertBaseEurToDisplayAmount(
+                    model.dataset,
+                    row.amountEur,
+                    model.currency,
+                    model.referenceDate,
+                  ) ?? "0.00";
+                const share =
+                  currentPeriodIncome > 0
+                    ? (Number(row.amountEur) / currentPeriodIncome) * 100
+                    : 0;
 
-            <div className="income-breakdown-table">
-              <div className="income-breakdown-head">
-                <div>Source</div>
-                <div>Distribution</div>
-                <div className="amount">Volume</div>
-                <div className="amount">Share</div>
-              </div>
-              {model.sourceRows.length === 0 ? (
-                <div className="table-empty-state">
-                  No resolved income sources are available for this period.
-                </div>
-              ) : (
-                model.sourceRows.map((row) => {
-                  const amountDisplay =
-                    convertBaseEurToDisplayAmount(
-                      model.dataset,
-                      row.amountEur,
-                      model.currency,
-                      model.referenceDate,
-                    ) ?? "0.00";
-                  const share =
-                    currentPeriodIncome > 0
-                      ? (Number(row.amountEur) / currentPeriodIncome) * 100
-                      : 0;
-
-                  return (
-                    <div className="income-breakdown-row" key={row.label}>
-                      <div className="source-name">
-                        <div>{row.label}</div>
-                        {row.aliases.length > 1 ? (
-                          <div className="muted" style={{ marginTop: 4 }}>
-                            Merged aliases: {row.aliases.join(", ")}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div className="source-progress-track">
-                        <div
-                          className="source-progress-fill"
-                          style={{ width: `${Math.max(share, 0)}%` }}
-                        />
-                      </div>
-                      <div className="amount">
-                        {formatCurrency(amountDisplay, model.currency)}
-                      </div>
-                      <div className="amount">{share.toFixed(2)}%</div>
+                return (
+                  <div className="income-breakdown-row" key={row.label}>
+                    <div className="source-name">
+                      <div>{row.label}</div>
+                      {row.aliases.length > 1 ? (
+                        <div className="muted" style={{ marginTop: 4 }}>
+                          Merged aliases: {row.aliases.join(", ")}
+                        </div>
+                      ) : null}
                     </div>
-                  );
-                })
-              )}
-            </div>
-          </article>
+                    <div className="source-progress-track">
+                      <div
+                        className="source-progress-fill"
+                        style={{ width: `${Math.max(share, 0)}%` }}
+                      />
+                    </div>
+                    <div className="amount">
+                      {formatCurrency(amountDisplay, model.currency)}
+                    </div>
+                    <div className="amount">{share.toFixed(2)}%</div>
+                  </div>
+                );
+              })
+            )}
+          </FlowBreakdownCard>
 
-          <article className="income-summary-card">
-            <div className="income-chart-header">
-              <h2 className="income-chart-title">Period Summary</h2>
-            </div>
-
+          <FlowSummaryCard>
             <div className="income-summary-stat">
               <div className="stat-label">Total Realized YTD</div>
               <div className="stat-value accent">
@@ -351,7 +280,7 @@ export default async function IncomePage({
                 .
               </div>
             </div>
-          </article>
+          </FlowSummaryCard>
         </section>
 
         <SimpleTable

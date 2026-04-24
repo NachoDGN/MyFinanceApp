@@ -9,7 +9,12 @@ import {
 } from "@myfinance/domain";
 
 import { convertBaseEurToDisplayAmount } from "./currency";
-import { formatCurrency, formatDate, formatPercent, formatQuantity } from "./formatters";
+import {
+  formatCurrency,
+  formatDate,
+  formatPercent,
+  formatQuantity,
+} from "./formatters";
 import { getInvestmentsModel, type InvestmentsModel } from "./queries";
 import {
   buildHoldingDisplayMetricsMap,
@@ -28,137 +33,9 @@ type Security = InvestmentsModel["dataset"]["securities"][number] & {
   metadataJson?: unknown;
 };
 
-export type InvestmentsPageMetricCard = {
-  label: string;
-  value: string;
-  badge: string;
-  badgeTone?: "accent" | "neutral";
-  subtitle: string;
-  chartValues: number[];
-};
-
-export type InvestmentsPageAssetSummary = {
-  key: string;
-  label: string;
-  title: string;
-  value: string;
-  pill: string;
-  metaPrimary: string;
-  metaSecondary: string;
-  returnClass?: "positive" | "negative";
-  missingQuoteCount?: number;
-};
-
-export type InvestmentsPageHoldingRow = {
-  key: string;
-  securityName: string;
-  symbol: string;
-  accountName: string;
-  quantityDisplay: string;
-  avgCostDisplay: string;
-  currentPricePrimary: string;
-  currentPriceSecondary: string | null;
-  currentPriceNote: string | null;
-  currentValueDisplay: string;
-  unrealizedDisplay: string;
-  unrealizedPercent: string | null;
-  freshnessLabel: string;
-  isManual: boolean;
-};
-
-export type InvestmentsPagePositionRow = {
-  key: string;
-  title: string;
-  subtitle: string;
-  value: string;
-  returnDisplay?: string;
-  returnClass?: "positive" | "negative";
-  fallbackNote?: string;
-};
-
-export type InvestmentsPageTransactionRow = {
-  id: string;
-  dateTop: string;
-  dateBottom: string;
-  descriptionRaw: string;
-  transactionClass: string;
-  categoryCode: string | null;
-  quantity: string | null;
-  quantityDisplay: string;
-  securityLabel: string;
-  amountDisplay: string;
-  reviewSecuritySymbol: string | null;
-  needsReview: boolean;
-  reviewReason: string | null;
-  manualNotes: string | null;
-  classificationSource: string | null;
-  llmPayload: unknown;
-};
-
-export type InvestmentsPageManualInvestmentSummary = {
-  id: string;
-  entityId: string;
-  entityName: string;
-  fundingAccountId: string;
-  fundingAccountName: string;
-  label: string;
-  matcherText: string;
-  note: string | null;
-  latestSnapshotDate: string | null;
-  latestValueOriginal: string | null;
-  latestValueCurrency: string | null;
-  currentValueDisplay: string;
-  investedAmountDisplay: string;
-  unrealizedDisplay: string;
-  unrealizedPercent: string | null;
-  matchedFundingTransactionCount: number;
-  freshnessLabel: string;
-};
-
 type InvestmentsPageSearchParams =
   | Promise<Record<string, string | string[] | undefined>>
   | Record<string, string | string[] | undefined>;
-
-export type InvestmentsPageModel = {
-  dataset: InvestmentsModel["dataset"];
-  scopeParam: string;
-  currency: string;
-  referenceDate: string;
-  period: InvestmentsModel["period"];
-  navigationState: InvestmentsModel["navigationState"];
-  securityFilter: string;
-  pageSize: number;
-  currentPage: number;
-  safePage: number;
-  totalPages: number;
-  totalProcessedRows: number;
-  totalProcessedRowsOverall: number;
-  processedRowsPeriodLabel: string;
-  allTimeResolvedTradeRows: number;
-  processedRows: InvestmentsPageTransactionRow[];
-  unresolvedRows: InvestmentsPageTransactionRow[];
-  metricCards: InvestmentsPageMetricCard[];
-  assetSummaries: InvestmentsPageAssetSummary[];
-  portfolioAllocationRows: Array<{ label: string; amountEur: string }>;
-  fundRows: InvestmentsPagePositionRow[];
-  stockRows: InvestmentsPagePositionRow[];
-  cryptoRows: InvestmentsPagePositionRow[];
-  holdingRows: InvestmentsPageHoldingRow[];
-  accountAllocationRows: Array<{ label: string; amountEur: string }>;
-  manualInvestmentSummaries: InvestmentsPageManualInvestmentSummary[];
-  manualInvestmentEntities: Array<{ id: string; label: string }>;
-  manualInvestmentCashAccounts: Array<{
-    id: string;
-    entityId: string;
-    label: string;
-  }>;
-  periodLabel: string;
-  comparisonLabel: string;
-  processedLedgerColumns: string;
-  unresolvedLedgerColumns: string;
-  buildHref: (page: number, nextSecurityFilter?: string) => string;
-  scopeOptions: InvestmentsModel["scopeOptions"];
-};
 
 function normalizeParam(
   params: Record<string, string | string[] | undefined>,
@@ -187,7 +64,9 @@ function describeInvestmentsPeriodLabel(period: InvestmentsModel["period"]) {
   return "Selected Period";
 }
 
-function describeInvestmentsComparisonLabel(period: InvestmentsModel["period"]) {
+function describeInvestmentsComparisonLabel(
+  period: InvestmentsModel["period"],
+) {
   if (period.preset === "all") return "inception";
   if (period.preset === "ytd") return "year-start";
   if (period.preset === "mtd") return "month-start";
@@ -307,7 +186,9 @@ function countManualInvestmentFundingMatches(
     return 0;
   }
 
-  const matcherTerms = parseManualInvestmentMatcherTerms(investment.matcherText);
+  const matcherTerms = parseManualInvestmentMatcherTerms(
+    investment.matcherText,
+  );
   if (matcherTerms.length === 0) {
     return 0;
   }
@@ -377,6 +258,17 @@ function toDisplayAmount(
   );
 }
 
+function formatDisplayAmount(
+  model: InvestmentsModel,
+  amount: string | null | undefined,
+  effectiveDate = model.referenceDate,
+) {
+  return formatCurrency(
+    toDisplayAmount(model, amount, effectiveDate),
+    model.currency,
+  );
+}
+
 function toDisplayChartValue(
   model: InvestmentsModel,
   amount: string | null | undefined,
@@ -391,7 +283,9 @@ function toDisplayChartValue(
 }
 
 function safePercent(numerator: Decimal, denominator: Decimal) {
-  return denominator.eq(0) ? null : numerator.div(denominator).mul(100).toFixed(2);
+  return denominator.eq(0)
+    ? null
+    : numerator.div(denominator).mul(100).toFixed(2);
 }
 
 function buildHoldingBucketSummary(
@@ -403,7 +297,9 @@ function buildHoldingBucketSummary(
 ) {
   const pricedRows = rows.filter((holding) => {
     const metric = getHoldingDisplayMetric(holding);
-    return metric.currentValueDisplay !== null && metric.unrealizedDisplay !== null;
+    return (
+      metric.currentValueDisplay !== null && metric.unrealizedDisplay !== null
+    );
   });
   const marketValueDisplay = pricedRows.reduce(
     (sum, holding) =>
@@ -429,9 +325,9 @@ function buildHoldingBucketSummary(
         ? `${rows.length} fund position${rows.length === 1 ? "" : "s"}`
         : `${rows.length} stock/ETF position${rows.length === 1 ? "" : "s"}`,
     value: formatCurrency(marketValueDisplay.toFixed(2), model.currency),
-    pill: safePercent(marketValueDisplay, totalPortfolioValueDisplay)
-      ? formatPercent(safePercent(marketValueDisplay, totalPortfolioValueDisplay))
-      : "N/A",
+    pill: formatPercent(
+      safePercent(marketValueDisplay, totalPortfolioValueDisplay),
+    ),
     metaPrimary: `${formatCurrency(unrealizedPnlDisplay.toFixed(2), model.currency)} / ${formatPercent(
       safePercent(unrealizedPnlDisplay, costBasisDisplay),
     )}`,
@@ -443,6 +339,64 @@ function buildHoldingBucketSummary(
       ? "positive"
       : "negative") as "positive" | "negative",
     missingQuoteCount: rows.length - pricedRows.length,
+  };
+}
+
+function buildTransactionRow(
+  model: InvestmentsModel,
+  row: ProcessedRow | UnresolvedRow,
+) {
+  const securityLabel = getTransactionSecurityLabel(model, row);
+  const { top: dateTop, bottom: dateBottom } = splitIsoDate(
+    row.transactionDate,
+  );
+  return {
+    id: row.id,
+    dateTop,
+    dateBottom,
+    descriptionRaw: row.descriptionRaw,
+    transactionClass: row.transactionClass,
+    categoryCode: row.categoryCode ?? null,
+    quantity: row.quantity ?? null,
+    quantityDisplay: formatQuantity(row.quantity),
+    securityLabel,
+    amountDisplay: formatDisplayAmount(
+      model,
+      row.amountBaseEur,
+      row.transactionDate,
+    ),
+    reviewSecuritySymbol: securityLabel === "—" ? null : securityLabel,
+    needsReview: row.needsReview,
+    reviewReason:
+      typeof row.reviewReason === "string" ? row.reviewReason : null,
+    manualNotes: row.manualNotes ?? null,
+    classificationSource: row.classificationSource ?? null,
+    llmPayload: row.llmPayload,
+  };
+}
+
+function buildPositionRow(
+  model: InvestmentsModel,
+  holding: Holding,
+  subtitle: string,
+  getHoldingDisplayMetric: (holding: Holding) => HoldingDisplayMetric,
+) {
+  const displayMetric = getHoldingDisplayMetric(holding);
+  return {
+    key: holding.securityId,
+    title: holding.securityName,
+    subtitle,
+    value: formatCurrency(displayMetric.currentValueDisplay, model.currency),
+    returnDisplay: displayMetric.currentValueDisplay
+      ? `${formatCurrency(displayMetric.unrealizedDisplay, model.currency)} / ${formatPercent(displayMetric.unrealizedDisplayPercent)}`
+      : undefined,
+    returnClass:
+      Number(displayMetric.unrealizedDisplay ?? "0") >= 0
+        ? "positive"
+        : "negative",
+    fallbackNote: displayMetric.currentValueDisplay
+      ? undefined
+      : "Current quote unavailable",
   };
 }
 
@@ -475,7 +429,7 @@ export function buildInvestmentsPageHref(
 export function buildInvestmentsPageModel(
   model: InvestmentsModel,
   params: Record<string, string | string[] | undefined>,
-): InvestmentsPageModel {
+) {
   const pageParam = normalizeParam(params, "page");
   const securityParam = normalizeParam(params, "security");
   const securityFilter =
@@ -531,7 +485,9 @@ export function buildInvestmentsPageModel(
       right.updatedAt.localeCompare(left.updatedAt) ||
       right.createdAt.localeCompare(left.createdAt),
   )) {
-    if (!latestManualValuationByInvestmentId.has(valuation.manualInvestmentId)) {
+    if (
+      !latestManualValuationByInvestmentId.has(valuation.manualInvestmentId)
+    ) {
       latestManualValuationByInvestmentId.set(
         valuation.manualInvestmentId,
         valuation,
@@ -592,17 +548,19 @@ export function buildInvestmentsPageModel(
       );
       const displayMetric = getHoldingDisplayMetric(holding);
       const fundingAccount = accountById.get(investment.fundingAccountId);
-      const matchedFundingTransactionCount = countManualInvestmentFundingMatches(
-        model.dataset,
-        investment,
-        latestValuation?.snapshotDate ?? null,
-      );
+      const matchedFundingTransactionCount =
+        countManualInvestmentFundingMatches(
+          model.dataset,
+          investment,
+          latestValuation?.snapshotDate ?? null,
+        );
 
       return {
         id: investment.id,
         entityId: investment.entityId,
         entityName:
-          entityById.get(investment.entityId)?.displayName ?? investment.entityId,
+          entityById.get(investment.entityId)?.displayName ??
+          investment.entityId,
         fundingAccountId: investment.fundingAccountId,
         fundingAccountName: fundingAccount
           ? `${fundingAccount.displayName} (${fundingAccount.defaultCurrency})`
@@ -628,9 +586,9 @@ export function buildInvestmentsPageModel(
         unrealizedPercent: displayMetric.unrealizedDisplayPercent,
         matchedFundingTransactionCount,
         freshnessLabel: humanizeHoldingFreshness(holding.quoteFreshness),
-      } satisfies InvestmentsPageManualInvestmentSummary;
+      };
     })
-    .filter((row): row is InvestmentsPageManualInvestmentSummary => row !== null);
+    .filter((row) => row !== null);
 
   const pricedPortfolioValueEur = model.holdings.holdings.reduce(
     (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
@@ -663,80 +621,30 @@ export function buildInvestmentsPageModel(
   );
   const periodLabel = describeInvestmentsPeriodLabel(model.period);
   const comparisonLabel = describeInvestmentsComparisonLabel(model.period);
-  const processedRowsPeriodLabel = describeProcessedRowsPeriodLabel(model.period);
+  const processedRowsPeriodLabel = describeProcessedRowsPeriodLabel(
+    model.period,
+  );
   const periodInvestmentIncome = new Decimal(model.dividendsPeriod).plus(
     model.interestPeriod,
   );
-  const processedLedgerColumns =
-    "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)";
-  const unresolvedLedgerColumns =
-    "100px 240px 70px 160px 110px minmax(320px, 1fr)";
-
-  const processedRowsPage = processedRows.map((row) => {
-    const securityLabel = getTransactionSecurityLabel(model, row);
-    const { top: dateTop, bottom: dateBottom } = splitIsoDate(row.transactionDate);
-    return {
-      id: row.id,
-      dateTop,
-      dateBottom,
-      descriptionRaw: row.descriptionRaw,
-      transactionClass: row.transactionClass,
-      categoryCode: row.categoryCode ?? null,
-      quantity: row.quantity ?? null,
-      quantityDisplay: formatQuantity(row.quantity),
-      securityLabel,
-      amountDisplay: formatCurrency(
-        toDisplayAmount(model, row.amountBaseEur, row.transactionDate),
-        model.currency,
-      ),
-      reviewSecuritySymbol: securityLabel === "—" ? null : securityLabel,
-      needsReview: row.needsReview,
-      reviewReason:
-        typeof row.reviewReason === "string" ? row.reviewReason : null,
-      manualNotes: row.manualNotes ?? null,
-      classificationSource: row.classificationSource ?? null,
-      llmPayload: row.llmPayload,
-    };
-  });
-  const unresolvedRows = model.unresolved.map((row) => {
-    const securityLabel = getTransactionSecurityLabel(model, row);
-    const { top: dateTop, bottom: dateBottom } = splitIsoDate(row.transactionDate);
-    return {
-      id: row.id,
-      dateTop,
-      dateBottom,
-      descriptionRaw: row.descriptionRaw,
-      transactionClass: row.transactionClass,
-      categoryCode: row.categoryCode ?? null,
-      quantity: row.quantity ?? null,
-      quantityDisplay: formatQuantity(row.quantity),
-      securityLabel,
-      amountDisplay: formatCurrency(
-        toDisplayAmount(model, row.amountBaseEur, row.transactionDate),
-        model.currency,
-      ),
-      reviewSecuritySymbol: securityLabel === "—" ? null : securityLabel,
-      needsReview: row.needsReview,
-      reviewReason:
-        typeof row.reviewReason === "string" ? row.reviewReason : null,
-      manualNotes: row.manualNotes ?? null,
-      classificationSource: row.classificationSource ?? null,
-      llmPayload: row.llmPayload,
-    };
-  });
+  const processedRowsPage = processedRows.map((row) =>
+    buildTransactionRow(model, row),
+  );
+  const unresolvedRows = model.unresolved.map((row) =>
+    buildTransactionRow(model, row),
+  );
   const holdingRows = sortedHoldings.map((holding) => {
     const displayMetric = getHoldingDisplayMetric(holding);
     const manualInvestment = isManualHolding(holding)
-      ? model.dataset.manualInvestments.find((row) => row.id === holding.securityId)
+      ? model.dataset.manualInvestments.find(
+          (row) => row.id === holding.securityId,
+        )
       : null;
     const currentPrice = formatCurrentPrice(
       model,
       holding.currentPrice,
       holding.currentPriceCurrency,
     );
-    const manualSnapshotDate = manualInvestment
-      ? latestManualValuationByInvestmentId.get(manualInvestment.id)?.snapshotDate
-      : null;
     return {
       key: holding.securityId,
       securityName: holding.securityName,
@@ -746,7 +654,10 @@ export function buildInvestmentsPageModel(
       quantityDisplay: isManualHolding(holding)
         ? "—"
         : formatQuantity(holding.quantity),
-      avgCostDisplay: formatCurrency(displayMetric.avgCostDisplay, model.currency),
+      avgCostDisplay: formatCurrency(
+        displayMetric.avgCostDisplay,
+        model.currency,
+      ),
       currentPricePrimary: manualInvestment
         ? holding.currentPrice && holding.currentPriceCurrency
           ? formatCurrency(holding.currentPrice, holding.currentPriceCurrency)
@@ -805,9 +716,12 @@ export function buildInvestmentsPageModel(
     metricCards: [
       {
         label: "Portfolio Market Value",
-        value: formatCurrency(model.metrics.portfolioValue.valueDisplay, model.currency),
+        value: formatCurrency(
+          model.metrics.portfolioValue.valueDisplay,
+          model.currency,
+        ),
         badge: "All Time",
-        badgeTone: "neutral",
+        badgeTone: "neutral" as const,
         subtitle: `Current holdings snapshot as of ${formatDate(model.referenceDate)}`,
         chartValues: [
           ...model.holdings.holdings.map((holding) =>
@@ -820,12 +734,15 @@ export function buildInvestmentsPageModel(
       },
       {
         label: "Unrealized Gain",
-        value: formatCurrency(model.metrics.unrealized.valueDisplay, model.currency),
+        value: formatCurrency(
+          model.metrics.unrealized.valueDisplay,
+          model.currency,
+        ),
         badge: `${model.metrics.unrealized.deltaPercent ?? "0.00"}%`,
         badgeTone:
           Number(model.metrics.unrealized.valueDisplay ?? "0") >= 0
-            ? "accent"
-            : "neutral",
+            ? ("accent" as const)
+            : ("neutral" as const),
         subtitle: `${formatCurrency(model.metrics.unrealized.deltaDisplay, model.currency)} vs ${comparisonLabel}`,
         chartValues: model.holdings.holdings.map((holding) =>
           Number(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
@@ -833,32 +750,21 @@ export function buildInvestmentsPageModel(
       },
       {
         label: `Investment Income ${periodLabel}`,
-        value: formatCurrency(
-          toDisplayAmount(model, periodInvestmentIncome.toFixed(2)),
-          model.currency,
-        ),
+        value: formatDisplayAmount(model, periodInvestmentIncome.toFixed(2)),
         badge: "Income",
-        subtitle: `${formatCurrency(
-          toDisplayAmount(model, model.dividendsPeriod),
-          model.currency,
-        )} dividends + ${formatCurrency(
-          toDisplayAmount(model, model.interestPeriod),
-          model.currency,
-        )} interest`,
+        subtitle: `${formatDisplayAmount(model, model.dividendsPeriod)} dividends + ${formatDisplayAmount(model, model.interestPeriod)} interest`,
         chartValues: model.investmentRows
-          .filter((row) => ["dividend", "interest"].includes(row.transactionClass))
-          .map((row) => toDisplayChartValue(model, row.amountBaseEur, row.transactionDate)),
+          .filter((row) =>
+            ["dividend", "interest"].includes(row.transactionClass),
+          )
+          .map((row) =>
+            toDisplayChartValue(model, row.amountBaseEur, row.transactionDate),
+          ),
       },
       {
         label: "Brokerage Cash",
-        value: formatCurrency(
-          toDisplayAmount(model, model.holdings.brokerageCashEur),
-          model.currency,
-        ),
-        badge: formatCurrency(
-          toDisplayAmount(model, model.netContributionsPeriod),
-          model.currency,
-        ),
+        value: formatDisplayAmount(model, model.holdings.brokerageCashEur),
+        badge: formatDisplayAmount(model, model.netContributionsPeriod),
         subtitle: "Latest broker cash balance",
         chartValues: [
           toDisplayChartValue(model, model.holdings.brokerageCashEur),
@@ -873,99 +779,64 @@ export function buildInvestmentsPageModel(
         key: "cash",
         label: "Cash",
         title: "Brokerage Cash",
-        value: formatCurrency(
-          toDisplayAmount(model, model.holdings.brokerageCashEur),
-          model.currency,
-        ),
-        pill:
-          safePercent(cashValueEur, totalPortfolioValueEur) !== null
-            ? formatPercent(safePercent(cashValueEur, totalPortfolioValueEur))
-            : "N/A",
+        value: formatDisplayAmount(model, model.holdings.brokerageCashEur),
+        pill: formatPercent(safePercent(cashValueEur, totalPortfolioValueEur)),
         metaPrimary: "Current broker cash balance",
         metaSecondary: "No unrealized P/L applies to cash.",
+        returnClass: undefined,
       },
       {
         key: "crypto",
         label: "Crypto",
         title: `${cryptoBalances.length} crypto balance${cryptoBalances.length === 1 ? "" : "s"}`,
-        value: formatCurrency(
-          toDisplayAmount(model, cryptoPortfolioValueEur.toFixed(2)),
-          model.currency,
+        value: formatDisplayAmount(model, cryptoPortfolioValueEur.toFixed(2)),
+        pill: formatPercent(
+          safePercent(cryptoPortfolioValueEur, totalPortfolioValueEur),
         ),
-        pill:
-          safePercent(cryptoPortfolioValueEur, totalPortfolioValueEur) !== null
-            ? formatPercent(
-                safePercent(cryptoPortfolioValueEur, totalPortfolioValueEur),
-              )
-            : "N/A",
         metaPrimary: "BTC and ETH treasury balances now roll into portfolio.",
         metaSecondary:
           "Cost basis is not tracked yet, so unrealized P/L stays outside this bucket.",
+        returnClass: undefined,
       },
       fundsSummary,
       stocksSummary,
     ],
     portfolioAllocationRows,
     fundRows: fundHoldings.map((holding) => {
-      const displayMetric = getHoldingDisplayMetric(holding);
       const manualInvestment = isManualHolding(holding)
-        ? model.dataset.manualInvestments.find((row) => row.id === holding.securityId)
+        ? model.dataset.manualInvestments.find(
+            (row) => row.id === holding.securityId,
+          )
         : null;
       const manualSnapshotDate = manualInvestment
-        ? latestManualValuationByInvestmentId.get(manualInvestment.id)?.snapshotDate
+        ? latestManualValuationByInvestmentId.get(manualInvestment.id)
+            ?.snapshotDate
         : null;
-      return {
-        key: holding.securityId,
-        title: holding.securityName,
-        subtitle: manualInvestment
+      return buildPositionRow(
+        model,
+        holding,
+        manualInvestment
           ? `${accountById.get(holding.accountId)?.displayName ?? holding.accountId} · ${manualSnapshotDate ? `snapshot ${formatDate(manualSnapshotDate)}` : "manual valuation"}`
           : `${holding.symbol} · ${formatQuantity(holding.quantity)} units`,
-        value: formatCurrency(displayMetric.currentValueDisplay, model.currency),
-        returnDisplay: displayMetric.currentValueDisplay
-          ? `${formatCurrency(displayMetric.unrealizedDisplay, model.currency)} / ${formatPercent(displayMetric.unrealizedDisplayPercent)}`
-          : undefined,
-        returnClass:
-          Number(displayMetric.unrealizedDisplay ?? "0") >= 0
-            ? "positive"
-            : "negative",
-        fallbackNote: displayMetric.currentValueDisplay
-          ? undefined
-          : "Current quote unavailable",
-      };
+        getHoldingDisplayMetric,
+      );
     }),
     stockRows: stockHoldings.map((holding) => {
-      const displayMetric = getHoldingDisplayMetric(holding);
       const security = securityById.get(holding.securityId);
-      return {
-        key: holding.securityId,
-        title: holding.securityName,
-        subtitle: `${holding.symbol} · ${security?.exchangeName ?? "Unknown exchange"} · ${formatQuantity(holding.quantity)} units`,
-        value: formatCurrency(displayMetric.currentValueDisplay, model.currency),
-        returnDisplay: displayMetric.currentValueDisplay
-          ? `${formatCurrency(displayMetric.unrealizedDisplay, model.currency)} / ${formatPercent(displayMetric.unrealizedDisplayPercent)}`
-          : undefined,
-        returnClass:
-          Number(displayMetric.unrealizedDisplay ?? "0") >= 0
-            ? "positive"
-            : "negative",
-        fallbackNote: displayMetric.currentValueDisplay
-          ? undefined
-          : "Current quote unavailable",
-      };
+      return buildPositionRow(
+        model,
+        holding,
+        `${holding.symbol} · ${security?.exchangeName ?? "Unknown exchange"} · ${formatQuantity(holding.quantity)} units`,
+        getHoldingDisplayMetric,
+      );
     }),
     cryptoRows: cryptoBalances.map((balance) => ({
       key: `${balance.accountId}:${balance.currency}`,
       title: balance.currency,
       subtitle: `${accountById.get(balance.accountId)?.displayName ?? balance.accountId} · ${formatQuantity(balance.balanceOriginal)} units`,
-      value: formatCurrency(
-        toDisplayAmount(model, balance.currentValueEur),
-        model.currency,
-      ),
+      value: formatDisplayAmount(model, balance.currentValueEur),
       fallbackNote: balance.currentPriceEur
-        ? `${formatCurrency(
-            toDisplayAmount(model, balance.currentPriceEur),
-            model.currency,
-          )} per ${balance.currency}`
+        ? `${formatDisplayAmount(model, balance.currentPriceEur)} per ${balance.currency}`
         : "Current quote unavailable",
     })),
     accountAllocationRows: model.accountAllocation.map((row) => ({
@@ -991,12 +862,15 @@ export function buildInvestmentsPageModel(
       })),
     periodLabel,
     comparisonLabel,
-    processedLedgerColumns,
-    unresolvedLedgerColumns,
+    processedLedgerColumns:
+      "100px 200px 180px 60px 100px 110px minmax(320px, 1fr)",
+    unresolvedLedgerColumns: "100px 240px 70px 160px 110px minmax(320px, 1fr)",
     buildHref: (page: number, nextSecurityFilter = securityFilter) =>
       buildInvestmentsPageHref(model, nextSecurityFilter, page),
   };
 }
+
+export type InvestmentsPageModel = ReturnType<typeof buildInvestmentsPageModel>;
 
 export async function resolveInvestmentsPageModel(
   searchParams: InvestmentsPageSearchParams,

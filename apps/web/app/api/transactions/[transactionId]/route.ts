@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createFinanceRepository } from "@myfinance/db";
-import { FinanceDomainService } from "@myfinance/domain";
+import { domain } from "../../../../lib/action-service";
 import {
   revalidateFinanceReadPaths,
   revalidateRulesPaths,
 } from "../../../../lib/api-revalidate";
-
-const domain = new FinanceDomainService(createFinanceRepository());
 
 const bodySchema = z.object({
   patch: z.record(z.string(), z.any()),

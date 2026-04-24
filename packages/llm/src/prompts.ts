@@ -150,6 +150,63 @@ const ruleDraftPlaceholders = [
   "request_text",
 ] as const;
 
+const sharedTransactionPromptSections: PromptSectionDefinition[] = [
+  {
+    id: "batch_context_template",
+    label: "Batch Context",
+    description:
+      "Shared batch snapshot context used during parallel import processing.",
+    defaultValue: [
+      "Batch processing phase: {{batch_phase}}.",
+      "Batch source key: {{source_batch_key}}.",
+      "Batch summary: {{batch_summary}}.",
+      "Retriever context for this row: {{retrieval_context}}.",
+      "Batch transaction count: {{total_transactions}}.",
+      "Trusted resolved transactions already available: {{trusted_resolved_count}}.",
+    ].join("\n"),
+    requiredPlaceholders: [...batchContextPlaceholders],
+  },
+  {
+    id: "review_examples_wrapper",
+    label: "Review Examples Wrapper",
+    description: "Heading and block container for previous user corrections.",
+    defaultValue: [
+      "Examples from prior user corrections:",
+      "{{review_examples_block}}",
+    ].join("\n"),
+    requiredPlaceholders: ["review_examples_block"],
+  },
+  {
+    id: "review_example_template",
+    label: "Single Review Example",
+    description: "How one prior user correction is shown inside the prompt.",
+    defaultValue: [
+      "Example {{example_index}} transaction metadata: {{transaction}}.",
+      "Example {{example_index}} initial inference: {{initial_inference}}.",
+      "Example {{example_index}} user feedback: {{user_feedback}}.",
+      "Example {{example_index}} corrected outcome: {{corrected_outcome}}.",
+    ].join("\n"),
+    requiredPlaceholders: [...reviewExamplePlaceholders],
+  },
+  {
+    id: "review_context_template",
+    label: "Current Review Context",
+    description:
+      "Context passed when a user manually updates a transaction review.",
+    defaultValue: [
+      "Review trigger: {{review_trigger}}.",
+      "Previous review reason: {{previous_review_reason}}.",
+      "Previous user review context: {{previous_user_review_context}}.",
+      "New user review context: {{new_user_review_context}}.",
+      "Previous LLM analysis: {{previous_llm_analysis}}.",
+      "Propagated contexts from similar unresolved transactions: {{propagated_contexts}}.",
+      "Persisted confirmed security mappings: {{persisted_security_mappings}}.",
+      "Resolved source precedent from a similar transaction: {{resolved_source_precedent}}.",
+    ].join("\n"),
+    requiredPlaceholders: [...reviewContextPlaceholders],
+  },
+];
+
 const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
   cash_transaction_analyzer: {
     id: "cash_transaction_analyzer",
@@ -212,62 +269,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
         ].join("\n"),
         requiredPlaceholders: [...transactionPromptPlaceholders],
       },
-      {
-        id: "batch_context_template",
-        label: "Batch Context",
-        description:
-          "Shared batch snapshot context used during parallel import processing.",
-        defaultValue: [
-          "Batch processing phase: {{batch_phase}}.",
-          "Batch source key: {{source_batch_key}}.",
-          "Batch summary: {{batch_summary}}.",
-          "Retriever context for this row: {{retrieval_context}}.",
-          "Batch transaction count: {{total_transactions}}.",
-          "Trusted resolved transactions already available: {{trusted_resolved_count}}.",
-        ].join("\n"),
-        requiredPlaceholders: [...batchContextPlaceholders],
-      },
-      {
-        id: "review_examples_wrapper",
-        label: "Review Examples Wrapper",
-        description:
-          "Heading and block container for previous user corrections.",
-        defaultValue: [
-          "Examples from prior user corrections:",
-          "{{review_examples_block}}",
-        ].join("\n"),
-        requiredPlaceholders: ["review_examples_block"],
-      },
-      {
-        id: "review_example_template",
-        label: "Single Review Example",
-        description:
-          "How one prior user correction is shown inside the prompt.",
-        defaultValue: [
-          "Example {{example_index}} transaction metadata: {{transaction}}.",
-          "Example {{example_index}} initial inference: {{initial_inference}}.",
-          "Example {{example_index}} user feedback: {{user_feedback}}.",
-          "Example {{example_index}} corrected outcome: {{corrected_outcome}}.",
-        ].join("\n"),
-        requiredPlaceholders: [...reviewExamplePlaceholders],
-      },
-      {
-        id: "review_context_template",
-        label: "Current Review Context",
-        description:
-          "Context passed when a user manually updates a transaction review.",
-        defaultValue: [
-          "Review trigger: {{review_trigger}}.",
-          "Previous review reason: {{previous_review_reason}}.",
-          "Previous user review context: {{previous_user_review_context}}.",
-          "New user review context: {{new_user_review_context}}.",
-          "Previous LLM analysis: {{previous_llm_analysis}}.",
-          "Propagated contexts from similar unresolved transactions: {{propagated_contexts}}.",
-          "Persisted confirmed security mappings: {{persisted_security_mappings}}.",
-          "Resolved source precedent from a similar transaction: {{resolved_source_precedent}}.",
-        ].join("\n"),
-        requiredPlaceholders: [...reviewContextPlaceholders],
-      },
+      ...sharedTransactionPromptSections,
     ],
   },
   investment_transaction_analyzer: {
@@ -355,62 +357,7 @@ const promptProfiles: Record<PromptProfileId, PromptProfileDefinition> = {
         ].join("\n"),
         requiredPlaceholders: [...transactionPromptPlaceholders],
       },
-      {
-        id: "batch_context_template",
-        label: "Batch Context",
-        description:
-          "Shared batch snapshot context used during parallel import processing.",
-        defaultValue: [
-          "Batch processing phase: {{batch_phase}}.",
-          "Batch source key: {{source_batch_key}}.",
-          "Batch summary: {{batch_summary}}.",
-          "Retriever context for this row: {{retrieval_context}}.",
-          "Batch transaction count: {{total_transactions}}.",
-          "Trusted resolved transactions already available: {{trusted_resolved_count}}.",
-        ].join("\n"),
-        requiredPlaceholders: [...batchContextPlaceholders],
-      },
-      {
-        id: "review_examples_wrapper",
-        label: "Review Examples Wrapper",
-        description:
-          "Heading and block container for previous user corrections.",
-        defaultValue: [
-          "Examples from prior user corrections:",
-          "{{review_examples_block}}",
-        ].join("\n"),
-        requiredPlaceholders: ["review_examples_block"],
-      },
-      {
-        id: "review_example_template",
-        label: "Single Review Example",
-        description:
-          "How one prior user correction is shown inside the prompt.",
-        defaultValue: [
-          "Example {{example_index}} transaction metadata: {{transaction}}.",
-          "Example {{example_index}} initial inference: {{initial_inference}}.",
-          "Example {{example_index}} user feedback: {{user_feedback}}.",
-          "Example {{example_index}} corrected outcome: {{corrected_outcome}}.",
-        ].join("\n"),
-        requiredPlaceholders: [...reviewExamplePlaceholders],
-      },
-      {
-        id: "review_context_template",
-        label: "Current Review Context",
-        description:
-          "Context passed when a user manually updates a transaction review.",
-        defaultValue: [
-          "Review trigger: {{review_trigger}}.",
-          "Previous review reason: {{previous_review_reason}}.",
-          "Previous user review context: {{previous_user_review_context}}.",
-          "New user review context: {{new_user_review_context}}.",
-          "Previous LLM analysis: {{previous_llm_analysis}}.",
-          "Propagated contexts from similar unresolved transactions: {{propagated_contexts}}.",
-          "Persisted confirmed security mappings: {{persisted_security_mappings}}.",
-          "Resolved source precedent from a similar transaction: {{resolved_source_precedent}}.",
-        ].join("\n"),
-        requiredPlaceholders: [...reviewContextPlaceholders],
-      },
+      ...sharedTransactionPromptSections,
     ],
   },
   spreadsheet_table_start: {
@@ -700,6 +647,42 @@ function renderRuleDraftParserPrompt(
   };
 }
 
+function placeholderVariables(placeholders: readonly string[]) {
+  return Object.fromEntries(
+    placeholders.map((placeholder) => [placeholder, `{{${placeholder}}}`]),
+  ) as Record<string, string>;
+}
+
+const transactionPreviewVariables = placeholderVariables(
+  transactionPromptPlaceholders,
+);
+const transactionPreviewBatchContext: TransactionPromptBatchContext = {
+  phase: "{{batch_phase}}",
+  sourceBatchKey: "{{source_batch_key}}",
+  batchSummary: "{{batch_summary}}",
+  retrievalContext: "{{retrieval_context}}",
+  totalTransactions: "{{total_transactions}}",
+  trustedResolvedCount: "{{trusted_resolved_count}}",
+};
+const transactionPreviewReviewExamples: TransactionPromptExample[] = [
+  {
+    transaction: "{{example_transaction_metadata}}",
+    initialInference: "{{example_initial_inference}}",
+    userFeedback: "{{example_user_feedback}}",
+    correctedOutcome: "{{example_corrected_outcome}}",
+  },
+];
+const transactionPreviewReviewContext: TransactionPromptReviewContext = {
+  trigger: "{{review_trigger}}",
+  previousReviewReason: "{{previous_review_reason}}",
+  previousUserContext: "{{previous_user_review_context}}",
+  userProvidedContext: "{{new_user_review_context}}",
+  previousLlmPayload: "{{previous_llm_analysis}}",
+  propagatedContexts: "{{propagated_contexts}}",
+  persistedSecurityMappings: "{{persisted_security_mappings}}",
+  resolvedSourcePrecedent: "{{resolved_source_precedent}}",
+};
+
 export function listPromptProfileDefinitions() {
   return Object.values(promptProfiles);
 }
@@ -750,112 +733,14 @@ export function buildPromptProfilePreview(
 ): PromptPreview {
   switch (promptId) {
     case "cash_transaction_analyzer":
-      return renderTransactionPrompt(
-        promptId,
-        overrides,
-        {
-          institution_name: "{{institution_name}}",
-          account_display_name: "{{account_display_name}}",
-          account_type: "{{account_type}}",
-          account_id: "{{account_id}}",
-          allowed_transaction_classes: "{{allowed_transaction_classes}}",
-          allowed_category_codes: "{{allowed_category_codes}}",
-          transaction_date: "{{transaction_date}}",
-          posted_date: "{{posted_date}}",
-          amount_original: "{{amount_original}}",
-          currency_original: "{{currency_original}}",
-          description_raw: "{{description_raw}}",
-          merchant_normalized: "{{merchant_normalized}}",
-          counterparty_name: "{{counterparty_name}}",
-          security_id: "{{security_id}}",
-          quantity: "{{quantity}}",
-          unit_price_original: "{{unit_price_original}}",
-          provider_context: "{{provider_context}}",
-          raw_payload: "{{raw_payload}}",
-          deterministic_hint: "{{deterministic_hint}}",
-          portfolio_state: "{{portfolio_state}}",
-          similar_account_history: "{{similar_account_history}}",
-        },
-        {
-          phase: "{{batch_phase}}",
-          sourceBatchKey: "{{source_batch_key}}",
-          batchSummary: "{{batch_summary}}",
-          retrievalContext: "{{retrieval_context}}",
-          totalTransactions: "{{total_transactions}}",
-          trustedResolvedCount: "{{trusted_resolved_count}}",
-        },
-        [
-          {
-            transaction: "{{example_transaction_metadata}}",
-            initialInference: "{{example_initial_inference}}",
-            userFeedback: "{{example_user_feedback}}",
-            correctedOutcome: "{{example_corrected_outcome}}",
-          },
-        ],
-        {
-          trigger: "{{review_trigger}}",
-          previousReviewReason: "{{previous_review_reason}}",
-          previousUserContext: "{{previous_user_review_context}}",
-          userProvidedContext: "{{new_user_review_context}}",
-          previousLlmPayload: "{{previous_llm_analysis}}",
-          propagatedContexts: "{{propagated_contexts}}",
-          persistedSecurityMappings: "{{persisted_security_mappings}}",
-          resolvedSourcePrecedent: "{{resolved_source_precedent}}",
-        },
-      );
     case "investment_transaction_analyzer":
       return renderTransactionPrompt(
         promptId,
         overrides,
-        {
-          institution_name: "{{institution_name}}",
-          account_display_name: "{{account_display_name}}",
-          account_type: "{{account_type}}",
-          account_id: "{{account_id}}",
-          allowed_transaction_classes: "{{allowed_transaction_classes}}",
-          allowed_category_codes: "{{allowed_category_codes}}",
-          transaction_date: "{{transaction_date}}",
-          posted_date: "{{posted_date}}",
-          amount_original: "{{amount_original}}",
-          currency_original: "{{currency_original}}",
-          description_raw: "{{description_raw}}",
-          merchant_normalized: "{{merchant_normalized}}",
-          counterparty_name: "{{counterparty_name}}",
-          security_id: "{{security_id}}",
-          quantity: "{{quantity}}",
-          unit_price_original: "{{unit_price_original}}",
-          provider_context: "{{provider_context}}",
-          raw_payload: "{{raw_payload}}",
-          deterministic_hint: "{{deterministic_hint}}",
-          portfolio_state: "{{portfolio_state}}",
-          similar_account_history: "{{similar_account_history}}",
-        },
-        {
-          phase: "{{batch_phase}}",
-          sourceBatchKey: "{{source_batch_key}}",
-          batchSummary: "{{batch_summary}}",
-          retrievalContext: "{{retrieval_context}}",
-          totalTransactions: "{{total_transactions}}",
-          trustedResolvedCount: "{{trusted_resolved_count}}",
-        },
-        [
-          {
-            transaction: "{{example_transaction_metadata}}",
-            initialInference: "{{example_initial_inference}}",
-            userFeedback: "{{example_user_feedback}}",
-            correctedOutcome: "{{example_corrected_outcome}}",
-          },
-        ],
-        {
-          trigger: "{{review_trigger}}",
-          previousReviewReason: "{{previous_review_reason}}",
-          previousUserContext: "{{previous_user_review_context}}",
-          userProvidedContext: "{{new_user_review_context}}",
-          previousLlmPayload: "{{previous_llm_analysis}}",
-          propagatedContexts: "{{propagated_contexts}}",
-          persistedSecurityMappings: "{{persisted_security_mappings}}",
-          resolvedSourcePrecedent: "{{resolved_source_precedent}}",
-        },
+        transactionPreviewVariables,
+        transactionPreviewBatchContext,
+        transactionPreviewReviewExamples,
+        transactionPreviewReviewContext,
       );
     case "spreadsheet_table_start":
       return renderSpreadsheetTableStartPrompt(overrides, {

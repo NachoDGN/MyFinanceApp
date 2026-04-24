@@ -1,8 +1,7 @@
-import { createFinanceRepository, queueRevolutConnectionSync } from "@myfinance/db";
-import { FinanceDomainService, type JobRunResult } from "@myfinance/domain";
+import { queueRevolutConnectionSync } from "@myfinance/db";
+import { type JobRunResult } from "@myfinance/domain";
+import { domain } from "./action-service";
 import { buildRevolutSyncFeedback } from "./revolut-sync-feedback";
-
-const domain = new FinanceDomainService(createFinanceRepository());
 
 export type RevolutInlineSyncResult = Awaited<
   ReturnType<typeof queueRevolutConnectionSync>

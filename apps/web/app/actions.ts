@@ -42,6 +42,23 @@ import {
   revalidateWorkspacePaths,
 } from "../lib/api-revalidate";
 
+const uuidSchema = z.string().uuid();
+const webActor = { actorName: "web-action", sourceChannel: "web" as const };
+const webCommand = { ...webActor, apply: true as const };
+
+function command<T extends object>(input: T) {
+  return { ...input, ...webCommand };
+}
+
+async function revalidated<T>(
+  resultPromise: Promise<T>,
+  ...revalidators: Array<() => void>
+) {
+  const result = await resultPromise;
+  revalidators.forEach((revalidate) => revalidate());
+  return result;
+}
+
 export async function previewImportAction(formData: FormData) {
   return withUploadedImport("preview", formData, async (input) => {
     logImportDebug("preview-action:start", {
@@ -72,10 +89,10 @@ export async function commitImportAction(formData: FormData) {
 export async function commitCreditCardStatementImportAction(
   formData: FormData,
 ) {
-  const result = await commitCreditCardStatementImportUpload(formData);
-
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    commitCreditCardStatementImportUpload(formData),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function createTemplateAction(
@@ -107,64 +124,53 @@ export async function createTemplateAction(
       dateDayFirst: template.dateDayFirst,
     });
   const { seededUserId } = getDbRuntimeConfig();
-  const result = await domain.createTemplate({
-    template: {
-      userId: seededUserId,
-      ...templateFields,
-      sheetName: templateFields.sheetName ?? null,
-      delimiter: templateFields.delimiter ?? null,
-      encoding: templateFields.encoding ?? null,
-      decimalSeparator: templateFields.decimalSeparator ?? null,
-      thousandsSeparator: templateFields.thousandsSeparator ?? null,
-      columnMapJson,
-      signLogicJson,
-      normalizationRulesJson,
-    },
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateTemplatePaths();
-  return result;
+  return revalidated(
+    domain.createTemplate(
+      command({
+        template: {
+          userId: seededUserId,
+          ...templateFields,
+          sheetName: templateFields.sheetName ?? null,
+          delimiter: templateFields.delimiter ?? null,
+          encoding: templateFields.encoding ?? null,
+          decimalSeparator: templateFields.decimalSeparator ?? null,
+          thousandsSeparator: templateFields.thousandsSeparator ?? null,
+          columnMapJson,
+          signLogicJson,
+          normalizationRulesJson,
+        },
+      }),
+    ),
+    revalidateTemplatePaths,
+  );
 }
 
 export async function deleteTemplateAction(templateId: string) {
-  const parsed = z.string().uuid().parse(templateId);
-  const result = await domain.deleteTemplate({
-    templateId: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateTemplatePaths();
-  revalidateAccountsPath();
-  return result;
+  return revalidated(
+    domain.deleteTemplate(
+      command({ templateId: uuidSchema.parse(templateId) }),
+    ),
+    revalidateTemplatePaths,
+    revalidateAccountsPath,
+  );
 }
 
 export async function createCategoryAction(
   input: z.input<typeof categorySchema>,
 ) {
-  const category = categorySchema.parse(input);
-  const result = await domain.createCategory({
-    category,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.createCategory(command({ category: categorySchema.parse(input) })),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function deleteCategoryAction(categoryCode: string) {
-  const parsed = z.string().trim().min(1).parse(categoryCode);
-  const result = await domain.deleteCategory({
-    categoryCode: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.deleteCategory(
+      command({ categoryCode: z.string().trim().min(1).parse(categoryCode) }),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function createAccountAction(
@@ -172,77 +178,78 @@ export async function createAccountAction(
 ) {
   const account = accountSchema.parse(input);
   const patch = toAccountPatch(account);
-  const result = await domain.createAccount({
-    account: {
-      entityId: account.entityId,
-      institutionName: patch.institutionName,
-      displayName: patch.displayName,
-      accountType: account.accountType,
-      assetDomain: toAssetDomain(account.accountType),
-      defaultCurrency: patch.defaultCurrency,
-      openingBalanceOriginal: patch.openingBalanceOriginal,
-      openingBalanceCurrency: patch.openingBalanceOriginal
-        ? patch.defaultCurrency
-        : null,
-      openingBalanceDate: patch.openingBalanceDate,
-      includeInConsolidation: patch.includeInConsolidation,
-      isActive: true,
-      importTemplateDefaultId: patch.importTemplateDefaultId,
-      matchingAliases: patch.matchingAliases,
-      accountSuffix: patch.accountSuffix,
-      balanceMode: patch.balanceMode,
-      staleAfterDays: patch.staleAfterDays,
-    },
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.createAccount(
+      command({
+        account: {
+          entityId: account.entityId,
+          institutionName: patch.institutionName,
+          displayName: patch.displayName,
+          accountType: account.accountType,
+          assetDomain: toAssetDomain(account.accountType),
+          defaultCurrency: patch.defaultCurrency,
+          openingBalanceOriginal: patch.openingBalanceOriginal,
+          openingBalanceCurrency: patch.openingBalanceOriginal
+            ? patch.defaultCurrency
+            : null,
+          openingBalanceDate: patch.openingBalanceDate,
+          includeInConsolidation: patch.includeInConsolidation,
+          isActive: true,
+          importTemplateDefaultId: patch.importTemplateDefaultId,
+          matchingAliases: patch.matchingAliases,
+          accountSuffix: patch.accountSuffix,
+          balanceMode: patch.balanceMode,
+          staleAfterDays: patch.staleAfterDays,
+        },
+      }),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function updateAccountAction(
   input: z.input<typeof accountUpdateSchema>,
 ) {
   const account = accountUpdateSchema.parse(input);
-  const result = await domain.updateAccount({
-    accountId: account.accountId,
-    patch: toAccountPatch(account),
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.updateAccount(
+      command({
+        accountId: account.accountId,
+        patch: toAccountPatch(account),
+      }),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function updateWorkspaceProfileAction(
   input: z.input<typeof workspaceProfileSchema>,
 ) {
   const profile = workspaceProfileSchema.parse(input);
-  const result = await domain.updateWorkspaceProfile({
-    profile: {
-      displayName: profile.displayName,
-      defaultBaseCurrency: profile.defaultBaseCurrency,
-      timezone: profile.timezone,
-      workspaceSettingsJson: buildWorkspaceSettingsJson(profile),
-    },
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.updateWorkspaceProfile(
+      command({
+        profile: {
+          displayName: profile.displayName,
+          defaultBaseCurrency: profile.defaultBaseCurrency,
+          timezone: profile.timezone,
+          workspaceSettingsJson: buildWorkspaceSettingsJson(profile),
+        },
+      }),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function deleteLearnedReviewExampleAction(
   learnedReviewExampleId: string,
 ) {
-  const parsedId = z.string().uuid().parse(learnedReviewExampleId);
-  const result = await deactivateLearnedReviewExample({
-    learnedReviewExampleId: parsedId,
-  });
-  revalidatePromptPaths();
+  const result = await revalidated(
+    deactivateLearnedReviewExample({
+      learnedReviewExampleId: uuidSchema.parse(learnedReviewExampleId),
+    }),
+    revalidatePromptPaths,
+  );
   return {
     learnedReviewExampleId: result.id,
     message: "Learned example removed from future prompt assembly.",
@@ -250,135 +257,87 @@ export async function deleteLearnedReviewExampleAction(
 }
 
 export async function createEntityAction(input: z.input<typeof entitySchema>) {
-  const entity = entitySchema.parse(input);
-  const result = await domain.createEntity({
-    entity: {
-      slug: entity.slug,
-      displayName: entity.displayName,
-      legalName: entity.legalName,
-      entityKind: entity.entityKind,
-      baseCurrency: entity.baseCurrency,
-    },
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.createEntity(command({ entity: entitySchema.parse(input) })),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function updateEntityAction(
   input: z.input<typeof entityUpdateSchema>,
 ) {
-  const entity = entityUpdateSchema.parse(input);
-  const result = await domain.updateEntity({
-    entityId: entity.entityId,
-    patch: {
-      slug: entity.slug,
-      displayName: entity.displayName,
-      legalName: entity.legalName,
-      baseCurrency: entity.baseCurrency,
-    },
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  const { entityId, ...patch } = entityUpdateSchema.parse(input);
+  return revalidated(
+    domain.updateEntity(command({ entityId, patch })),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function deleteEntityAction(entityId: string) {
-  const parsed = z.string().uuid().parse(entityId);
-  const result = await domain.deleteEntity({
-    entityId: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.deleteEntity(command({ entityId: uuidSchema.parse(entityId) })),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function createManualInvestmentAction(
   input: z.input<typeof createManualInvestmentSchema>,
 ) {
-  const trackedInvestment = createManualInvestmentSchema.parse(input);
-  const result = await domain.createManualInvestment({
-    ...trackedInvestment,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.createManualInvestment(
+      command(createManualInvestmentSchema.parse(input)),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function updateManualInvestmentAction(
   input: z.input<typeof updateManualInvestmentSchema>,
 ) {
-  const trackedInvestment = updateManualInvestmentSchema.parse(input);
-  const result = await domain.updateManualInvestment({
-    ...trackedInvestment,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.updateManualInvestment(
+      command(updateManualInvestmentSchema.parse(input)),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function recordManualInvestmentValuationAction(
   input: z.input<typeof manualInvestmentValuationSchema>,
 ) {
-  const valuation = manualInvestmentValuationSchema.parse(input);
-  const result = await domain.recordManualInvestmentValuation({
-    ...valuation,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.recordManualInvestmentValuation(
+      command(manualInvestmentValuationSchema.parse(input)),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function deleteManualInvestmentAction(manualInvestmentId: string) {
-  const parsed = z.string().uuid().parse(manualInvestmentId);
-  const result = await domain.deleteManualInvestment({
-    manualInvestmentId: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.deleteManualInvestment(
+      command({ manualInvestmentId: uuidSchema.parse(manualInvestmentId) }),
+    ),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function deleteAccountAction(accountId: string) {
-  const parsed = z.string().uuid().parse(accountId);
-  const result = await domain.deleteAccount({
-    accountId: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateImportPaths();
-  return result;
+  return revalidated(
+    domain.deleteAccount(command({ accountId: uuidSchema.parse(accountId) })),
+    revalidateImportPaths,
+  );
 }
 
 export async function resetWorkspaceAction() {
-  const result = await domain.resetWorkspace({
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(
+    domain.resetWorkspace(webCommand),
+    revalidateWorkspacePaths,
+  );
 }
 
 export async function refreshOwnedStockPricesAction() {
-  const result = await refreshOwnedStockPrices();
-  revalidateWorkspacePaths();
-  return result;
+  return revalidated(refreshOwnedStockPrices(), revalidateWorkspacePaths);
 }
 
 export async function updatePromptProfileAction(formData: FormData) {
@@ -391,14 +350,14 @@ export async function updatePromptProfileAction(formData: FormData) {
     string,
     unknown
   >;
-  const profile = await updatePromptProfile({
-    promptId: fields.promptId,
-    sections: parsedSections,
-    actorName: "web-action",
-    sourceChannel: "web",
-  });
-
-  revalidatePromptPaths();
+  const profile = await revalidated(
+    updatePromptProfile({
+      promptId: fields.promptId,
+      sections: parsedSections,
+      ...webActor,
+    }),
+    revalidatePromptPaths,
+  );
   return {
     profile,
     message: `Saved prompt overrides for ${fields.promptId}.`,
@@ -407,24 +366,16 @@ export async function updatePromptProfileAction(formData: FormData) {
 
 export async function queueRuleDraftAction(requestText: string) {
   const parsed = z.string().min(8).parse(requestText);
-  const result = await domain.queueRuleDraft({
-    requestText: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateRulesPaths();
-  return result;
+  return revalidated(
+    domain.queueRuleDraft(command({ requestText: parsed })),
+    revalidateRulesPaths,
+  );
 }
 
 export async function applyRuleDraftAction(jobId: string) {
   const parsed = z.string().min(1).parse(jobId);
-  const result = await domain.applyRuleDraft({
-    jobId: parsed,
-    actorName: "web-action",
-    sourceChannel: "web",
-    apply: true,
-  });
-  revalidateRulesPaths();
-  return result;
+  return revalidated(
+    domain.applyRuleDraft(command({ jobId: parsed })),
+    revalidateRulesPaths,
+  );
 }

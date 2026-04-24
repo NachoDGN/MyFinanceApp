@@ -220,36 +220,13 @@ function shiftMonthIso(value: string, months: number) {
   return date.toISOString().slice(0, 10);
 }
 
-function buildMonthlyFlowSeries(
+function resolvedTransactionsInWindow(
   dataset: DomainDataset,
   scope: Scope,
   startDate: string,
   endDate: string,
 ) {
-  const seriesStart = startOfMonthIso(startDate);
-  const seriesEnd = startOfMonthIso(endDate);
-  const monthRows = new Map<
-    string,
-    {
-      month: string;
-      incomeEur: Decimal;
-      spendingEur: Decimal;
-    }
-  >();
-
-  for (
-    let month = seriesStart;
-    month <= seriesEnd;
-    month = shiftMonthIso(month, 1)
-  ) {
-    monthRows.set(month, {
-      month,
-      incomeEur: new Decimal(0),
-      spendingEur: new Decimal(0),
-    });
-  }
-
-  const resolvedTransactions = filterTransactionsByReferenceDate(
+  return filterTransactionsByReferenceDate(
     filterTransactionsByScope(dataset, scope),
     endDate,
   ).filter(
@@ -257,42 +234,68 @@ function buildMonthlyFlowSeries(
       isTransactionResolvedForAnalytics(transaction) &&
       transaction.transactionDate >= startDate,
   );
+}
 
-  for (const transaction of resolvedTransactions) {
+function buildMonthlyTransactionSeries<T extends Record<string, Decimal>, R>(
+  dataset: DomainDataset,
+  scope: Scope,
+  startDate: string,
+  endDate: string,
+  seed: () => T,
+  fold: (row: { month: string } & T, transaction: Transaction) => void,
+  serialize: (row: { month: string } & T) => R,
+) {
+  const seriesStart = startOfMonthIso(startDate);
+  const seriesEnd = startOfMonthIso(endDate);
+  const monthRows = new Map<string, { month: string } & T>();
+
+  for (
+    let month = seriesStart;
+    month <= seriesEnd;
+    month = shiftMonthIso(month, 1)
+  ) {
+    monthRows.set(month, { month, ...seed() });
+  }
+
+  for (const transaction of resolvedTransactionsInWindow(
+    dataset,
+    scope,
+    startDate,
+    endDate,
+  )) {
     const month = startOfMonthIso(transaction.transactionDate);
     const row = monthRows.get(month);
     if (!row) continue;
-
-    const income = incomeContributionEur(transaction);
-    if (income) {
-      row.incomeEur = row.incomeEur.plus(income);
-    }
-
-    const spending = spendingContributionEur(transaction);
-    if (spending) {
-      row.spendingEur = row.spendingEur.plus(spending);
-    }
+    fold(row, transaction);
   }
 
-  return [...monthRows.values()].map((row) => ({
-    month: row.month,
-    incomeEur: row.incomeEur.toFixed(2),
-    spendingEur: row.spendingEur.toFixed(2),
-    operatingNetEur: row.incomeEur.minus(row.spendingEur).toFixed(2),
-  }));
+  return [...monthRows.values()].map(serialize);
 }
 
-function buildTrailingMonthlyFlowSeries(
+function buildMonthlyFlowSeries(
   dataset: DomainDataset,
   scope: Scope,
-  referenceDate: string,
-  monthCount: number,
+  startDate: string,
+  endDate: string,
 ) {
-  return buildMonthlyFlowSeries(
+  return buildMonthlyTransactionSeries(
     dataset,
     scope,
-    startOfTrailingMonthsIso(referenceDate, monthCount),
-    referenceDate,
+    startDate,
+    endDate,
+    () => ({ incomeEur: new Decimal(0), spendingEur: new Decimal(0) }),
+    (row, transaction) => {
+      const income = incomeContributionEur(transaction);
+      const spending = spendingContributionEur(transaction);
+      if (income) row.incomeEur = row.incomeEur.plus(income);
+      if (spending) row.spendingEur = row.spendingEur.plus(spending);
+    },
+    (row) => ({
+      month: row.month,
+      incomeEur: row.incomeEur.toFixed(2),
+      spendingEur: row.spendingEur.toFixed(2),
+      operatingNetEur: row.incomeEur.minus(row.spendingEur).toFixed(2),
+    }),
   );
 }
 
@@ -324,76 +327,54 @@ function buildMonthlyIncomeComposition(
   startDate: string,
   endDate: string,
 ) {
-  const seriesStart = startOfMonthIso(startDate);
-  const seriesEnd = startOfMonthIso(endDate);
-  const monthRows = new Map<
-    string,
-    {
-      month: string;
-      operatingIncomeEur: Decimal;
-      investmentIncomeEur: Decimal;
-    }
-  >();
-
-  for (
-    let month = seriesStart;
-    month <= seriesEnd;
-    month = shiftMonthIso(month, 1)
-  ) {
-    monthRows.set(month, {
-      month,
-      operatingIncomeEur: new Decimal(0),
-      investmentIncomeEur: new Decimal(0),
-    });
-  }
-
-  const resolvedTransactions = filterTransactionsByReferenceDate(
-    filterTransactionsByScope(dataset, scope),
-    endDate,
-  ).filter(
-    (transaction) =>
-      isTransactionResolvedForAnalytics(transaction) &&
-      transaction.transactionDate >= startDate,
-  );
-
-  for (const transaction of resolvedTransactions) {
-    const month = startOfMonthIso(transaction.transactionDate);
-    const row = monthRows.get(month);
-    if (!row) continue;
-
-    const contribution = incomeContributionEur(transaction);
-    if (!contribution) continue;
-
-    if (["dividend", "interest"].includes(transaction.transactionClass)) {
-      row.investmentIncomeEur = row.investmentIncomeEur.plus(contribution);
-      continue;
-    }
-
-    row.operatingIncomeEur = row.operatingIncomeEur.plus(contribution);
-  }
-
-  return [...monthRows.values()].map((row) => ({
-    month: row.month,
-    operatingIncomeEur: row.operatingIncomeEur.toFixed(2),
-    investmentIncomeEur: row.investmentIncomeEur.toFixed(2),
-    totalIncomeEur: row.operatingIncomeEur
-      .plus(row.investmentIncomeEur)
-      .toFixed(2),
-  }));
-}
-
-function buildTrailingMonthlyIncomeComposition(
-  dataset: DomainDataset,
-  scope: Scope,
-  referenceDate: string,
-  monthCount: number,
-) {
-  return buildMonthlyIncomeComposition(
+  return buildMonthlyTransactionSeries(
     dataset,
     scope,
-    startOfTrailingMonthsIso(referenceDate, monthCount),
-    referenceDate,
+    startDate,
+    endDate,
+    () => ({
+      operatingIncomeEur: new Decimal(0),
+      investmentIncomeEur: new Decimal(0),
+    }),
+    (row, transaction) => {
+      const contribution = incomeContributionEur(transaction);
+      if (!contribution) return;
+      if (["dividend", "interest"].includes(transaction.transactionClass)) {
+        row.investmentIncomeEur = row.investmentIncomeEur.plus(contribution);
+      } else {
+        row.operatingIncomeEur = row.operatingIncomeEur.plus(contribution);
+      }
+    },
+    (row) => ({
+      month: row.month,
+      operatingIncomeEur: row.operatingIncomeEur.toFixed(2),
+      investmentIncomeEur: row.investmentIncomeEur.toFixed(2),
+      totalIncomeEur: row.operatingIncomeEur
+        .plus(row.investmentIncomeEur)
+        .toFixed(2),
+    }),
   );
+}
+
+function resolveMonthlySeriesWindow(
+  dataset: DomainDataset,
+  scope: Scope,
+  period: PeriodSelection,
+  referenceDate: string,
+  fallbackMonthCount: number,
+) {
+  if (period.preset === "custom")
+    return { start: period.start, end: period.end };
+  if (period.preset === "all") {
+    return {
+      start: resolveScopedSeriesStartDate(dataset, scope, referenceDate),
+      end: period.end,
+    };
+  }
+  return {
+    start: startOfTrailingMonthsIso(referenceDate, fallbackMonthCount),
+    end: referenceDate,
+  };
 }
 
 function currentCashTotal(
@@ -830,22 +811,19 @@ export function buildDashboardSummary(
     }),
   );
 
-  const monthlySeries =
-    period.preset === "custom"
-      ? buildMonthlyFlowSeries(dataset, input.scope, period.start, period.end)
-      : period.preset === "all"
-        ? buildMonthlyFlowSeries(
-            dataset,
-            input.scope,
-            resolveScopedSeriesStartDate(dataset, input.scope, referenceDate),
-            period.end,
-          )
-        : buildTrailingMonthlyFlowSeries(
-            dataset,
-            input.scope,
-            referenceDate,
-            period.preset === "24m" ? 24 : 6,
-          );
+  const monthlyWindow = resolveMonthlySeriesWindow(
+    dataset,
+    input.scope,
+    period,
+    referenceDate,
+    period.preset === "24m" ? 24 : 6,
+  );
+  const monthlySeries = buildMonthlyFlowSeries(
+    dataset,
+    input.scope,
+    monthlyWindow.start,
+    monthlyWindow.end,
+  );
 
   const scopedTransactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, input.scope),
@@ -1285,6 +1263,13 @@ export function buildIncomeReadModel(
     "incomeEur",
     3,
   );
+  const monthlyIncomeWindow = resolveMonthlySeriesWindow(
+    dataset,
+    input.scope,
+    summary.period,
+    context.referenceDate,
+    summary.monthlySeries.length,
+  );
   const ytdPeriod = resolvePeriodSelection({
     preset: "ytd",
     referenceDate: context.referenceDate,
@@ -1304,31 +1289,12 @@ export function buildIncomeReadModel(
     sourceRows,
     investmentIncomeRows,
     trailingThreeMonthAverage,
-    monthlyIncomeComposition:
-      summary.period.preset === "custom"
-        ? buildMonthlyIncomeComposition(
-            dataset,
-            input.scope,
-            summary.period.start,
-            summary.period.end,
-          )
-        : summary.period.preset === "all"
-          ? buildMonthlyIncomeComposition(
-              dataset,
-              input.scope,
-              resolveScopedSeriesStartDate(
-                dataset,
-                input.scope,
-                context.referenceDate,
-              ),
-              summary.period.end,
-            )
-          : buildTrailingMonthlyIncomeComposition(
-              dataset,
-              input.scope,
-              context.referenceDate,
-              summary.monthlySeries.length,
-            ),
+    monthlyIncomeComposition: buildMonthlyIncomeComposition(
+      dataset,
+      input.scope,
+      monthlyIncomeWindow.start,
+      monthlyIncomeWindow.end,
+    ),
     topSourceShare,
     activeSourceCount: sourceRows.length,
     ytdIncomeTotal: flowMetric(dataset, input.scope, ytdPeriod, "income"),
