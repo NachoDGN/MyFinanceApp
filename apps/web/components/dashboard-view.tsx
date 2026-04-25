@@ -62,7 +62,6 @@ export function DashboardView({
   const incomeMetric = metricMap.get("income_mtd_total");
   const spendingMetric = metricMap.get("spending_mtd_total");
   const netMetric = metricMap.get("operating_net_cash_flow_mtd");
-  const portfolioMetric = metricMap.get("portfolio_market_value_current");
   const unrealizedMetric = metricMap.get("portfolio_unrealized_pnl_current");
   const netWorthMetric = metricMap.get("net_worth_current");
   const periodLabel = describePeriodLabel(state.period);
@@ -118,20 +117,6 @@ export function DashboardView({
       chartValues: chartFrom("operatingNetEur"),
       direction: metricDirection(netMetric?.deltaDisplay),
     },
-    {
-      label: "Portfolio Value",
-      metric: portfolioMetric,
-      subtitle: `vs ${comparisonLabel}`,
-      chartValues: chartFrom("incomeEur"),
-      direction: metricDirection(portfolioMetric?.deltaDisplay),
-    },
-    {
-      label: "Unrealized Gain",
-      metric: unrealizedMetric,
-      subtitle: `vs ${comparisonLabel}`,
-      chartValues: chartFrom("operatingNetEur"),
-      direction: metricDirection(unrealizedMetric?.deltaDisplay),
-    },
   ];
 
   const qualityRows = [
@@ -183,48 +168,62 @@ export function DashboardView({
   return (
     <AppShell pathname={pathname} scopeOptions={scopeOptions} state={state}>
       <div className="dashboard-grid dashboard-home-grid">
-        <div className="summary-card">
-          <div className="summary-content">
-            <span className="label-sm dark-label">Total Net Wealth</span>
-            <div className="total-wealth">
-              {formatCurrency(netWorthMetric?.valueDisplay, model.currency)}
+        <div className="dashboard-kpi-grid">
+          <div className="summary-card">
+            <div className="summary-grid-overlay" aria-hidden="true" />
+            <div className="summary-glow" aria-hidden="true" />
+            <div className="summary-card-top">
+              <div className="summary-content">
+                <span className="label-sm dark-label">Total Net Wealth</span>
+                <div className="total-wealth">
+                  {formatCurrency(netWorthMetric?.valueDisplay, model.currency)}
+                </div>
+              </div>
+              <a className="summary-icon-button" href={transactionsHref}>
+                <span className="summary-trend-icon" aria-hidden="true" />
+                <span className="sr-only">Open ledger</span>
+              </a>
+            </div>
+            <div className="wealth-breakdown">
+              {showWealthBreakdown ? (
+                <>
+                  <div className="account-type">
+                    <span className="label-sm dark-label">
+                      <span className="account-dot accent" />
+                      Personal Accounts
+                    </span>
+                    <div className="account-value">
+                      {formatCurrency(
+                        model.summaryBreakdown?.personal?.valueDisplay,
+                        model.currency,
+                      )}
+                    </div>
+                  </div>
+                  <div className="account-type with-divider">
+                    <span className="label-sm dark-label">
+                      <span className="account-dot muted" />
+                      Company Assets
+                    </span>
+                    <div className="account-value">
+                      {formatCurrency(
+                        model.summaryBreakdown?.companies.valueDisplay,
+                        model.currency,
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="account-type">
+                  <span className="label-sm dark-label">Selected Scope</span>
+                  <div className="account-value">{selectedScopeLabel}</div>
+                </div>
+              )}
+              <a className="summary-ledger-button" href={transactionsHref}>
+                Review Full Ledger
+              </a>
             </div>
           </div>
-          <div className="wealth-breakdown">
-            {showWealthBreakdown ? (
-              <>
-                <div className="account-type">
-                  <span className="label-sm dark-label">Personal Accounts</span>
-                  <div className="account-value">
-                    {formatCurrency(
-                      model.summaryBreakdown?.personal?.valueDisplay,
-                      model.currency,
-                    )}
-                  </div>
-                </div>
-                <div className="account-type">
-                  <span className="label-sm dark-label">Company Assets</span>
-                  <div className="account-value">
-                    {formatCurrency(
-                      model.summaryBreakdown?.companies.valueDisplay,
-                      model.currency,
-                    )}
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="account-type">
-                <span className="label-sm dark-label">Selected Scope</span>
-                <div className="account-value">{selectedScopeLabel}</div>
-              </div>
-            )}
-            <a className="btn-pill" href={transactionsHref}>
-              Review Ledger
-            </a>
-          </div>
-        </div>
 
-        <div className="dashboard-metrics-grid">
           {metricCards.map((card) => (
             <MetricCard
               key={card.label}

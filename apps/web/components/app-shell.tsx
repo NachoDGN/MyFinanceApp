@@ -75,110 +75,141 @@ export function AppShell({
   }
 
   return (
-    <div className="page-shell">
-      <nav className="top-nav">
-        <div className="nav-logo" />
-        {primaryNav.map((item) => (
-          <a
-            key={item.href}
-            href={buildHref(item.href, state, {})}
-            className={`nav-item ${isPrimaryNavActive(item.href) ? "active" : ""}`}
-          >
-            {item.label}
-          </a>
-        ))}
-      </nav>
-
-      <div className="secondary-nav">
-        {secondaryNav.map((item) => (
-          <a
-            key={item.href}
-            href={buildHref(item.href, state, {})}
-            className={isSecondaryNavActive(item.href) ? "active" : ""}
-          >
-            {item.label}
-          </a>
-        ))}
-      </div>
-
-      <div className="filter-bar">
-        <div className="filter-group">
-          {entityScopeOptions.map((option) => (
-            <a
-              key={option.value}
-              href={buildHref(
-                pathname,
-                state,
-                { scopeParam: option.value },
-                pageQueryParams,
-              )}
-              className={`filter-pill ${state.scopeParam === option.value ? "active" : ""}`}
-            >
-              {option.label}
+    <>
+      <header className="app-header">
+        <div className="app-header-inner">
+          <div className="app-header-main">
+            <a className="brand-mark" href={buildHref("/", state, {})}>
+              <span className="brand-logo" aria-hidden="true">
+                <span />
+              </span>
+              <span className="brand-name">LedgerSpace</span>
             </a>
-          ))}
+
+            <nav className="top-nav" aria-label="Primary navigation">
+              {primaryNav.map((item) => (
+                <a
+                  key={item.href}
+                  href={buildHref(item.href, state, {})}
+                  className={`nav-item ${isPrimaryNavActive(item.href) ? "active" : ""}`}
+                >
+                  {item.label}
+                </a>
+              ))}
+            </nav>
+
+            <div className="nav-actions" aria-label="Account actions">
+              <button className="nav-icon-button" type="button">
+                <span className="nav-bell-icon" aria-hidden="true" />
+                <span className="sr-only">Notifications</span>
+              </button>
+              <div className="nav-avatar" aria-label="Current user">
+                ID
+              </div>
+            </div>
+          </div>
+
+          <nav className="secondary-nav" aria-label="Secondary navigation">
+            {secondaryNav.map((item) => (
+              <a
+                key={item.href}
+                href={buildHref(item.href, state, {})}
+                className={isSecondaryNavActive(item.href) ? "active" : ""}
+              >
+                {item.label}
+              </a>
+            ))}
+          </nav>
         </div>
-        <div className="filter-group">
-          <a
-            href={buildHref(
-              pathname,
-              state,
-              { period: "mtd" },
-              pageQueryParams,
-            )}
-            className={`filter-pill ${state.period === "mtd" ? "active" : ""}`}
-          >
-            Month to Date
-          </a>
-          <a
-            href={buildHref(
-              pathname,
-              state,
-              { period: "ytd" },
-              pageQueryParams,
-            )}
-            className={`filter-pill ${state.period === "ytd" ? "active" : ""}`}
-          >
-            Year to Date
-          </a>
-          <a
-            href={buildHref(
-              pathname,
-              state,
-              { period: "all" },
-              pageQueryParams,
-            )}
-            className={`filter-pill ${state.period === "all" ? "active" : ""}`}
-          >
-            All Time
-          </a>
-          <a
-            href={buildHref(
-              pathname,
-              state,
-              { currency: "EUR" },
-              pageQueryParams,
-            )}
-            className={`filter-pill ${state.currency === "EUR" ? "active" : ""}`}
-          >
-            EUR
-          </a>
-          <a
-            href={buildHref(
-              pathname,
-              state,
-              { currency: "USD" },
-              pageQueryParams,
-            )}
-            className={`filter-pill ${state.currency === "USD" ? "active" : ""}`}
-          >
-            USD
-          </a>
-          <TransactionSearchModalHost state={state} />
+      </header>
+
+      <main className="page-shell app-main">
+        <div className="filter-bar">
+          <div className="filter-group segmented-filter scope-filter-group">
+            {entityScopeOptions.map((option) => (
+              <a
+                key={option.value}
+                href={buildHref(
+                  pathname,
+                  state,
+                  { scopeParam: option.value },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.scopeParam === option.value ? "active" : ""}`}
+              >
+                {option.label}
+              </a>
+            ))}
+          </div>
+
+          <div className="filter-actions">
+            <div className="filter-group segmented-filter period-filter-group">
+              <a
+                href={buildHref(
+                  pathname,
+                  state,
+                  { period: "mtd" },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.period === "mtd" ? "active" : ""}`}
+              >
+                MTD
+              </a>
+              <a
+                href={buildHref(
+                  pathname,
+                  state,
+                  { period: "ytd" },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.period === "ytd" ? "active" : ""}`}
+              >
+                YTD
+              </a>
+              <a
+                href={buildHref(
+                  pathname,
+                  state,
+                  { period: "all" },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.period === "all" ? "active" : ""}`}
+              >
+                ALL
+              </a>
+            </div>
+
+            <div className="filter-group segmented-filter currency-filter-group">
+              <a
+                href={buildHref(
+                  pathname,
+                  state,
+                  { currency: "EUR" },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.currency === "EUR" ? "active" : ""}`}
+              >
+                EUR
+              </a>
+              <a
+                href={buildHref(
+                  pathname,
+                  state,
+                  { currency: "USD" },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.currency === "USD" ? "active" : ""}`}
+              >
+                USD
+              </a>
+            </div>
+
+            <TransactionSearchModalHost state={state} />
+          </div>
         </div>
-      </div>
-      <ImportReviewModalHost />
-      {children}
-    </div>
+        <ImportReviewModalHost />
+        {children}
+      </main>
+    </>
   );
 }

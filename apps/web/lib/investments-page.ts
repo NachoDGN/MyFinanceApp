@@ -288,6 +288,26 @@ function safePercent(numerator: Decimal, denominator: Decimal) {
     : numerator.div(denominator).mul(100).toFixed(2);
 }
 
+function formatCompactPercent(value: string | null | undefined) {
+  if (value === null || value === undefined) return "N/A";
+  return `${Number(value).toFixed(1)}%`;
+}
+
+function formatSignedCurrency(
+  amount: string | null | undefined,
+  currency: string,
+) {
+  const formatted = formatCurrency(amount, currency);
+  if (amount === null || amount === undefined) return formatted;
+  return Number(amount) > 0 ? `+${formatted}` : formatted;
+}
+
+function formatSignedPercent(value: string | null | undefined) {
+  const formatted = formatPercent(value);
+  if (value === null || value === undefined) return formatted;
+  return Number(value) > 0 ? `+${formatted}` : formatted;
+}
+
 function buildHoldingBucketSummary(
   model: InvestmentsModel,
   rows: Holding[],
@@ -378,18 +398,25 @@ function buildTransactionRow(
 function buildPositionRow(
   model: InvestmentsModel,
   holding: Holding,
-  subtitle: string,
+  meta: {
+    symbol: string;
+    exchange?: string | null;
+    quantityDisplay: string;
+  },
   getHoldingDisplayMetric: (holding: Holding) => HoldingDisplayMetric,
 ) {
   const displayMetric = getHoldingDisplayMetric(holding);
   return {
     key: holding.securityId,
     title: holding.securityName,
-    subtitle,
+    symbol: meta.symbol,
+    exchange: meta.exchange ?? null,
+    quantityDisplay: meta.quantityDisplay,
     value: formatCurrency(displayMetric.currentValueDisplay, model.currency),
-    returnDisplay: displayMetric.currentValueDisplay
-      ? `${formatCurrency(displayMetric.unrealizedDisplay, model.currency)} / ${formatPercent(displayMetric.unrealizedDisplayPercent)}`
+    returnAmountDisplay: displayMetric.currentValueDisplay
+      ? formatCurrency(displayMetric.unrealizedDisplay, model.currency)
       : undefined,
+    returnPercentDisplay: formatPercent(displayMetric.unrealizedDisplayPercent),
     returnClass:
       Number(displayMetric.unrealizedDisplay ?? "0") >= 0
         ? "positive"
@@ -519,9 +546,10 @@ export function buildInvestmentsPageModel(
       unrealizedDisplay: null,
       unrealizedDisplayPercent: null,
     };
+  const manualHoldings = sortedHoldings.filter(isManualHolding);
   const fundHoldings = sortedHoldings.filter(
     (holding) =>
-      isManualHolding(holding) ||
+      !isManualHolding(holding) &&
       holdingLooksLikeFund(securityById.get(holding.securityId)),
   );
   const stockHoldings = sortedHoldings.filter(
@@ -533,8 +561,7 @@ export function buildInvestmentsPageModel(
     (left, right) =>
       Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
   );
-  const manualInvestmentSummaries = fundHoldings
-    .filter(isManualHolding)
+  const manualInvestmentSummaries = manualHoldings
     .map((holding) => {
       const investment = model.dataset.manualInvestments.find(
         (row) => row.id === holding.securityId,
@@ -619,6 +646,70 @@ export function buildInvestmentsPageModel(
     totalPortfolioValueDisplay,
     getHoldingDisplayMetric,
   );
+  const visiblePositionHoldings = [...fundHoldings, ...stockHoldings];
+  const pricedVisiblePositionHoldings = visiblePositionHoldings.filter(
+    (holding) => {
+      const metric = getHoldingDisplayMetric(holding);
+      return (
+        metric.currentValueDisplay !== null &&
+        metric.unrealizedDisplay !== null &&
+        metric.openCostBasisDisplay !== null
+      );
+    },
+  );
+  const totalUnrealizedDisplay = pricedVisiblePositionHoldings.reduce(
+    (sum, holding) =>
+      sum.plus(getHoldingDisplayMetric(holding).unrealizedDisplay ?? 0),
+    new Decimal(0),
+  );
+  const totalOpenCostBasisDisplay = pricedVisiblePositionHoldings.reduce(
+    (sum, holding) =>
+      sum.plus(getHoldingDisplayMetric(holding).openCostBasisDisplay ?? 0),
+    new Decimal(0),
+  );
+  const bestPerformingHolding = visiblePositionHoldings
+    .map((holding) => ({
+      holding,
+      metric: getHoldingDisplayMetric(holding),
+      security: securityById.get(holding.securityId),
+    }))
+    .filter((row) => row.metric.unrealizedDisplayPercent !== null)
+    .sort(
+      (left, right) =>
+        Number(right.metric.unrealizedDisplayPercent) -
+        Number(left.metric.unrealizedDisplayPercent),
+    )[0];
+  const fundsValueDisplay = fundHoldings.reduce(
+    (sum, holding) =>
+      sum.plus(getHoldingDisplayMetric(holding).currentValueDisplay ?? 0),
+    new Decimal(0),
+  );
+  const stocksValueDisplay = stockHoldings.reduce(
+    (sum, holding) =>
+      sum.plus(getHoldingDisplayMetric(holding).currentValueDisplay ?? 0),
+    new Decimal(0),
+  );
+  const cashValueDisplay = new Decimal(
+    toDisplayAmount(model, model.holdings.brokerageCashEur) ?? 0,
+  );
+  const cryptoValueDisplay = new Decimal(
+    toDisplayAmount(model, cryptoPortfolioValueEur.toFixed(2)) ?? 0,
+  );
+  const buildAllocationRow = (
+    key: "funds" | "stocks" | "cash" | "crypto",
+    label: string,
+    value: Decimal,
+  ) => {
+    const percent = safePercent(value, totalPortfolioValueDisplay);
+    const numericPercent = Math.max(0, Math.min(100, Number(percent ?? 0)));
+    return {
+      key,
+      label,
+      percentDisplay: formatCompactPercent(percent),
+      width: `${numericPercent}%`,
+      showInLegend: value.gt(0) && numericPercent >= 0.5,
+    };
+  };
   const periodLabel = describeInvestmentsPeriodLabel(model.period);
   const comparisonLabel = describeInvestmentsComparisonLabel(model.period);
   const processedRowsPeriodLabel = describeProcessedRowsPeriodLabel(
@@ -713,6 +804,49 @@ export function buildInvestmentsPageModel(
     allTimeResolvedTradeRows,
     processedRows: processedRowsPage,
     unresolvedRows,
+    portfolioOverview: {
+      totalPortfolioValueDisplay: formatCurrency(
+        totalPortfolioValueDisplay.toFixed(2),
+        model.currency,
+      ),
+      totalUnrealizedDisplay: formatSignedCurrency(
+        totalUnrealizedDisplay.toFixed(2),
+        model.currency,
+      ),
+      totalUnrealizedPercentDisplay: `${formatSignedPercent(
+        safePercent(totalUnrealizedDisplay, totalOpenCostBasisDisplay),
+      )} All Time`,
+      totalUnrealizedClass:
+        Number(totalUnrealizedDisplay.toFixed(2)) >= 0
+          ? ("positive" as const)
+          : ("negative" as const),
+      bestPerformingAsset: bestPerformingHolding
+        ? {
+            title: bestPerformingHolding.holding.securityName,
+            subtitle: [
+              bestPerformingHolding.holding.symbol,
+              bestPerformingHolding.security?.exchangeName,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            returnDisplay: formatSignedPercent(
+              bestPerformingHolding.metric.unrealizedDisplayPercent,
+            ),
+            returnClass:
+              Number(
+                bestPerformingHolding.metric.unrealizedDisplayPercent ?? "0",
+              ) >= 0
+                ? ("positive" as const)
+                : ("negative" as const),
+          }
+        : null,
+      allocationRows: [
+        buildAllocationRow("funds", "Funds", fundsValueDisplay),
+        buildAllocationRow("stocks", "Stocks & ETF", stocksValueDisplay),
+        buildAllocationRow("cash", "Cash", cashValueDisplay),
+        buildAllocationRow("crypto", "Crypto", cryptoValueDisplay),
+      ],
+    },
     metricCards: [
       {
         label: "Portfolio Market Value",
@@ -803,21 +937,13 @@ export function buildInvestmentsPageModel(
     ],
     portfolioAllocationRows,
     fundRows: fundHoldings.map((holding) => {
-      const manualInvestment = isManualHolding(holding)
-        ? model.dataset.manualInvestments.find(
-            (row) => row.id === holding.securityId,
-          )
-        : null;
-      const manualSnapshotDate = manualInvestment
-        ? latestManualValuationByInvestmentId.get(manualInvestment.id)
-            ?.snapshotDate
-        : null;
       return buildPositionRow(
         model,
         holding,
-        manualInvestment
-          ? `${accountById.get(holding.accountId)?.displayName ?? holding.accountId} · ${manualSnapshotDate ? `snapshot ${formatDate(manualSnapshotDate)}` : "manual valuation"}`
-          : `${holding.symbol} · ${formatQuantity(holding.quantity)} units`,
+        {
+          symbol: holding.symbol,
+          quantityDisplay: `${formatQuantity(holding.quantity)} units`,
+        },
         getHoldingDisplayMetric,
       );
     }),
@@ -826,7 +952,11 @@ export function buildInvestmentsPageModel(
       return buildPositionRow(
         model,
         holding,
-        `${holding.symbol} · ${security?.exchangeName ?? "Unknown exchange"} · ${formatQuantity(holding.quantity)} units`,
+        {
+          symbol: holding.symbol,
+          exchange: security?.exchangeName ?? "Unknown exchange",
+          quantityDisplay: `${formatQuantity(holding.quantity)} units`,
+        },
         getHoldingDisplayMetric,
       );
     }),

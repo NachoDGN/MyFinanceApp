@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 
 import { AppShell } from "./app-shell";
 import { InvestmentPriceRefreshButton } from "./investment-price-refresh-button";
-import { ManualInvestmentWorkbench } from "./manual-investment-workbench";
 import {
   DistributionList,
   InvestmentAllocationCard,
@@ -25,7 +24,11 @@ function PositionListSection({
   emptyMessage: string;
 }) {
   return (
-    <SectionCard title={title} subtitle={subtitle} span="span-4">
+    <section className="investment-position-column">
+      <div className="investment-position-column-header">
+        <p className="investment-position-kicker">{subtitle}</p>
+        <h2 className="investment-position-column-title">{title}</h2>
+      </div>
       <div className="investment-position-list">
         {rows.length === 0 ? (
           <div className="table-empty-state">{emptyMessage}</div>
@@ -35,15 +38,27 @@ function PositionListSection({
               <div className="investment-position-head">
                 <div className="investment-position-copy">
                   <h3 className="investment-position-name">{row.title}</h3>
-                  <p className="investment-position-symbol">{row.subtitle}</p>
+                  <div className="investment-position-meta">
+                    <span className="investment-symbol-pill">{row.symbol}</span>
+                    {row.exchange ? (
+                      <>
+                        <span className="investment-position-dot" />
+                        <span>{row.exchange}</span>
+                      </>
+                    ) : null}
+                    <span className="investment-position-dot" />
+                    <span>{row.quantityDisplay}</span>
+                  </div>
                 </div>
                 <div className="investment-position-values">
                   <strong>{row.value}</strong>
-                  {row.returnDisplay ? (
+                  {row.returnAmountDisplay ? (
                     <span
                       className={`investment-return ${row.returnClass ?? "positive"}`}
                     >
-                      {row.returnDisplay}
+                      <span>{row.returnAmountDisplay}</span>
+                      <span className="investment-return-separator">/</span>
+                      <span>{row.returnPercentDisplay}</span>
                     </span>
                   ) : (
                     <span className="muted">{row.fallbackNote}</span>
@@ -54,7 +69,7 @@ function PositionListSection({
           ))
         )}
       </div>
-    </SectionCard>
+    </section>
   );
 }
 
@@ -65,7 +80,9 @@ function HoldingsTable({
 }: {
   rows: InvestmentsPageModel["holdingRows"];
   headers: string[];
-  getCurrentPriceCell: (row: InvestmentsPageModel["holdingRows"][number]) => ReactNode;
+  getCurrentPriceCell: (
+    row: InvestmentsPageModel["holdingRows"][number],
+  ) => ReactNode;
 }) {
   return (
     <SimpleTable
@@ -83,6 +100,103 @@ function HoldingsTable({
         row.freshnessLabel,
       ])}
     />
+  );
+}
+
+function PortfolioOverviewSection({ model }: { model: InvestmentsPageModel }) {
+  const visibleAllocationRows = model.portfolioOverview.allocationRows.filter(
+    (row) => row.showInLegend,
+  );
+
+  return (
+    <section className="investment-overview-section">
+      <h2 className="investment-overview-kicker">Portfolio Overview</h2>
+      <div className="investment-overview-grid">
+        <article className="investment-overview-card">
+          <div>
+            <div className="investment-overview-label">
+              Total Portfolio Value
+            </div>
+            <div className="investment-overview-value">
+              {model.portfolioOverview.totalPortfolioValueDisplay}
+            </div>
+          </div>
+          <div className="investment-overview-note">
+            Across all asset classes
+          </div>
+        </article>
+
+        <article className="investment-overview-card">
+          <div>
+            <div className="investment-overview-label">
+              Total Unrealized P/L
+            </div>
+            <div
+              className={`investment-overview-value ${model.portfolioOverview.totalUnrealizedClass}`}
+            >
+              {model.portfolioOverview.totalUnrealizedDisplay}
+            </div>
+          </div>
+          <div
+            className={`investment-overview-trend ${model.portfolioOverview.totalUnrealizedClass}`}
+          >
+            <span className="investment-overview-trend-icon">↗</span>
+            {model.portfolioOverview.totalUnrealizedPercentDisplay}
+          </div>
+        </article>
+
+        <article className="investment-overview-card">
+          <div>
+            <div className="investment-overview-label">
+              Best Performing Asset
+            </div>
+            <div className="investment-overview-asset-name">
+              {model.portfolioOverview.bestPerformingAsset?.title ?? "N/A"}
+            </div>
+            <div className="investment-overview-asset-meta">
+              {model.portfolioOverview.bestPerformingAsset?.subtitle ??
+                "No priced holdings"}
+            </div>
+          </div>
+          <div
+            className={`investment-overview-best-return ${
+              model.portfolioOverview.bestPerformingAsset?.returnClass ??
+              "positive"
+            }`}
+          >
+            {model.portfolioOverview.bestPerformingAsset?.returnDisplay ??
+              "N/A"}
+          </div>
+        </article>
+
+        <article className="investment-overview-card">
+          <div className="investment-overview-label">Asset Allocation</div>
+          <div className="investment-overview-allocation-bar">
+            {model.portfolioOverview.allocationRows.map((row) => (
+              <div
+                className={`investment-overview-allocation-segment ${row.key}`}
+                key={row.key}
+                style={{ width: row.width }}
+                title={`${row.label} ${row.percentDisplay}`}
+              />
+            ))}
+          </div>
+          <div className="investment-overview-allocation-list">
+            {visibleAllocationRows.map((row) => (
+              <div className="investment-overview-allocation-row" key={row.key}>
+                <div className="investment-overview-allocation-key">
+                  <span
+                    className={`investment-overview-allocation-dot ${row.key}`}
+                  />
+                  <span>{row.label}</span>
+                </div>
+                <span>{row.percentDisplay}</span>
+              </div>
+            ))}
+          </div>
+        </article>
+      </div>
+    </section>
   );
 }
 
@@ -104,8 +218,8 @@ function ProcessedTransactionsSection({
             Processed Investment Transactions
           </h2>
           <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-            {model.allTimeResolvedTradeRows} all-time resolved buy/sell trades in
-            this scope.
+            {model.allTimeResolvedTradeRows} all-time resolved buy/sell trades
+            in this scope.
           </p>
           {model.securityFilter ? (
             <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
@@ -172,7 +286,10 @@ function ProcessedTransactionsSection({
                 </a>
               ) : null}
               {model.safePage < model.totalPages ? (
-                <a className="btn-ghost" href={model.buildHref(model.safePage + 1)}>
+                <a
+                  className="btn-ghost"
+                  href={model.buildHref(model.safePage + 1)}
+                >
                   Next
                 </a>
               ) : null}
@@ -229,7 +346,9 @@ function ProcessedTransactionsSection({
                 <div className="investment-review-description">
                   {row.descriptionRaw}
                 </div>
-                <div className="investment-review-copy">{row.transactionClass}</div>
+                <div className="investment-review-copy">
+                  {row.transactionClass}
+                </div>
                 <div className="investment-review-copy centered">
                   {row.quantityDisplay}
                 </div>
@@ -288,22 +407,27 @@ function UnresolvedTransactionsSection({
               className="investment-review-grid-head"
               style={{ gridTemplateColumns: model.unresolvedLedgerColumns }}
             >
-              {["Date", "Description", "Qty", "Security", "Amount", "Review"].map(
-                (header, index) => (
-                  <div
-                    className={
-                      index === 4
-                        ? "investment-review-head-cell amount"
-                        : index === 2
-                          ? "investment-review-head-cell centered"
-                          : "investment-review-head-cell"
-                    }
-                    key={header}
-                  >
-                    {header}
-                  </div>
-                ),
-              )}
+              {[
+                "Date",
+                "Description",
+                "Qty",
+                "Security",
+                "Amount",
+                "Review",
+              ].map((header, index) => (
+                <div
+                  className={
+                    index === 4
+                      ? "investment-review-head-cell amount"
+                      : index === 2
+                        ? "investment-review-head-cell centered"
+                        : "investment-review-head-cell"
+                  }
+                  key={header}
+                >
+                  {header}
+                </div>
+              ))}
             </div>
             {model.unresolvedRows.map((row) => (
               <div
@@ -367,10 +491,10 @@ export function InvestmentsPageView({
             <h1 className="page-title">Investments</h1>
             <p className="page-subtitle">
               Holdings are rebuilt live from resolved investment rows, explicit
-              opening adjustments, manual fund valuations, and crypto treasury
-              balances held in BTC and ETH business accounts. Global totals stay
-              consolidated by default and can then be filtered by entity using
-              the buttons above.
+              opening adjustments, broker-imported fund and listed-security
+              positions, and crypto treasury balances held in BTC and ETH
+              business accounts. Global totals stay consolidated by default and
+              can then be filtered by entity using the buttons above.
             </p>
           </div>
           <InvestmentPriceRefreshButton />
@@ -388,76 +512,23 @@ export function InvestmentsPageView({
           />
         </div>
 
-        <SectionCard
-          title="Snapshot by Asset Class"
-          subtitle="Live rebuilt market values and open-position returns"
-          span="span-12"
-        >
-          <div className="investment-breakdown-grid">
-            {model.assetSummaries.map((summary) => (
-              <article className="investment-summary-card" key={summary.key}>
-                <div className="investment-summary-head">
-                  <div>
-                    <span className="label-sm">{summary.label}</span>
-                    <h3 className="investment-summary-title">{summary.title}</h3>
-                  </div>
-                  <span className="pill">{summary.pill}</span>
-                </div>
-                <div className="investment-summary-value">{summary.value}</div>
-                <div className="investment-summary-meta">
-                  {summary.key === "cash" || summary.key === "crypto" ? (
-                    <>
-                      <span>{summary.metaPrimary}</span>
-                      <span className="muted">{summary.metaSecondary}</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className={`investment-return ${summary.returnClass ?? "positive"}`}>
-                        {summary.metaPrimary}
-                      </span>
-                      <span className="muted">{summary.metaSecondary}</span>
-                    </>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
-        </SectionCard>
+        <PortfolioOverviewSection model={model} />
 
-        <ManualInvestmentWorkbench
-          entities={model.manualInvestmentEntities}
-          cashAccounts={model.manualInvestmentCashAccounts}
-          manualInvestments={model.manualInvestmentSummaries}
-          referenceDate={model.referenceDate}
-        />
-        {model.manualInvestmentSummaries.length === 0 ? (
-          <SectionCard
-            title="Manual Fund Valuations"
-            subtitle="Separate company-level inputs"
-            span="span-4"
-          >
-            <div className="status-note" style={{ marginTop: 0 }}>
-              No manual fund valuations are configured right now. The fund
-              values you do see on this page are coming from your
-              broker-imported fund holdings, not from separate manual company
-              fund inputs.
-            </div>
-          </SectionCard>
-        ) : null}
+        <div className="investments-position-grid">
+          <PositionListSection
+            title="Funds"
+            subtitle="Current value, unrealized P/L, and return %"
+            rows={model.fundRows}
+            emptyMessage="No funds are available for this scope."
+          />
 
-        <PositionListSection
-          title="Funds"
-          subtitle="Current value, unrealized P/L, and return %"
-          rows={model.fundRows}
-          emptyMessage="No funds are available for this scope."
-        />
-
-        <PositionListSection
-          title="Stocks & ETF"
-          subtitle="Current value, unrealized P/L, and return %"
-          rows={model.stockRows}
-          emptyMessage="No stocks or ETFs are available for this scope."
-        />
+          <PositionListSection
+            title="Stocks & ETF"
+            subtitle="Current value, unrealized P/L, and return %"
+            rows={model.stockRows}
+            emptyMessage="No stocks or ETFs are available for this scope."
+          />
+        </div>
 
         <SectionCard
           title="Crypto Treasury"
@@ -475,7 +546,9 @@ export function InvestmentsPageView({
                   <div className="investment-position-head">
                     <div className="investment-position-copy">
                       <h3 className="investment-position-name">{row.title}</h3>
-                      <p className="investment-position-symbol">{row.subtitle}</p>
+                      <p className="investment-position-symbol">
+                        {row.subtitle}
+                      </p>
                     </div>
                     <div className="investment-position-values">
                       <strong>{row.value}</strong>
@@ -493,7 +566,10 @@ export function InvestmentsPageView({
           subtitle="Broker, treasury, and crypto split"
           span="span-12"
         >
-          <DistributionList rows={model.accountAllocationRows} currency={model.currency} />
+          <DistributionList
+            rows={model.accountAllocationRows}
+            currency={model.currency}
+          />
         </SectionCard>
 
         <HoldingsTable

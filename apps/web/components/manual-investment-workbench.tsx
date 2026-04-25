@@ -193,8 +193,8 @@ export function ManualInvestmentWorkbench({
   return (
     <>
       <SectionCard
-        title="Manual Fund Valuations"
-        subtitle="Track company fund value manually while cost basis comes from matched cash transfers"
+        title="Company-Level Investments"
+        subtitle="Track off-platform company investment value while cost basis comes from matched cash transfers"
         span="span-6"
       >
         <form
@@ -249,7 +249,7 @@ export function ManualInvestmentWorkbench({
             <input
               className="input-field"
               name="label"
-              placeholder="Revolut Treasury Fund"
+              placeholder="Revolut Treasury Investment"
               required
             />
           </label>
@@ -299,7 +299,7 @@ export function ManualInvestmentWorkbench({
             <input
               className="input-field"
               name="note"
-              placeholder="Used for Revolut treasury-fund cash movements."
+              placeholder="Used for Revolut treasury investment cash movements."
             />
           </label>
           <label className="input-label" style={{ gridColumn: "1 / -1" }}>
@@ -307,7 +307,7 @@ export function ManualInvestmentWorkbench({
             <input
               className="input-field"
               name="valuationNote"
-              placeholder="Manual mark-to-market from the Revolut app."
+              placeholder="Mark-to-market from the Revolut app."
             />
           </label>
           <div className="inline-actions" style={{ gridColumn: "1 / -1" }}>
@@ -327,8 +327,8 @@ export function ManualInvestmentWorkbench({
       </SectionCard>
 
       <SectionCard
-        title="Tracked Company Funds"
-        subtitle="Latest manual value plus derived invested capital and unrealized P/L"
+        title="Tracked Company Investments"
+        subtitle="Latest value plus derived invested capital and unrealized P/L"
         span="span-6"
       >
         <div className="investment-position-list">
@@ -336,11 +336,11 @@ export function ManualInvestmentWorkbench({
             <article className="investment-position-card">
               <div className="investment-position-copy">
                 <h3 className="investment-position-name">
-                  No tracked company funds yet
+                  No tracked company investments yet
                 </h3>
                 <p className="investment-position-symbol">
-                  Create one to fold off-platform fund value into the portfolio
-                  KPIs.
+                  Create one to fold off-platform investment value into the
+                  portfolio KPIs.
                 </p>
               </div>
             </article>
@@ -351,15 +351,19 @@ export function ManualInvestmentWorkbench({
               );
 
               return (
-                <article className="investment-position-card" key={investment.id}>
+                <article
+                  className="investment-position-card"
+                  key={investment.id}
+                >
                   <div className="investment-position-head">
                     <div className="investment-position-copy">
                       <h3 className="investment-position-name">
                         {investment.label}
                       </h3>
                       <p className="investment-position-symbol">
-                        {investment.entityName} · {investment.fundingAccountName}{" "}
-                        · {investment.freshnessLabel}
+                        {investment.entityName} ·{" "}
+                        {investment.fundingAccountName} ·{" "}
+                        {investment.freshnessLabel}
                       </p>
                     </div>
                     <div className="investment-position-values">
@@ -383,7 +387,8 @@ export function ManualInvestmentWorkbench({
                     }}
                   >
                     <span>
-                      Derived invested capital: {investment.investedAmountDisplay}
+                      Derived invested capital:{" "}
+                      {investment.investedAmountDisplay}
                     </span>
                     {investment.matchedFundingTransactionCount === 0 ? (
                       <span>
@@ -490,68 +495,68 @@ export function ManualInvestmentWorkbench({
                       );
                     }}
                   >
-                  <label className="input-label">
-                    Snapshot Date
-                    <input
-                      className="input-field"
-                      name="snapshotDate"
-                      type="date"
-                      defaultValue={referenceDate}
-                      required
-                    />
-                  </label>
-                  <label className="input-label">
-                    Current Value
-                    <input
-                      className="input-field"
-                      name="currentValueOriginal"
-                      inputMode="decimal"
-                      defaultValue={investment.latestValueOriginal ?? ""}
-                      required
-                    />
-                  </label>
-                  <label className="input-label">
-                    Value Currency
-                    <select
-                      className="input-select"
-                      name="currentValueCurrency"
-                      defaultValue={investment.latestValueCurrency ?? "EUR"}
+                    <label className="input-label">
+                      Snapshot Date
+                      <input
+                        className="input-field"
+                        name="snapshotDate"
+                        type="date"
+                        defaultValue={referenceDate}
+                        required
+                      />
+                    </label>
+                    <label className="input-label">
+                      Current Value
+                      <input
+                        className="input-field"
+                        name="currentValueOriginal"
+                        inputMode="decimal"
+                        defaultValue={investment.latestValueOriginal ?? ""}
+                        required
+                      />
+                    </label>
+                    <label className="input-label">
+                      Value Currency
+                      <select
+                        className="input-select"
+                        name="currentValueCurrency"
+                        defaultValue={investment.latestValueCurrency ?? "EUR"}
+                      >
+                        <option value="EUR">EUR</option>
+                        <option value="USD">USD</option>
+                      </select>
+                    </label>
+                    <label
+                      className="input-label"
+                      style={{ gridColumn: "1 / -1" }}
                     >
-                      <option value="EUR">EUR</option>
-                      <option value="USD">USD</option>
-                    </select>
-                  </label>
-                  <label
-                    className="input-label"
-                    style={{ gridColumn: "1 / -1" }}
-                  >
-                    Valuation Note
-                    <input
-                      className="input-field"
-                      name="note"
-                      placeholder="Manual mark-to-market update."
-                    />
-                  </label>
-                  <div
-                    className="inline-actions"
-                    style={{ gridColumn: "1 / -1" }}
-                  >
-                    <button
-                      className="btn-pill"
-                      type="submit"
-                      disabled={isPending}
+                      Valuation Note
+                      <input
+                        className="input-field"
+                        name="note"
+                        placeholder="Manual mark-to-market update."
+                      />
+                    </label>
+                    <div
+                      className="inline-actions"
+                      style={{ gridColumn: "1 / -1" }}
                     >
-                      {isPending ? "Saving..." : "Save Valuation"}
-                    </button>
-                    <button
-                      className="btn-pill"
-                      type="button"
-                      onClick={() => handleDeleteInvestment(investment)}
-                      disabled={isPending}
-                    >
-                      Remove
-                    </button>
-                  </div>
+                      <button
+                        className="btn-pill"
+                        type="submit"
+                        disabled={isPending}
+                      >
+                        {isPending ? "Saving..." : "Save Valuation"}
+                      </button>
+                      <button
+                        className="btn-pill"
+                        type="button"
+                        onClick={() => handleDeleteInvestment(investment)}
+                        disabled={isPending}
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </form>
                 </article>
               );
