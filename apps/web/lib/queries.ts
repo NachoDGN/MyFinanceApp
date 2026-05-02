@@ -1,3 +1,5 @@
+import { Decimal } from "decimal.js";
+
 import {
   buildDashboardReadModel,
   buildDashboardSummary,
@@ -12,10 +14,15 @@ import {
   listPromptProfiles,
 } from "@myfinance/db";
 import {
+  buildLiveHoldingRows,
+  type DomainDataset,
   type Entity,
+  filterTransactionsByScope,
+  getLatestAccountBalances,
   getScopeLatestDate,
   needsTransactionManualReview,
   parseWorkspaceSettings,
+  resolveScopeEntityIds,
   resolvePeriodSelection,
   type Scope,
   type Transaction,
@@ -235,19 +242,224 @@ export function buildHref(
 
 export { formatCurrency, formatDate, formatPercent, formatQuantity };
 
+function decimalFrom(value: string | null | undefined) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  try {
+    return new Decimal(value);
+  } catch {
+    return null;
+  }
+}
+
+function isIsoDateString(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function maxIsoDate(left: string, right: string) {
+  return left >= right ? left : right;
+}
+
+function getLatestScopedTransactionDate(
+  dataset: DomainDataset,
+  scope: Scope,
+  fallback: string,
+) {
+  const latestTransactionDate = filterTransactionsByScope(dataset, scope)
+    .map((transaction) => transaction.transactionDate)
+    .filter(isIsoDateString)
+    .sort()
+    .at(-1);
+
+  return latestTransactionDate
+    ? maxIsoDate(fallback, latestTransactionDate)
+    : fallback;
+}
+
+function buildAccountTotalsByDate(
+  dataset: DomainDataset,
+  scope: Scope,
+  referenceDate: string,
+) {
+  const latestBalancesByAccount = new Map(
+    getLatestAccountBalances(dataset, referenceDate).map((balance) => [
+      balance.accountId,
+      balance,
+    ]),
+  );
+  const holdingTotalsByAccount = new Map<string, Decimal>();
+
+  for (const holding of buildLiveHoldingRows(dataset, scope, referenceDate)) {
+    const value = decimalFrom(holding.currentValueEur);
+    if (!value) continue;
+    holdingTotalsByAccount.set(
+      holding.accountId,
+      (holdingTotalsByAccount.get(holding.accountId) ?? new Decimal(0)).plus(
+        value,
+      ),
+    );
+  }
+
+  return new Map(
+    dataset.accounts.map((account) => {
+      const latestBalance = latestBalancesByAccount.get(account.id);
+      const balanceBaseEur = decimalFrom(latestBalance?.balanceBaseEur);
+      const holdingsBaseEur =
+        holdingTotalsByAccount.get(account.id) ?? new Decimal(0);
+      const totalBaseEur =
+        balanceBaseEur || !holdingsBaseEur.isZero()
+          ? (balanceBaseEur ?? new Decimal(0)).plus(holdingsBaseEur).toFixed(2)
+          : null;
+
+      return [
+        account.id,
+        {
+          latestBalanceDate: latestBalance?.asOfDate ?? null,
+          totalBaseEur,
+        },
+      ];
+    }),
+  );
+}
+
+function buildDashboardAccountBalances(
+  dataset: DomainDataset,
+  scope: Scope,
+  materializedReferenceDate: string,
+  projectedReferenceDate: string,
+) {
+  const entityIds = new Set(resolveScopeEntityIds(dataset, scope));
+  const materializedTotalsByAccount = buildAccountTotalsByDate(
+    dataset,
+    scope,
+    materializedReferenceDate,
+  );
+  const projectedTotalsByAccount = buildAccountTotalsByDate(
+    dataset,
+    scope,
+    projectedReferenceDate,
+  );
+  const hasFutureActivity = projectedReferenceDate > materializedReferenceDate;
+
+  const rows = dataset.accounts
+    .filter(
+      (account) =>
+        account.isActive &&
+        entityIds.has(account.entityId) &&
+        (scope.kind !== "account" || account.id === scope.accountId),
+    )
+    .map((account) => {
+      const materializedTotal = materializedTotalsByAccount.get(account.id);
+      const projectedTotal = projectedTotalsByAccount.get(account.id);
+      const materializedBaseEur = materializedTotal?.totalBaseEur ?? null;
+      const projectedBaseEur = projectedTotal?.totalBaseEur ?? null;
+      const projectedValue = decimalFrom(projectedBaseEur);
+      const materializedValue = decimalFrom(materializedBaseEur);
+      const futureDeltaBaseEur =
+        projectedValue && materializedValue
+          ? projectedValue.minus(materializedValue).toFixed(2)
+          : null;
+      const entity = dataset.entities.find(
+        (candidate) => candidate.id === account.entityId,
+      );
+
+      return {
+        id: account.id,
+        displayName: account.displayName,
+        institutionName: account.institutionName,
+        accountType: account.accountType,
+        assetDomain: account.assetDomain,
+        accountSuffix: account.accountSuffix ?? null,
+        entityName: entity?.displayName ?? account.entityId,
+        latestBalanceDate: projectedTotal?.latestBalanceDate ?? null,
+        materializedBaseEur,
+        projectedBaseEur,
+        futureDeltaBaseEur,
+        totalBaseEur: projectedBaseEur,
+      };
+    });
+
+  const projectedTotalBaseEur = rows
+    .reduce((sum, row) => {
+      const value = decimalFrom(row.projectedBaseEur);
+      return value ? sum.plus(value) : sum;
+    }, new Decimal(0))
+    .toFixed(2);
+  const materializedTotalBaseEur = rows
+    .reduce((sum, row) => {
+      const value = decimalFrom(row.materializedBaseEur);
+      return value ? sum.plus(value) : sum;
+    }, new Decimal(0))
+    .toFixed(2);
+
+  return {
+    rows,
+    hasFutureActivity,
+    materializedReferenceDate,
+    projectedReferenceDate,
+    materializedTotalBaseEur,
+    projectedTotalBaseEur,
+    totalBaseEur: projectedTotalBaseEur,
+  };
+}
+
 export async function getDashboardModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
+  const today = todayIsoInTimezone(state.dataset.profile.timezone);
+  const materializedReferenceDate = getScopeLatestDate(
+    state.dataset,
+    state.scope,
+    today,
+  );
+  const projectedReferenceDate =
+    state.period.preset === "custom"
+      ? state.referenceDate
+      : getLatestScopedTransactionDate(
+          state.dataset,
+          state.scope,
+          materializedReferenceDate,
+        );
+  const dashboardPeriod =
+    state.period.preset === "custom"
+      ? state.period
+      : resolvePeriodSelection({
+          preset: state.periodParam,
+          referenceDate: projectedReferenceDate,
+        });
+  const navigationState = {
+    ...state.navigationState,
+    period: dashboardPeriod.preset,
+    referenceDate: projectedReferenceDate,
+    latestReferenceDate: projectedReferenceDate,
+    start:
+      dashboardPeriod.preset === "custom" ? dashboardPeriod.start : undefined,
+    end: dashboardPeriod.preset === "custom" ? dashboardPeriod.end : undefined,
+  };
   const { summary, summaryBreakdown } = buildDashboardReadModel(state.dataset, {
     scope: state.scope,
     displayCurrency: state.currency,
-    period: state.period,
-    referenceDate: state.referenceDate,
+    period: dashboardPeriod,
+    referenceDate: projectedReferenceDate,
   });
 
   return {
     ...state,
+    referenceDate: projectedReferenceDate,
+    latestReferenceDate: projectedReferenceDate,
+    period: dashboardPeriod,
+    navigationState,
     summary,
     summaryBreakdown,
+    materializedReferenceDate,
+    projectedReferenceDate,
+    accountBalances: buildDashboardAccountBalances(
+      state.dataset,
+      state.scope,
+      materializedReferenceDate,
+      projectedReferenceDate,
+    ),
   };
 }
 

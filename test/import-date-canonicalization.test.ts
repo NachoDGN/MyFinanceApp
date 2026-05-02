@@ -115,7 +115,7 @@ async function runPreview(filePath: string, template = buildCsvTemplate()) {
   };
 }
 
-test("deterministic import falls back to the non-future interpretation for ambiguous dates", async () => {
+test("deterministic import preserves configured day-first dates even when they are future dated", async () => {
   const directory = await mkdtemp(join(tmpdir(), "myfinance-import-dates-"));
   const csvPath = join(directory, "ambiguous.csv");
 
@@ -128,7 +128,7 @@ test("deterministic import falls back to the non-future interpretation for ambig
 
     const preview = await runPreview(csvPath);
 
-    assert.equal(preview.normalizedRows[0]?.transaction_date, "2026-03-12");
+    assert.equal(preview.normalizedRows[0]?.transaction_date, "2026-12-03");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

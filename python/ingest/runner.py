@@ -926,14 +926,6 @@ def parse_date_value(
         parsed = pd.to_datetime(text, format=format_hint, errors="coerce")
     if pd.isna(parsed):
         parsed = pd.to_datetime(text, dayfirst=dayfirst, errors="coerce")
-    if not pd.isna(parsed):
-        alternate = pd.to_datetime(text, dayfirst=not dayfirst, errors="coerce")
-        if (
-            not pd.isna(alternate)
-            and parsed.date() > reference_date
-            and alternate.date() <= reference_date
-        ):
-            parsed = alternate
     if pd.isna(parsed):
         raise ValueError(f"Invalid date value: {text}")
     return parsed.date().isoformat()
@@ -1004,8 +996,6 @@ def choose_date_candidate(
         return alternate
     if alternate is None or alternate == preferred:
         return preferred
-    if preferred > reference_date and alternate <= reference_date:
-        return alternate
     return preferred
 
 
@@ -1034,10 +1024,7 @@ def infer_effective_dayfirst(
                 and monthfirst_candidate is not None
                 and dayfirst_candidate != monthfirst_candidate
             ):
-                dayfirst_future = dayfirst_candidate > reference_date
-                monthfirst_future = monthfirst_candidate > reference_date
-                if dayfirst_future != monthfirst_future:
-                    scores[False if dayfirst_future else True] += 2
+                continue
             elif dayfirst_candidate is not None and monthfirst_candidate is None:
                 scores[True] += 3
             elif monthfirst_candidate is not None and dayfirst_candidate is None:

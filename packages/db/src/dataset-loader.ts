@@ -140,6 +140,16 @@ export async function loadDatasetForUser(
   const normalizedAccounts = mapFromSql<DomainDataset["accounts"]>(accounts).map(
     normalizeAccountAssetDomain,
   );
+  const normalizedImportBatches =
+    mapFromSql<DomainDataset["importBatches"]>(importBatches).map((batch) => ({
+      ...batch,
+      detectedDateRange:
+        batch.detectedDateRange ??
+        (batch.previewSummaryJson.dateRange as
+          | DomainDataset["importBatches"][number]["detectedDateRange"]
+          | undefined) ??
+        null,
+    }));
 
   return {
     schemaVersion: "v1" as const,
@@ -151,7 +161,7 @@ export async function loadDatasetForUser(
     bankAccountLinks:
       mapFromSql<DomainDataset["bankAccountLinks"]>(bankAccountLinks),
     templates: mapFromSql<DomainDataset["templates"]>(templates),
-    importBatches: mapFromSql<DomainDataset["importBatches"]>(importBatches),
+    importBatches: normalizedImportBatches,
     transactions: mapFromSql<DomainDataset["transactions"]>(transactions),
     categories: mapFromSql<DomainDataset["categories"]>(categories),
     rules: mapFromSql<DomainDataset["rules"]>(rules),

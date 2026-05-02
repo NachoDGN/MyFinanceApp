@@ -1,17 +1,12 @@
 import type { DashboardModel } from "../lib/queries";
-import { formatCurrency } from "../lib/formatters";
+import { formatCurrency, formatDate } from "../lib/formatters";
 import { buildHref } from "../lib/queries";
 import {
   convertBaseEurToDisplayAmount,
   formatBaseEurAmountForDisplay,
 } from "../lib/currency";
 import { AppShell } from "./app-shell";
-import {
-  HighlightCard,
-  MetricCard,
-  QualityBanner,
-  TimelinePanel,
-} from "./primitives";
+import { MetricCard, QualityBanner, TimelinePanel } from "./primitives";
 
 function describePeriodLabel(period: string) {
   if (period === "all") return "All Time";
@@ -31,6 +26,174 @@ function metricDirection(
   deltaDisplay: string | null | undefined,
 ): "up" | "down" {
   return Number(deltaDisplay ?? "0") >= 0 ? "up" : "down";
+}
+
+function formatAccountTypeLabel(value: string) {
+  return value
+    .split("_")
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function accountVisualKind(
+  row: DashboardModel["accountBalances"]["rows"][number],
+) {
+  if (row.assetDomain === "investment") return "investment";
+  if (row.accountType === "credit_card") return "card";
+  if (row.accountType === "savings") return "savings";
+  if (row.accountType === "company_bank") return "business";
+  return "checking";
+}
+
+function accountVisualTone(
+  row: DashboardModel["accountBalances"]["rows"][number],
+) {
+  if (row.assetDomain === "investment") return "indigo";
+  if (row.accountType === "credit_card") return "orange";
+  if (row.accountType === "savings") return "green";
+  if (row.accountType === "company_bank") return "purple";
+  return "blue";
+}
+
+function AccountBalancesPanel({
+  pathname,
+  state,
+  model,
+}: {
+  pathname: string;
+  state: {
+    scopeParam: string;
+    currency: string;
+    period: string;
+    referenceDate?: string;
+    start?: string;
+    end?: string;
+  };
+  model: DashboardModel;
+}) {
+  const hasFutureActivity = model.accountBalances.hasFutureActivity;
+  const materializedDateLabel = formatDate(
+    model.accountBalances.materializedReferenceDate,
+    { lenient: true },
+  );
+  const projectedDateLabel = formatDate(
+    model.accountBalances.projectedReferenceDate,
+    { lenient: true },
+  );
+
+  return (
+    <section
+      className="account-balances-card"
+      aria-labelledby="account-balances-title"
+    >
+      <div className="account-balances-header">
+        <span className="label-sm" id="account-balances-title">
+          Accounts Overview
+        </span>
+        <span className="account-balances-date">
+          {hasFutureActivity
+            ? `Projected ${projectedDateLabel}`
+            : model.referenceDate
+              ? `As of ${formatDate(model.referenceDate, { lenient: true })}`
+              : "Current"}
+        </span>
+      </div>
+
+      {hasFutureActivity ? (
+        <p className="account-balances-note">
+          Includes announced transactions through {projectedDateLabel}. Today’s
+          materialized balance is shown under each projected value.
+        </p>
+      ) : null}
+
+      <div className="account-balances-list">
+        {model.accountBalances.rows.map((row) => {
+          const projectedBalance = formatBaseEurAmountForDisplay(
+            model.dataset,
+            row.projectedBaseEur,
+            model.currency,
+            model.referenceDate,
+          );
+          const materializedBalance = formatBaseEurAmountForDisplay(
+            model.dataset,
+            row.materializedBaseEur,
+            model.currency,
+            model.accountBalances.materializedReferenceDate,
+          );
+          const futureDelta = formatBaseEurAmountForDisplay(
+            model.dataset,
+            row.futureDeltaBaseEur,
+            model.currency,
+            model.referenceDate,
+          );
+          const hasFutureDelta =
+            hasFutureActivity && Number(row.futureDeltaBaseEur ?? "0") !== 0;
+          const isNegative = Number(row.projectedBaseEur ?? "0") < 0;
+          const subtitle = row.accountSuffix
+            ? `${row.institutionName} · •••• ${row.accountSuffix}`
+            : `${row.entityName} · ${formatAccountTypeLabel(row.accountType)}`;
+
+          return (
+            <a
+              className="account-balance-row"
+              href={buildHref(pathname, state, {
+                scopeParam: `account:${row.id}`,
+              })}
+              key={row.id}
+            >
+              <span
+                className={`account-balance-icon tone-${accountVisualTone(row)}`}
+                data-kind={accountVisualKind(row)}
+                aria-hidden="true"
+              />
+              <span className="account-balance-copy">
+                <span className="account-balance-name">{row.displayName}</span>
+                <span className="account-balance-meta">{subtitle}</span>
+              </span>
+              <span
+                className={`account-balance-values${isNegative ? " negative" : ""}`}
+              >
+                <span className="account-balance-value">
+                  {projectedBalance}
+                </span>
+                {hasFutureActivity ? (
+                  <span className="account-balance-secondary">
+                    {materializedDateLabel}: {materializedBalance}
+                    {hasFutureDelta ? ` · Pending ${futureDelta}` : ""}
+                  </span>
+                ) : null}
+              </span>
+            </a>
+          );
+        })}
+      </div>
+
+      <div className="account-balances-total">
+        <span>Total Balance</span>
+        <strong>
+          {formatBaseEurAmountForDisplay(
+            model.dataset,
+            model.accountBalances.projectedTotalBaseEur,
+            model.currency,
+            model.referenceDate,
+          )}
+        </strong>
+      </div>
+      {hasFutureActivity ? (
+        <div className="account-balances-materialized-total">
+          <span>{materializedDateLabel} balance</span>
+          <strong>
+            {formatBaseEurAmountForDisplay(
+              model.dataset,
+              model.accountBalances.materializedTotalBaseEur,
+              model.currency,
+              model.accountBalances.materializedReferenceDate,
+            )}
+          </strong>
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 export function DashboardView({
@@ -62,7 +225,6 @@ export function DashboardView({
   const incomeMetric = metricMap.get("income_mtd_total");
   const spendingMetric = metricMap.get("spending_mtd_total");
   const netMetric = metricMap.get("operating_net_cash_flow_mtd");
-  const unrealizedMetric = metricMap.get("portfolio_unrealized_pnl_current");
   const netWorthMetric = metricMap.get("net_worth_current");
   const periodLabel = describePeriodLabel(state.period);
   const comparisonLabel = describeComparisonLabel(state.period);
@@ -161,7 +323,6 @@ export function DashboardView({
   ];
 
   const transactionsHref = buildHref("/transactions", state, {});
-  const spendingHref = buildHref("/spending", state, {});
   const showWealthBreakdown =
     state.scopeParam === "consolidated" && model.summaryBreakdown !== null;
 
@@ -239,47 +400,10 @@ export function DashboardView({
 
         <div className="dashboard-secondary-grid">
           <div className="dashboard-sidebar-stack">
-            <div className="dashboard-side-card">
-              <div className="kpi-header">
-                <span className="label-sm">Manual Review</span>
-                <span className="trend-indicator trend-up">
-                  {model.summary.quality.pendingReviewCount > 0
-                    ? "Needs work"
-                    : "Clear"}
-                </span>
-              </div>
-              <div className="metric-value">
-                {model.summary.quality.pendingReviewCount}
-              </div>
-              <div className="metric-nominal">
-                {model.summary.quality.pendingEnrichmentCount} rows still in the
-                auto-analysis queue
-              </div>
-            </div>
-
-            <div className="dashboard-action-card">
-              <span className="label-sm">
-                Current-Month Spending Categories
-              </span>
-              <a
-                className="btn-ghost dashboard-action-button"
-                href={spendingHref}
-              >
-                Full Analysis
-              </a>
-            </div>
-
-            <HighlightCard
-              title="Insight"
-              body={
-                model.summary.insights[0]?.body ??
-                "Structured insights are ready."
-              }
-              metric={formatCurrency(
-                unrealizedMetric?.valueDisplay,
-                model.currency,
-              )}
-              footer="Current unrealized gain"
+            <AccountBalancesPanel
+              pathname={pathname}
+              state={state}
+              model={model}
             />
           </div>
 

@@ -613,6 +613,27 @@ function readImportedSourceRow(transaction: Transaction) {
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
+function compareImportedBalanceSourceRows(
+  left: Transaction,
+  right: Transaction,
+) {
+  const leftSourceRow = readImportedSourceRow(left);
+  const rightSourceRow = readImportedSourceRow(right);
+  const leftHasSourceRow = Number.isFinite(leftSourceRow);
+  const rightHasSourceRow = Number.isFinite(rightSourceRow);
+
+  if (leftHasSourceRow && rightHasSourceRow) {
+    return leftSourceRow - rightSourceRow;
+  }
+  if (leftHasSourceRow) {
+    return -1;
+  }
+  if (rightHasSourceRow) {
+    return 1;
+  }
+  return 0;
+}
+
 function computeAccountBalanceFromOpening(
   dataset: DomainDataset,
   account: DomainDataset["accounts"][number],
@@ -711,8 +732,7 @@ function findLatestImportedBalanceTransaction(
         return postedDateOrder;
       }
 
-      const sourceRowOrder =
-        readImportedSourceRow(right) - readImportedSourceRow(left);
+      const sourceRowOrder = compareImportedBalanceSourceRows(left, right);
       if (sourceRowOrder !== 0) {
         return sourceRowOrder;
       }
