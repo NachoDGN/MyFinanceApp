@@ -45,6 +45,7 @@ class PdfStatementParseResult:
     extraction_method: str
     parser_model: str
     statement_net_total: str | None
+    portfolio_statement_snapshot: dict[str, Any] | None = None
 
 
 def _read_env(name: str) -> str | None:
@@ -448,4 +449,161 @@ Rules:
         extraction_method=extraction.method,
         parser_model=model_name,
         statement_net_total=statement_net_total,
+    )
+
+
+def extract_interactive_brokers_statement_rows(
+    pdf_path: str,
+    *,
+    default_currency: str = "EUR",
+    reference_date: str | None = None,
+    model_name: str = DEFAULT_GEMINI_MODEL,
+) -> PdfStatementParseResult:
+    extraction = extract_text_from_pdf(pdf_path, gemini_model=model_name)
+    system_prompt = """You extract transaction ledger rows from Interactive Brokers activity statement markdown.
+Return only JSON.
+
+Required JSON shape:
+{
+  "transactions": [
+    {
+      "transaction_date": "YYYY-MM-DD",
+      "posted_date": null,
+      "description_raw": "Provider narrative",
+      "amount_original_signed": "-12.34",
+      "currency_original": "EUR",
+      "balance_original": null,
+      "external_reference": null,
+      "transaction_type_raw": "Trade",
+      "security_isin": null,
+      "security_symbol": null,
+      "security_name": null,
+      "quantity": null,
+      "unit_price_original": null,
+      "fees_original": null,
+      "fx_rate": null
+    }
+  ],
+  "statement_net_total": null,
+  "portfolio_statement_snapshot": {
+    "broker_name": "Interactive Brokers Ireland Limited",
+    "account_number": "U0000000",
+    "statement_date": "YYYY-MM-DD",
+    "period_start": "YYYY-MM-DD",
+    "period_end": "YYYY-MM-DD",
+    "generated_at": "ISO-8601 timestamp or null",
+    "base_currency": "EUR",
+    "net_asset_value": "123.45",
+    "cash_balance": "12.34",
+    "dividend_accruals": "0.00",
+    "cash_balance_including_accruals": "12.34",
+    "open_positions": [
+      {
+        "symbol": "HY9H",
+        "security_name": "SK HYNIX INC-GDS",
+        "isin": "US78392B1070",
+        "conid": "517397504",
+        "exchange": "FWB2",
+        "asset_type": "stock",
+        "currency": "EUR",
+        "quantity": "9",
+        "cost_price": "380.555555556",
+        "cost_basis": "3425",
+        "close_price": "760",
+        "market_value": "6840",
+        "unrealized_pnl": "3415"
+      }
+    ]
+  }
+}
+
+Rules:
+- Include only individual ledger events: trades, deposits, withdrawals, dividends, interest, fees, withholding tax, corporate-action cash rows, and FX conversions.
+- Exclude NAV summaries, Cash Report summary lines, Mark-to-Market summaries, Realized/Unrealized summaries, Open Positions, Financial Instrument Information, Base Currency Exchange Rate tables, code legends, notes, totals, and subtotal rows.
+- If the statement has no individual ledger events for the statement period, return an empty transactions array instead of inventing rows from summaries or positions.
+- Sign amounts from the account cash perspective: deposits, dividends, interest, sell proceeds, and credits are positive; buys, withdrawals, fees, commissions, and taxes are negative.
+- For trades, include security_symbol, security_name, security_isin when shown, quantity, unit_price_original, and fees_original when available.
+- Use ISO dates. If the statement has trade and settle dates, put trade date in transaction_date and settlement date in posted_date.
+- If currency is missing on a row, use the provided default currency.
+- Always extract the portfolio_statement_snapshot from the account summary,
+  Cash Report, Net Asset Value, Open Positions, and Financial Instrument
+  Information sections when present, even when there are no transaction rows.
+- Use null for missing snapshot values and an empty open_positions array when
+  no open positions are shown.
+"""
+    user_prompt = (
+        f"Reference date: {reference_date or 'unknown'}\n"
+        f"Default currency: {default_currency}\n\n"
+        "Extract individual transaction ledger rows from this Interactive Brokers "
+        "activity statement markdown:\n\n"
+        f"{extraction.markdown}"
+    )
+    payload = _call_gemini_generate_content(
+        parts=[{"text": user_prompt}],
+        system_prompt=system_prompt,
+        response_mime_type="application/json",
+        model_name=model_name,
+        temperature=0,
+    )
+    parsed = _parse_json_payload(payload)
+    transactions = parsed.get("transactions")
+    if not isinstance(transactions, list):
+        raise RuntimeError("The IBKR PDF parser did not return a transactions array.")
+    portfolio_statement_snapshot = parsed.get("portfolio_statement_snapshot")
+    if not isinstance(portfolio_statement_snapshot, dict):
+        portfolio_statement_snapshot = None
+
+    normalized_rows: list[dict[str, Any]] = []
+    for transaction in transactions:
+        if not isinstance(transaction, dict):
+            continue
+        normalized_rows.append(
+            {
+                "transaction_date": str(transaction.get("transaction_date", "") or "").strip(),
+                "posted_date": str(transaction.get("posted_date", "") or "").strip() or None,
+                "description_raw": str(transaction.get("description_raw", "") or "").strip(),
+                "amount_original_signed": str(
+                    transaction.get("amount_original_signed", "") or ""
+                ).strip(),
+                "currency_original": str(
+                    transaction.get("currency_original", default_currency) or default_currency
+                )
+                .strip()
+                .upper()
+                or default_currency,
+                "balance_original": str(transaction.get("balance_original", "") or "").strip()
+                or None,
+                "external_reference": str(
+                    transaction.get("external_reference", "") or ""
+                ).strip()
+                or None,
+                "transaction_type_raw": str(
+                    transaction.get("transaction_type_raw", "") or ""
+                ).strip()
+                or None,
+                "security_isin": str(transaction.get("security_isin", "") or "").strip()
+                or None,
+                "security_symbol": str(transaction.get("security_symbol", "") or "").strip()
+                or None,
+                "security_name": str(transaction.get("security_name", "") or "").strip()
+                or None,
+                "quantity": str(transaction.get("quantity", "") or "").strip() or None,
+                "unit_price_original": str(
+                    transaction.get("unit_price_original", "") or ""
+                ).strip()
+                or None,
+                "fees_original": str(transaction.get("fees_original", "") or "").strip()
+                or None,
+                "fx_rate": str(transaction.get("fx_rate", "") or "").strip() or None,
+            }
+        )
+
+    statement_net_total = str(parsed.get("statement_net_total", "") or "").strip() or None
+    return PdfStatementParseResult(
+        rows=normalized_rows,
+        markdown=extraction.markdown,
+        extraction_method=extraction.method,
+        parser_model=model_name,
+        statement_net_total=statement_net_total,
+        portfolio_statement_snapshot=portfolio_statement_snapshot,
     )

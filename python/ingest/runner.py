@@ -22,7 +22,10 @@ from zipfile import ZipFile
 import pandas as pd
 from openpyxl import load_workbook
 
-from pdf_statement import extract_credit_card_statement_rows
+from pdf_statement import (
+    extract_credit_card_statement_rows,
+    extract_interactive_brokers_statement_rows,
+)
 
 
 TEXT_JOIN_SEPARATOR = " "
@@ -53,6 +56,7 @@ class CanonicalizationResult:
     normalized: pd.DataFrame
     row_count_detected: int
     parse_errors: list[dict[str, Any]]
+    portfolio_statement_snapshot: dict[str, Any] | None = None
 
 
 def camel_to_snake(value: str) -> str:
@@ -897,6 +901,17 @@ def parse_date_value(
     if not text:
         return None
 
+    iso_match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if iso_match:
+        try:
+            return date(
+                int(iso_match.group(1)),
+                int(iso_match.group(2)),
+                int(iso_match.group(3)),
+            ).isoformat()
+        except ValueError:
+            pass
+
     strict_candidates = build_strict_date_candidates(text)
     preferred_candidate = choose_date_candidate(
         strict_candidates,
@@ -1098,6 +1113,11 @@ def build_pdf_source_preview_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
                 "description_raw": row.get("description_raw"),
                 "amount_original_signed": row.get("amount_original_signed"),
                 "currency_original": row.get("currency_original"),
+                "transaction_type_raw": row.get("transaction_type_raw"),
+                "security_symbol": row.get("security_symbol"),
+                "security_isin": row.get("security_isin"),
+                "quantity": row.get("quantity"),
+                "unit_price_original": row.get("unit_price_original"),
             }
             for row in rows
         ],
@@ -1105,22 +1125,13 @@ def build_pdf_source_preview_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     )
 
 
-def canonicalize_pdf_statement(
-    file_path: Path,
-    template: dict[str, Any],
+def canonicalize_pdf_statement_rows(
+    parsed_statement: Any,
     *,
-    reference_date: str | None = None,
+    default_currency: str,
+    reference_date_value: date,
+    source_kind: str,
 ) -> tuple[pd.DataFrame, CanonicalizationResult]:
-    default_currency = (
-        normalize_text(template.get("default_currency")).upper() or "EUR"
-    )
-    reference_date_value = parse_reference_date(reference_date)
-    parsed_statement = extract_credit_card_statement_rows(
-        str(file_path),
-        default_currency=default_currency,
-        reference_date=reference_date,
-    )
-
     normalized_rows: list[dict[str, Any]] = []
     parse_errors: list[dict[str, Any]] = []
 
@@ -1141,7 +1152,10 @@ def canonicalize_pdf_statement(
                 dayfirst=True,
                 reference_date=reference_date_value,
             )
-            amount = parse_decimal_value(row.get("amount_original_signed"))
+            amount = parse_decimal_value(
+                row.get("amount_original_signed"),
+                decimal_hint=".",
+            )
             if amount is None:
                 raise ValueError("Missing amount.")
 
@@ -1149,12 +1163,19 @@ def canonicalize_pdf_statement(
             if not description:
                 raise ValueError("Missing description.")
 
-            balance = parse_decimal_value(row.get("balance_original"))
+            balance = parse_decimal_value(row.get("balance_original"), decimal_hint=".")
+            quantity = parse_decimal_value(row.get("quantity"), decimal_hint=".")
+            unit_price = parse_decimal_value(
+                row.get("unit_price_original"),
+                decimal_hint=".",
+            )
+            fees = parse_decimal_value(row.get("fees_original"), decimal_hint=".")
+            fx_rate = parse_decimal_value(row.get("fx_rate"), decimal_hint=".")
             raw_row_json = json.dumps(
                 {
                     **row,
                     "_source_row": index,
-                    "_source_kind": "credit_card_statement_pdf",
+                    "_source_kind": source_kind,
                     "_extraction_method": parsed_statement.extraction_method,
                     "_statement_net_total": parsed_statement.statement_net_total,
                     "_parser_model": parsed_statement.parser_model,
@@ -1184,12 +1205,14 @@ def canonicalize_pdf_statement(
                     or None,
                     "security_isin": normalize_text(row.get("security_isin"))
                     or None,
-                    "security_symbol": None,
-                    "security_name": None,
-                    "quantity": None,
-                    "unit_price_original": None,
-                    "fees_original": None,
-                    "fx_rate": None,
+                    "security_symbol": normalize_text(row.get("security_symbol"))
+                    or None,
+                    "security_name": normalize_text(row.get("security_name"))
+                    or None,
+                    "quantity": decimal_to_string(quantity),
+                    "unit_price_original": decimal_to_string(unit_price),
+                    "fees_original": decimal_to_string(fees),
+                    "fx_rate": decimal_to_string(fx_rate),
                     "raw_row_json": raw_row_json,
                 }
             )
@@ -1202,7 +1225,81 @@ def canonicalize_pdf_statement(
             normalized=pd.DataFrame(normalized_rows, dtype=object),
             row_count_detected=len(parsed_statement.rows),
             parse_errors=parse_errors,
+            portfolio_statement_snapshot=parsed_statement.portfolio_statement_snapshot,
         ),
+    )
+
+
+def canonicalize_credit_card_pdf_statement(
+    file_path: Path,
+    template: dict[str, Any],
+    *,
+    reference_date: str | None = None,
+) -> tuple[pd.DataFrame, CanonicalizationResult]:
+    default_currency = (
+        normalize_text(template.get("default_currency")).upper() or "EUR"
+    )
+    reference_date_value = parse_reference_date(reference_date)
+    parsed_statement = extract_credit_card_statement_rows(
+        str(file_path),
+        default_currency=default_currency,
+        reference_date=reference_date,
+    )
+
+    return canonicalize_pdf_statement_rows(
+        parsed_statement,
+        default_currency=default_currency,
+        reference_date_value=reference_date_value,
+        source_kind="credit_card_statement_pdf",
+    )
+
+
+def canonicalize_ibkr_pdf_statement(
+    file_path: Path,
+    template: dict[str, Any],
+    *,
+    reference_date: str | None = None,
+) -> tuple[pd.DataFrame, CanonicalizationResult]:
+    default_currency = (
+        normalize_text(template.get("default_currency")).upper() or "EUR"
+    )
+    reference_date_value = parse_reference_date(reference_date)
+    parsed_statement = extract_interactive_brokers_statement_rows(
+        str(file_path),
+        default_currency=default_currency,
+        reference_date=reference_date,
+    )
+    return canonicalize_pdf_statement_rows(
+        parsed_statement,
+        default_currency=default_currency,
+        reference_date_value=reference_date_value,
+        source_kind="ibkr_activity_statement_pdf",
+    )
+
+
+def canonicalize_pdf_statement(
+    file_path: Path,
+    template: dict[str, Any],
+    *,
+    reference_date: str | None = None,
+) -> tuple[pd.DataFrame, CanonicalizationResult]:
+    normalization_rules = template.get("normalization_rules_json", {}) or {}
+    parser_kind = normalize_text(
+        normalization_rules.get("parser_kind")
+        or normalization_rules.get("parserKind")
+        or "credit_card_statement_pdf",
+    )
+    if parser_kind == "ibkr_activity_statement_pdf":
+        return canonicalize_ibkr_pdf_statement(
+            file_path,
+            template,
+            reference_date=reference_date,
+        )
+
+    return canonicalize_credit_card_pdf_statement(
+        file_path,
+        template,
+        reference_date=reference_date,
     )
 
 
@@ -1582,6 +1679,8 @@ def build_result(
         "sampleRows": records[:5],
         "parseErrors": canonical.parse_errors,
     }
+    if canonical.portfolio_statement_snapshot is not None:
+        summary["portfolioStatementSnapshot"] = canonical.portfolio_statement_snapshot
     if mode == "commit":
         summary["importBatchId"] = str(uuid.uuid4())
         summary["rowCountInserted"] = len(records)

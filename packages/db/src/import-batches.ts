@@ -6,11 +6,14 @@ import {
   type DomainDataset,
   type ImportCommitResult,
   type ImportPreviewResult,
+  type Security,
   type Transaction,
 } from "@myfinance/domain";
 import {
   buildImportedTransactions,
   normalizeImportExecutionInput,
+  type PortfolioStatementPosition,
+  type PortfolioStatementSnapshot,
   runDeterministicImport,
   sanitizeImportResult,
 } from "@myfinance/ingestion";
@@ -25,6 +28,23 @@ const DEFAULT_IMPORT_JOBS_QUEUED = [
   "position_rebuild",
   "metric_refresh",
 ] as const satisfies ImportCommitResult["jobsQueued"];
+
+const IBKR_STATEMENT_PRICE_SOURCE = "ibkr_statement";
+
+type PortfolioStatementSnapshotCommitSummary = {
+  statementDate: string | null;
+  accountNumber: string | null;
+  cashSnapshotUpserted: boolean;
+  cashSnapshotMethod: string | null;
+  cashSnapshotIncludesDividendAccruals: boolean;
+  openPositionsDetected: number;
+  securitiesUpserted: number;
+  securityAliasesInserted: number;
+  pricesUpserted: number;
+  openingPositionsInserted: number;
+  openingPositionsSkipped: number;
+  skippedReasons: string[];
+};
 
 function mergeDefaultImportJobs(
   jobsQueued: readonly ImportCommitResult["jobsQueued"][number][] | undefined,
@@ -281,6 +301,695 @@ async function insertImportBatchRecord(
   `;
 }
 
+function readRecordText(
+  record: Record<string, unknown> | null | undefined,
+  keys: readonly string[],
+) {
+  if (!record) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = record[key];
+    if (value === null || value === undefined) {
+      continue;
+    }
+    const text = String(value).trim();
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+function readSnapshotText(
+  snapshot: PortfolioStatementSnapshot,
+  ...keys: string[]
+) {
+  return readRecordText(snapshot as Record<string, unknown>, keys);
+}
+
+function readPositionText(
+  position: PortfolioStatementPosition,
+  ...keys: string[]
+) {
+  return readRecordText(position as Record<string, unknown>, keys);
+}
+
+function normalizeCurrencyCode(value: string | null, fallback: string) {
+  const normalized = (value ?? fallback).trim().toUpperCase();
+  return normalized || fallback;
+}
+
+function normalizeAliasText(value: string | null) {
+  return (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function parseStatementDecimal(value: unknown) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).replace(/\s+/g, "").replace(/,/g, "").trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    const decimal = new Decimal(text);
+    return decimal.isFinite() ? decimal : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStatementDecimal(
+  record: Record<string, unknown> | null | undefined,
+  keys: readonly string[],
+) {
+  if (!record) {
+    return null;
+  }
+  for (const key of keys) {
+    const parsed = parseStatementDecimal(record[key]);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function normalizeIsoDate(value: string | null) {
+  if (!value) {
+    return null;
+  }
+  const directMatch = value.match(/\d{4}-\d{2}-\d{2}/);
+  if (directMatch) {
+    return directMatch[0];
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+  return new Date(parsed).toISOString().slice(0, 10);
+}
+
+function normalizeStatementTimestamp(
+  value: string | null,
+  statementDate: string | null,
+) {
+  if (value) {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toISOString();
+    }
+  }
+  return statementDate
+    ? `${statementDate}T23:59:59.000Z`
+    : new Date().toISOString();
+}
+
+function normalizeStatementAssetType(
+  value: string | null,
+): Security["assetType"] {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized.includes("etf")) {
+    return "etf";
+  }
+  if (normalized.includes("cash")) {
+    return "cash";
+  }
+  if (
+    normalized.includes("stock") ||
+    normalized.includes("share") ||
+    normalized.includes("gdr") ||
+    normalized.includes("adr")
+  ) {
+    return "stock";
+  }
+  return "other";
+}
+
+function buildSecurityLookup(dataset: DomainDataset) {
+  const byIsin = new Map<string, Security>();
+  const bySymbol = new Map<string, Security>();
+
+  for (const security of dataset.securities) {
+    if (security.isin) {
+      byIsin.set(security.isin.trim().toUpperCase(), security);
+    }
+    for (const symbol of [
+      security.providerSymbol,
+      security.canonicalSymbol,
+      security.displaySymbol,
+    ]) {
+      const normalized = symbol.trim().toUpperCase();
+      if (normalized) {
+        bySymbol.set(normalized, security);
+      }
+    }
+  }
+
+  for (const alias of dataset.securityAliases) {
+    const security = dataset.securities.find(
+      (candidate) => candidate.id === alias.securityId,
+    );
+    if (!security) {
+      continue;
+    }
+    const normalized = alias.aliasTextNormalized.trim().toUpperCase();
+    if (normalized) {
+      bySymbol.set(normalized, security);
+    }
+  }
+
+  return {
+    find(position: PortfolioStatementPosition) {
+      const isin = readPositionText(
+        position,
+        "isin",
+        "security_isin",
+      )?.toUpperCase();
+      if (isin && byIsin.has(isin)) {
+        return byIsin.get(isin) ?? null;
+      }
+      const symbol = readPositionText(
+        position,
+        "symbol",
+        "securitySymbol",
+        "security_symbol",
+      )?.toUpperCase();
+      if (symbol && bySymbol.has(symbol)) {
+        return bySymbol.get(symbol) ?? null;
+      }
+      return null;
+    },
+    remember(security: Security) {
+      if (security.isin) {
+        byIsin.set(security.isin.trim().toUpperCase(), security);
+      }
+      for (const symbol of [
+        security.providerSymbol,
+        security.canonicalSymbol,
+        security.displaySymbol,
+      ]) {
+        const normalized = symbol.trim().toUpperCase();
+        if (normalized) {
+          bySymbol.set(normalized, security);
+        }
+      }
+    },
+  };
+}
+
+async function ensureStatementSecurity(
+  sql: SqlClient,
+  input: {
+    position: PortfolioStatementPosition;
+    snapshot: PortfolioStatementSnapshot;
+    statementDate: string | null;
+    defaultCurrency: string;
+    existingSecurity: Security | null;
+  },
+) {
+  if (input.existingSecurity) {
+    return { security: input.existingSecurity, upserted: false };
+  }
+
+  const symbol =
+    readPositionText(
+      input.position,
+      "symbol",
+      "securitySymbol",
+      "security_symbol",
+    ) ??
+    readPositionText(input.position, "conid") ??
+    readPositionText(input.position, "isin") ??
+    "UNKNOWN";
+  const securityName =
+    readPositionText(input.position, "securityName", "security_name", "name") ??
+    symbol;
+  const providerSymbol = readPositionText(input.position, "conid") ?? symbol;
+  const quoteCurrency = normalizeCurrencyCode(
+    readPositionText(input.position, "currency"),
+    input.defaultCurrency,
+  );
+  const now = new Date().toISOString();
+  const security: Security = {
+    id: randomUUID(),
+    providerName: "interactive_brokers",
+    providerSymbol,
+    canonicalSymbol: symbol,
+    displaySymbol: symbol,
+    name: securityName,
+    exchangeName: readPositionText(input.position, "exchange") ?? "IBKR",
+    micCode: null,
+    assetType: normalizeStatementAssetType(
+      readPositionText(input.position, "assetType", "asset_type"),
+    ),
+    quoteCurrency,
+    country: null,
+    isin: readPositionText(input.position, "isin"),
+    figi: null,
+    active: true,
+    metadataJson: {
+      source: "ibkr_statement",
+      statementDate: input.statementDate,
+      accountNumber: readSnapshotText(
+        input.snapshot,
+        "accountNumber",
+        "account_number",
+      ),
+      conid: readPositionText(input.position, "conid"),
+      exchange: readPositionText(input.position, "exchange"),
+      originalPosition: input.position,
+    },
+    lastPriceRefreshAt: null,
+    createdAt: now,
+  };
+
+  const rows = await sql`
+    insert into public.securities ${sql({
+      id: security.id,
+      provider_name: security.providerName,
+      provider_symbol: security.providerSymbol,
+      canonical_symbol: security.canonicalSymbol,
+      display_symbol: security.displaySymbol,
+      name: security.name,
+      exchange_name: security.exchangeName,
+      mic_code: security.micCode,
+      asset_type: security.assetType,
+      quote_currency: security.quoteCurrency,
+      country: security.country,
+      isin: security.isin,
+      figi: security.figi,
+      active: security.active,
+      metadata_json: serializeJson(sql, security.metadataJson),
+      last_price_refresh_at: security.lastPriceRefreshAt,
+      created_at: security.createdAt,
+    } as Record<string, unknown>)}
+    on conflict (provider_name, provider_symbol)
+    do update set
+      canonical_symbol = excluded.canonical_symbol,
+      display_symbol = excluded.display_symbol,
+      name = excluded.name,
+      exchange_name = excluded.exchange_name,
+      mic_code = excluded.mic_code,
+      asset_type = excluded.asset_type,
+      quote_currency = excluded.quote_currency,
+      country = excluded.country,
+      isin = coalesce(public.securities.isin, excluded.isin),
+      figi = coalesce(public.securities.figi, excluded.figi),
+      active = true,
+      metadata_json = public.securities.metadata_json || excluded.metadata_json
+    returning id
+  `;
+  return {
+    security: {
+      ...security,
+      id: String(rows[0]?.id ?? security.id),
+    },
+    upserted: true,
+  };
+}
+
+async function insertStatementSecurityAliases(
+  sql: SqlClient,
+  input: {
+    securityId: string;
+    templateId: string | null;
+    position: PortfolioStatementPosition;
+  },
+) {
+  let inserted = 0;
+  const aliases = [
+    readPositionText(
+      input.position,
+      "symbol",
+      "securitySymbol",
+      "security_symbol",
+    ),
+    readPositionText(input.position, "isin"),
+    readPositionText(input.position, "conid"),
+  ]
+    .map(normalizeAliasText)
+    .filter(Boolean);
+
+  for (const aliasTextNormalized of [...new Set(aliases)]) {
+    const rows = await sql`
+      insert into public.security_aliases ${sql({
+        id: randomUUID(),
+        security_id: input.securityId,
+        alias_text_normalized: aliasTextNormalized,
+        alias_source: "provider",
+        template_id: input.templateId,
+        confidence: "1",
+        created_at: new Date().toISOString(),
+      } as Record<string, unknown>)}
+      on conflict (security_id, alias_text_normalized) do nothing
+      returning id
+    `;
+    if (rows.length > 0) {
+      inserted += 1;
+    }
+  }
+
+  return inserted;
+}
+
+async function upsertStatementSecurityPrice(
+  sql: SqlClient,
+  input: {
+    securityId: string;
+    position: PortfolioStatementPosition;
+    snapshot: PortfolioStatementSnapshot;
+    statementDate: string;
+    quoteTimestamp: string;
+    defaultCurrency: string;
+  },
+) {
+  const price = readStatementDecimal(
+    input.position as Record<string, unknown>,
+    ["closePrice", "close_price"],
+  );
+  if (price === null) {
+    return false;
+  }
+
+  await sql`
+    insert into public.security_prices ${sql({
+      security_id: input.securityId,
+      price_date: input.statementDate,
+      quote_timestamp: input.quoteTimestamp,
+      price: price.toFixed(),
+      currency: normalizeCurrencyCode(
+        readPositionText(input.position, "currency"),
+        input.defaultCurrency,
+      ),
+      source_name: IBKR_STATEMENT_PRICE_SOURCE,
+      is_realtime: false,
+      is_delayed: true,
+      market_state: "statement_close",
+      raw_json: serializeJson(sql, {
+        source: "ibkr_statement",
+        snapshot: input.snapshot,
+        position: input.position,
+      }),
+      created_at: new Date().toISOString(),
+    } as Record<string, unknown>)}
+    on conflict (security_id, price_date, source_name)
+    do update set
+      quote_timestamp = excluded.quote_timestamp,
+      price = excluded.price,
+      currency = excluded.currency,
+      is_realtime = excluded.is_realtime,
+      is_delayed = excluded.is_delayed,
+      market_state = excluded.market_state,
+      raw_json = excluded.raw_json,
+      created_at = excluded.created_at
+  `;
+  return true;
+}
+
+async function maybeInsertOpeningPositionFromStatement(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    entityId: string;
+    accountId: string;
+    securityId: string;
+    statementDate: string;
+    importBatchId: string;
+    accountNumber: string | null;
+    position: PortfolioStatementPosition;
+  },
+) {
+  const quantity = readStatementDecimal(
+    input.position as Record<string, unknown>,
+    ["quantity"],
+  );
+  if (quantity === null || quantity.isZero()) {
+    return { inserted: false, skippedReason: "missing_or_zero_quantity" };
+  }
+
+  const existingRows = await sql`
+    select
+      exists(
+        select 1
+        from public.holding_adjustments
+        where user_id = ${input.userId}
+          and account_id = ${input.accountId}
+          and security_id = ${input.securityId}
+          and effective_date <= ${input.statementDate}
+      ) as has_adjustment,
+      exists(
+        select 1
+        from public.transactions
+        where user_id = ${input.userId}
+          and account_id = ${input.accountId}
+          and security_id = ${input.securityId}
+          and transaction_date <= ${input.statementDate}
+          and voided_at is null
+      ) as has_transaction
+  `;
+  const hasPriorPositionEvidence = Boolean(
+    existingRows[0]?.has_adjustment || existingRows[0]?.has_transaction,
+  );
+  if (hasPriorPositionEvidence) {
+    return { inserted: false, skippedReason: "position_already_seeded" };
+  }
+
+  const costBasis = readStatementDecimal(
+    input.position as Record<string, unknown>,
+    ["costBasis", "cost_basis"],
+  );
+  await sql`
+    insert into public.holding_adjustments ${sql({
+      id: randomUUID(),
+      user_id: input.userId,
+      entity_id: input.entityId,
+      account_id: input.accountId,
+      security_id: input.securityId,
+      effective_date: input.statementDate,
+      share_delta: quantity.toFixed(),
+      cost_basis_delta_eur: costBasis?.toFixed() ?? null,
+      reason: "opening_position",
+      note: `Seeded from IBKR statement${input.accountNumber ? ` ${input.accountNumber}` : ""} import ${input.importBatchId}.`,
+      created_at: new Date().toISOString(),
+    } as Record<string, unknown>)}
+  `;
+
+  return { inserted: true, skippedReason: null };
+}
+
+async function persistPortfolioStatementSnapshot(
+  sql: SqlClient,
+  input: {
+    userId: string;
+    dataset: DomainDataset;
+    accountId: string;
+    templateId: string | null;
+    importBatchId: string;
+    snapshot: PortfolioStatementSnapshot | null | undefined;
+  },
+): Promise<PortfolioStatementSnapshotCommitSummary | null> {
+  if (!input.snapshot) {
+    return null;
+  }
+
+  const account = input.dataset.accounts.find(
+    (candidate) =>
+      candidate.id === input.accountId && candidate.userId === input.userId,
+  );
+  if (!account) {
+    throw new Error(`Account ${input.accountId} was not found.`);
+  }
+
+  const statementDate = normalizeIsoDate(
+    readSnapshotText(
+      input.snapshot,
+      "statementDate",
+      "statement_date",
+      "periodEnd",
+      "period_end",
+    ),
+  );
+  const accountNumber = readSnapshotText(
+    input.snapshot,
+    "accountNumber",
+    "account_number",
+  );
+  const baseCurrency = normalizeCurrencyCode(
+    readSnapshotText(input.snapshot, "baseCurrency", "base_currency"),
+    account.defaultCurrency,
+  );
+  const openPositions =
+    input.snapshot.openPositions ?? input.snapshot.open_positions ?? [];
+  const summary: PortfolioStatementSnapshotCommitSummary = {
+    statementDate,
+    accountNumber,
+    cashSnapshotUpserted: false,
+    cashSnapshotMethod: null,
+    cashSnapshotIncludesDividendAccruals: false,
+    openPositionsDetected: openPositions.length,
+    securitiesUpserted: 0,
+    securityAliasesInserted: 0,
+    pricesUpserted: 0,
+    openingPositionsInserted: 0,
+    openingPositionsSkipped: 0,
+    skippedReasons: [],
+  };
+  if (!statementDate) {
+    summary.skippedReasons.push("missing_statement_date");
+    return summary;
+  }
+
+  const cashIncludingAccruals = readStatementDecimal(
+    input.snapshot as Record<string, unknown>,
+    ["cashBalanceIncludingAccruals", "cash_balance_including_accruals"],
+  );
+  const cashBalance = readStatementDecimal(
+    input.snapshot as Record<string, unknown>,
+    ["cashBalance", "cash_balance"],
+  );
+  const dividendAccruals = readStatementDecimal(
+    input.snapshot as Record<string, unknown>,
+    ["dividendAccruals", "dividend_accruals"],
+  );
+  const netAssetValue = readStatementDecimal(
+    input.snapshot as Record<string, unknown>,
+    ["netAssetValue", "net_asset_value"],
+  );
+  const positionMarketValueTotal = openPositions.reduce<Decimal | null>(
+    (sum, position) => {
+      if (sum === null) {
+        return null;
+      }
+      const positionCurrency = normalizeCurrencyCode(
+        readPositionText(position, "currency"),
+        baseCurrency,
+      );
+      if (positionCurrency !== baseCurrency) {
+        return null;
+      }
+      const marketValue = readStatementDecimal(
+        position as Record<string, unknown>,
+        ["marketValue", "market_value"],
+      );
+      return marketValue === null ? null : sum.plus(marketValue);
+    },
+    new Decimal(0),
+  );
+  const cashFromNav =
+    netAssetValue !== null && positionMarketValueTotal !== null
+      ? netAssetValue.minus(positionMarketValueTotal)
+      : null;
+  const balanceOriginal =
+    cashFromNav ??
+    cashIncludingAccruals ??
+    (cashBalance && dividendAccruals
+      ? cashBalance.plus(dividendAccruals)
+      : cashBalance);
+
+  if (balanceOriginal !== null && baseCurrency === "EUR") {
+    await sql`
+      insert into public.account_balance_snapshots ${sql({
+        account_id: input.accountId,
+        as_of_date: statementDate,
+        balance_original: balanceOriginal.toFixed(),
+        balance_currency: baseCurrency,
+        balance_base_eur: balanceOriginal.toFixed(),
+        source_kind: "statement",
+        import_batch_id: input.importBatchId,
+      } as Record<string, unknown>)}
+      on conflict (account_id, as_of_date)
+      do update set
+        balance_original = excluded.balance_original,
+        balance_currency = excluded.balance_currency,
+        balance_base_eur = excluded.balance_base_eur,
+        source_kind = excluded.source_kind,
+        import_batch_id = excluded.import_batch_id
+    `;
+    summary.cashSnapshotUpserted = true;
+    summary.cashSnapshotMethod =
+      cashFromNav !== null
+        ? "net_asset_value_less_positions"
+        : cashIncludingAccruals !== null
+          ? "cash_including_accruals"
+          : cashBalance !== null && dividendAccruals !== null
+            ? "cash_plus_dividend_accruals"
+            : "cash_balance";
+    summary.cashSnapshotIncludesDividendAccruals =
+      cashFromNav !== null ||
+      cashIncludingAccruals !== null ||
+      (cashBalance !== null &&
+        dividendAccruals !== null &&
+        !dividendAccruals.isZero());
+  } else if (balanceOriginal !== null) {
+    summary.skippedReasons.push("cash_snapshot_requires_eur_base_currency");
+  }
+
+  const lookup = buildSecurityLookup(input.dataset);
+  const quoteTimestamp = normalizeStatementTimestamp(
+    readSnapshotText(input.snapshot, "generatedAt", "generated_at"),
+    statementDate,
+  );
+
+  for (const position of openPositions) {
+    const ensuredSecurity = await ensureStatementSecurity(sql, {
+      position,
+      snapshot: input.snapshot,
+      statementDate,
+      defaultCurrency: baseCurrency,
+      existingSecurity: lookup.find(position),
+    });
+    if (ensuredSecurity.upserted) {
+      summary.securitiesUpserted += 1;
+      lookup.remember(ensuredSecurity.security);
+    }
+
+    summary.securityAliasesInserted += await insertStatementSecurityAliases(
+      sql,
+      {
+        securityId: ensuredSecurity.security.id,
+        templateId: input.templateId,
+        position,
+      },
+    );
+
+    const priceUpserted = await upsertStatementSecurityPrice(sql, {
+      securityId: ensuredSecurity.security.id,
+      position,
+      snapshot: input.snapshot,
+      statementDate,
+      quoteTimestamp,
+      defaultCurrency: baseCurrency,
+    });
+    if (priceUpserted) {
+      summary.pricesUpserted += 1;
+    }
+
+    const openingPosition = await maybeInsertOpeningPositionFromStatement(sql, {
+      userId: input.userId,
+      entityId: account.entityId,
+      accountId: input.accountId,
+      securityId: ensuredSecurity.security.id,
+      statementDate,
+      importBatchId: input.importBatchId,
+      accountNumber,
+      position,
+    });
+    if (openingPosition.inserted) {
+      summary.openingPositionsInserted += 1;
+    } else {
+      summary.openingPositionsSkipped += 1;
+      if (openingPosition.skippedReason) {
+        summary.skippedReasons.push(openingPosition.skippedReason);
+      }
+    }
+  }
+
+  summary.skippedReasons = [...new Set(summary.skippedReasons)];
+  return summary;
+}
+
 async function finalizeImportBatchRecord(
   sql: SqlClient,
   input: {
@@ -305,17 +1014,22 @@ async function persistCommittedImportBatch(
   sql: SqlClient,
   input: {
     importBatchRecord: Parameters<typeof insertImportBatchRecord>[1];
+    dataset?: DomainDataset;
     userId: string;
     accountId: string;
+    templateId?: string | null;
     importedAt: string;
     jobsQueued: ImportCommitResult["jobsQueued"];
     preparedTransactions: Transaction[];
+    portfolioStatementSnapshot?: PortfolioStatementSnapshot | null;
     queueBeforeInsert?: boolean;
   },
 ) {
   await insertImportBatchRecord(sql, input.importBatchRecord);
 
   let insertedTransactions: Transaction[] = [];
+  let portfolioStatementSummary: PortfolioStatementSnapshotCommitSummary | null =
+    null;
   if (input.queueBeforeInsert) {
     await queueImportBatchJobs(sql, {
       jobsQueued: input.jobsQueued,
@@ -326,11 +1040,33 @@ async function persistCommittedImportBatch(
       sql,
       input.preparedTransactions,
     );
+    portfolioStatementSummary =
+      input.portfolioStatementSnapshot && input.dataset
+        ? await persistPortfolioStatementSnapshot(sql, {
+            userId: input.userId,
+            dataset: input.dataset,
+            accountId: input.accountId,
+            templateId: input.templateId ?? null,
+            importBatchId: input.importBatchRecord.importBatchId,
+            snapshot: input.portfolioStatementSnapshot,
+          })
+        : null;
   } else {
     insertedTransactions = await insertTransactions(
       sql,
       input.preparedTransactions,
     );
+    portfolioStatementSummary =
+      input.portfolioStatementSnapshot && input.dataset
+        ? await persistPortfolioStatementSnapshot(sql, {
+            userId: input.userId,
+            dataset: input.dataset,
+            accountId: input.accountId,
+            templateId: input.templateId ?? null,
+            importBatchId: input.importBatchRecord.importBatchId,
+            snapshot: input.portfolioStatementSnapshot,
+          })
+        : null;
     await queueImportBatchJobs(sql, {
       jobsQueued: input.jobsQueued,
       importBatchId: input.importBatchRecord.importBatchId,
@@ -347,6 +1083,7 @@ async function persistCommittedImportBatch(
   return {
     insertedTransactions,
     transactionIds: insertedTransactions.map((transaction) => transaction.id),
+    portfolioStatementSummary,
   };
 }
 
@@ -416,7 +1153,7 @@ export async function commitPreparedImportBatch(
     );
   const importedAt = new Date().toISOString();
 
-  const { insertedTransactions, transactionIds } =
+  const { insertedTransactions, transactionIds, portfolioStatementSummary } =
     await persistCommittedImportBatch(sql, {
       importBatchRecord: {
         importBatchId,
@@ -447,11 +1184,14 @@ export async function commitPreparedImportBatch(
         importedAt,
         extraValues: input.options?.importBatchExtraValues,
       },
+      dataset: input.dataset,
       userId: input.userId,
       accountId: input.normalizedInput.accountId,
+      templateId: input.normalizedInput.templateId,
       importedAt,
       jobsQueued,
       preparedTransactions: preparedTransactions?.inserted ?? [],
+      portfolioStatementSnapshot: commitResult?.portfolioStatementSnapshot,
       queueBeforeInsert: false,
     });
 
@@ -472,6 +1212,9 @@ export async function commitPreparedImportBatch(
     commitSummary: {
       jobsQueued,
       transactionIds,
+      ...(portfolioStatementSummary
+        ? { portfolioStatementSnapshot: portfolioStatementSummary }
+        : {}),
     },
   });
 
