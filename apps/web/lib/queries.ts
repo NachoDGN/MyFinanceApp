@@ -482,12 +482,46 @@ export type CreditCardStatementModel = Awaited<
 
 export async function getTransactionsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
+  const projectedReferenceDate =
+    state.period.preset === "custom"
+      ? state.referenceDate
+      : getLatestScopedTransactionDate(
+          state.dataset,
+          state.scope,
+          state.referenceDate,
+        );
+  const transactionsPeriod =
+    state.period.preset === "custom"
+      ? state.period
+      : resolvePeriodSelection({
+          preset: state.periodParam,
+          referenceDate: projectedReferenceDate,
+        });
+  const navigationState = {
+    ...state.navigationState,
+    period: transactionsPeriod.preset,
+    referenceDate: projectedReferenceDate,
+    latestReferenceDate: projectedReferenceDate,
+    start:
+      transactionsPeriod.preset === "custom"
+        ? transactionsPeriod.start
+        : undefined,
+    end:
+      transactionsPeriod.preset === "custom" ? transactionsPeriod.end : undefined,
+  };
   const ledger = await domainService.listTransactions(state.scope, {
-    referenceDate: state.referenceDate,
-    period: state.period,
+    referenceDate: projectedReferenceDate,
+    period: transactionsPeriod,
     query: state.transactionSearchQuery,
   });
-  return { ...state, ledger };
+  return {
+    ...state,
+    referenceDate: projectedReferenceDate,
+    latestReferenceDate: projectedReferenceDate,
+    period: transactionsPeriod,
+    navigationState,
+    ledger,
+  };
 }
 
 export async function getCreditCardStatementModel(

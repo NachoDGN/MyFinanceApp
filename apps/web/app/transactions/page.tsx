@@ -2,6 +2,7 @@ import {
   filterTransactionsByPeriod,
   filterTransactionsByReferenceDate,
   filterTransactionsByScope,
+  needsCreditCardStatementUpload,
   needsTransactionManualReview,
 } from "@myfinance/domain";
 
@@ -122,7 +123,11 @@ export default async function TransactionsPage({
       ]),
   );
   const unresolvedTransactions = [...scopedPeriodTransactions]
-    .filter((transaction) => needsTransactionManualReview(transaction))
+    .filter(
+      (transaction) =>
+        needsTransactionManualReview(transaction) ||
+        needsCreditCardStatementUpload(transaction),
+    )
     .sort((left, right) =>
       `${right.transactionDate}${right.createdAt}`.localeCompare(
         `${left.transactionDate}${left.createdAt}`,
