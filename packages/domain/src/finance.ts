@@ -996,10 +996,27 @@ function inferCryptoTransactionQuantity(
   return amount.gt(0) ? amount.minus(fee) : amount;
 }
 
+function resolveCryptoCostBasisFxRate(
+  dataset: DomainDataset,
+  from: string,
+  to: string,
+  transactionDate: string,
+  valuationDate: string,
+) {
+  const fromCurrency = from.toUpperCase();
+  const toCurrency = to.toUpperCase();
+  return (
+    tryResolveFxRate(dataset, fromCurrency, toCurrency, transactionDate) ??
+    tryResolveFxRate(dataset, fromCurrency, toCurrency, valuationDate) ??
+    new Decimal(1)
+  );
+}
+
 function inferCryptoTransactionCostBasisEur(
   dataset: DomainDataset,
   transaction: Transaction,
   currency: string,
+  valuationDate: string,
 ) {
   const fundingLeg = readProviderRawLegs(transaction).find((leg) => {
     const legCurrency = readRecordString(leg, "currency")?.toUpperCase();
@@ -1013,11 +1030,12 @@ function inferCryptoTransactionCostBasisEur(
       return fundingAmount
         .abs()
         .mul(
-          resolveFxRate(
+          resolveCryptoCostBasisFxRate(
             dataset,
             fundingCurrency,
             "EUR",
             transaction.transactionDate,
+            valuationDate,
           ),
         );
     }
@@ -1030,11 +1048,12 @@ function inferCryptoTransactionCostBasisEur(
     return new Decimal(transaction.amountOriginal)
       .abs()
       .mul(
-        resolveFxRate(
+        resolveCryptoCostBasisFxRate(
           dataset,
           transaction.currencyOriginal,
           "EUR",
           transaction.transactionDate,
+          valuationDate,
         ),
       );
   }
@@ -1079,6 +1098,7 @@ function resolveCryptoOpenCostBasis(
         dataset,
         transaction,
         currency,
+        asOfDate,
       );
       if (!costBasisEur) {
         complete = false;

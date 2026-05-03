@@ -7311,8 +7311,8 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
     securityPrices: [
       {
         securityId: "security-btc",
-        priceDate: "2026-04-11",
-        quoteTimestamp: "2026-04-11T16:00:00Z",
+        priceDate: "2026-04-20",
+        quoteTimestamp: "2026-04-20T16:00:00Z",
         price: "80000.00000000",
         currency: "EUR",
         sourceName: "twelve_data",
@@ -7320,13 +7320,13 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
         isDelayed: true,
         marketState: "closed",
         rawJson: {},
-        createdAt: "2026-04-11T16:00:00Z",
+        createdAt: "2026-04-20T16:00:00Z",
       },
     ],
     accountBalanceSnapshots: [
       {
         accountId: eurAccount.id,
-        asOfDate: "2026-04-11",
+        asOfDate: "2026-04-20",
         balanceOriginal: "1000.00",
         balanceCurrency: "EUR",
         balanceBaseEur: "1000.00",
@@ -7335,7 +7335,7 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
       },
       {
         accountId: btcAccount.id,
-        asOfDate: "2026-04-11",
+        asOfDate: "2026-04-20",
         balanceOriginal: "0.01000000",
         balanceCurrency: "BTC",
         balanceBaseEur: "0.01000000",
@@ -7347,8 +7347,17 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
       {
         baseCurrency: "USD",
         quoteCurrency: "EUR",
-        asOfDate: "2026-04-10",
-        asOfTimestamp: "2026-04-10T16:00:00Z",
+        asOfDate: "2026-04-11",
+        asOfTimestamp: "2026-04-11T16:00:00Z",
+        rate: "0.75000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-20",
+        asOfTimestamp: "2026-04-20T16:00:00Z",
         rate: "0.80000000",
         sourceName: "twelve_data",
         rawJson: {},
@@ -7394,37 +7403,37 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
     { kind: "consolidated" },
     "EUR",
     "cash_total_current",
-    { referenceDate: "2026-04-11" },
+    { referenceDate: "2026-04-20" },
   );
   const portfolioMetric = buildMetricResult(
     dataset,
     { kind: "consolidated" },
     "EUR",
     "portfolio_market_value_current",
-    { referenceDate: "2026-04-11" },
+    { referenceDate: "2026-04-20" },
   );
   const netWorthMetric = buildMetricResult(
     dataset,
     { kind: "consolidated" },
     "EUR",
     "net_worth_current",
-    { referenceDate: "2026-04-11" },
+    { referenceDate: "2026-04-20" },
   );
   const unrealizedMetric = buildMetricResult(
     dataset,
     { kind: "consolidated" },
     "EUR",
     "portfolio_unrealized_pnl_current",
-    { referenceDate: "2026-04-11" },
+    { referenceDate: "2026-04-20" },
   );
   const investmentsModel = buildInvestmentsReadModel(dataset, {
     scope: { kind: "consolidated" },
     displayCurrency: "EUR",
     period: resolvePeriodSelection({
       preset: "mtd",
-      referenceDate: "2026-04-11",
+      referenceDate: "2026-04-20",
     }),
-    referenceDate: "2026-04-11",
+    referenceDate: "2026-04-20",
   });
 
   assert.equal(cashMetric.valueBaseEur, "1000.00");
