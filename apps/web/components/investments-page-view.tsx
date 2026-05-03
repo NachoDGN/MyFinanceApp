@@ -557,7 +557,17 @@ export function InvestmentsPageView({
                     </div>
                     <div className="investment-position-values">
                       <strong>{row.value}</strong>
-                      <span className="muted">{row.fallbackNote}</span>
+                      {row.returnAmountDisplay ? (
+                        <span
+                          className={`investment-return ${row.returnClass}`}
+                        >
+                          <span>{row.returnAmountDisplay}</span>
+                          <span className="investment-return-separator">/</span>
+                          <span>{row.returnPercentDisplay}</span>
+                        </span>
+                      ) : (
+                        <span className="muted">{row.fallbackNote}</span>
+                      )}
                     </div>
                   </div>
                 </article>

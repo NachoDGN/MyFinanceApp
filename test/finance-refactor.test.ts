@@ -7343,6 +7343,50 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
         importBatchId: null,
       },
     ],
+    fxRates: [
+      {
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-10",
+        asOfTimestamp: "2026-04-10T16:00:00Z",
+        rate: "0.80000000",
+        sourceName: "twelve_data",
+        rawJson: {},
+      },
+    ],
+    transactions: [
+      createTransaction({
+        id: "btc-buy",
+        accountId: btcAccount.id,
+        accountEntityId: btcAccount.entityId,
+        economicEntityId: btcAccount.entityId,
+        transactionDate: "2026-04-10",
+        postedDate: "2026-04-10",
+        amountOriginal: "0.01000000",
+        currencyOriginal: "BTC",
+        amountBaseEur: "0.01000000",
+        descriptionRaw: "Bought BTC from USD",
+        descriptionClean: "Bought BTC from USD",
+        rawPayload: {
+          providerRaw: {
+            transaction: {
+              legs: [
+                {
+                  amount: -500,
+                  currency: "USD",
+                  description: "Bought BTC from USD",
+                },
+                {
+                  amount: 0.01,
+                  currency: "BTC",
+                  description: "Bought BTC from USD",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ],
   });
 
   const cashMetric = buildMetricResult(
@@ -7366,6 +7410,13 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
     "net_worth_current",
     { referenceDate: "2026-04-11" },
   );
+  const unrealizedMetric = buildMetricResult(
+    dataset,
+    { kind: "consolidated" },
+    "EUR",
+    "portfolio_unrealized_pnl_current",
+    { referenceDate: "2026-04-11" },
+  );
   const investmentsModel = buildInvestmentsReadModel(dataset, {
     scope: { kind: "consolidated" },
     displayCurrency: "EUR",
@@ -7379,12 +7430,14 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
   assert.equal(cashMetric.valueBaseEur, "1000.00");
   assert.equal(portfolioMetric.valueBaseEur, "800.00");
   assert.equal(netWorthMetric.valueBaseEur, "1800.00");
+  assert.equal(unrealizedMetric.valueBaseEur, "400.00");
   assert.equal(investmentsModel.holdings.cryptoBalances.length, 0);
-  assert.equal(
-    investmentsModel.holdings.holdings.find((row) => row.symbol === "BTC")
-      ?.currentValueEur,
-    "800.00",
+  const cryptoHolding = investmentsModel.holdings.holdings.find(
+    (row) => row.symbol === "BTC",
   );
+  assert.equal(cryptoHolding?.currentValueEur, "800.00");
+  assert.equal(cryptoHolding?.unrealizedPnlEur, "400.00");
+  assert.equal(cryptoHolding?.unrealizedPnlPercent, "100.00");
 });
 
 test("transaction list quality respects the supplied reference date and period", async () => {

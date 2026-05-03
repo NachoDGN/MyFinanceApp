@@ -969,6 +969,18 @@ export function buildInvestmentsPageModel(
           displayMetric.currentValueDisplay,
           model.currency,
         ),
+        returnAmountDisplay:
+          displayMetric.unrealizedDisplay !== null
+            ? formatCurrency(displayMetric.unrealizedDisplay, model.currency)
+            : null,
+        returnPercentDisplay:
+          displayMetric.unrealizedDisplayPercent !== null
+            ? formatPercent(displayMetric.unrealizedDisplayPercent)
+            : null,
+        returnClass:
+          Number(displayMetric.unrealizedDisplay ?? "0") >= 0
+            ? ("positive" as const)
+            : ("negative" as const),
         fallbackNote:
           holding.currentPrice && holding.currentPriceCurrency
             ? `${formatCurrency(holding.currentPrice, holding.currentPriceCurrency)} per ${holding.symbol}`

@@ -940,6 +940,190 @@ export function getLatestInvestmentCashBalances(
   );
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readRecordString(value: Record<string, unknown>, key: string) {
+  const raw = value[key];
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function readRecordDecimal(value: Record<string, unknown>, key: string) {
+  const raw = value[key];
+  if (raw === null || raw === undefined || `${raw}`.trim() === "") {
+    return null;
+  }
+
+  try {
+    return new Decimal(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+function readProviderRawLegs(transaction: Transaction) {
+  const rawPayload = readRecord(transaction.rawPayload);
+  const providerRaw = readRecord(rawPayload?.providerRaw);
+  const providerTransaction = readRecord(providerRaw?.transaction);
+  const legs = providerTransaction?.legs;
+  return Array.isArray(legs)
+    ? legs
+        .map((leg) => readRecord(leg))
+        .filter((leg): leg is Record<string, unknown> => leg !== null)
+    : [];
+}
+
+function inferCryptoTransactionQuantity(
+  transaction: Transaction,
+  currency: string,
+) {
+  const ownLeg = readProviderRawLegs(transaction).find(
+    (leg) => readRecordString(leg, "currency")?.toUpperCase() === currency,
+  );
+  if (!ownLeg) {
+    return new Decimal(transaction.amountOriginal);
+  }
+
+  const amount = readRecordDecimal(ownLeg, "amount");
+  if (!amount) {
+    return new Decimal(transaction.amountOriginal);
+  }
+
+  const fee = readRecordDecimal(ownLeg, "fee") ?? new Decimal(0);
+  return amount.gt(0) ? amount.minus(fee) : amount;
+}
+
+function inferCryptoTransactionCostBasisEur(
+  dataset: DomainDataset,
+  transaction: Transaction,
+  currency: string,
+) {
+  const fundingLeg = readProviderRawLegs(transaction).find((leg) => {
+    const legCurrency = readRecordString(leg, "currency")?.toUpperCase();
+    const amount = readRecordDecimal(leg, "amount");
+    return legCurrency && legCurrency !== currency && amount?.lt(0);
+  });
+  if (fundingLeg) {
+    const fundingCurrency = readRecordString(fundingLeg, "currency");
+    const fundingAmount = readRecordDecimal(fundingLeg, "amount");
+    if (fundingCurrency && fundingAmount) {
+      return fundingAmount
+        .abs()
+        .mul(
+          resolveFxRate(
+            dataset,
+            fundingCurrency,
+            "EUR",
+            transaction.transactionDate,
+          ),
+        );
+    }
+  }
+
+  if (
+    transaction.currencyOriginal.toUpperCase() !== currency &&
+    new Decimal(transaction.amountOriginal).lt(0)
+  ) {
+    return new Decimal(transaction.amountOriginal)
+      .abs()
+      .mul(
+        resolveFxRate(
+          dataset,
+          transaction.currencyOriginal,
+          "EUR",
+          transaction.transactionDate,
+        ),
+      );
+  }
+
+  return null;
+}
+
+function resolveCryptoOpenCostBasis(
+  dataset: DomainDataset,
+  accountId: string,
+  currency: string,
+  heldQuantity: Decimal,
+  asOfDate: string,
+) {
+  let openQuantity = new Decimal(0);
+  let openCostBasisEur = new Decimal(0);
+  let complete = true;
+
+  const transactions = dataset.transactions
+    .filter(
+      (transaction) =>
+        transaction.accountId === accountId &&
+        transaction.currencyOriginal.toUpperCase() === currency &&
+        transaction.transactionDate <= asOfDate &&
+        transaction.voidedAt === null,
+    )
+    .sort(
+      (left, right) =>
+        left.transactionDate.localeCompare(right.transactionDate) ||
+        (left.postedDate ?? "").localeCompare(right.postedDate ?? "") ||
+        left.createdAt.localeCompare(right.createdAt),
+    );
+
+  for (const transaction of transactions) {
+    const quantity = inferCryptoTransactionQuantity(transaction, currency);
+    if (quantity.eq(0)) {
+      continue;
+    }
+
+    if (quantity.gt(0)) {
+      const costBasisEur = inferCryptoTransactionCostBasisEur(
+        dataset,
+        transaction,
+        currency,
+      );
+      if (!costBasisEur) {
+        complete = false;
+      } else {
+        openCostBasisEur = openCostBasisEur.plus(costBasisEur);
+      }
+      openQuantity = openQuantity.plus(quantity);
+      continue;
+    }
+
+    const removedQuantity = quantity.abs();
+    if (openQuantity.lte(0)) {
+      complete = false;
+      continue;
+    }
+
+    const removedCostBasis = Decimal.min(removedQuantity, openQuantity).mul(
+      openCostBasisEur.div(openQuantity),
+    );
+    openQuantity = Decimal.max(0, openQuantity.minus(removedQuantity));
+    openCostBasisEur = Decimal.max(0, openCostBasisEur.minus(removedCostBasis));
+  }
+
+  if (openQuantity.lte(0)) {
+    return {
+      openCostBasisEur: new Decimal(0),
+      avgCostEur: new Decimal(0),
+      complete: complete && heldQuantity.eq(0),
+    };
+  }
+
+  const drift = openQuantity.minus(heldQuantity).abs();
+  if (drift.gt("0.00000001")) {
+    complete = false;
+  }
+
+  return {
+    openCostBasisEur: heldQuantity.gt(0)
+      ? openCostBasisEur.mul(heldQuantity).div(openQuantity)
+      : new Decimal(0),
+    avgCostEur: openCostBasisEur.div(openQuantity),
+    complete,
+  };
+}
+
 function buildCryptoSecurityHoldingRows(
   dataset: DomainDataset,
   scope: Scope,
@@ -1009,6 +1193,20 @@ function buildCryptoSecurityHoldingRows(
             .mul(priceFx)
             .toFixed(2)
         : null;
+      const heldQuantity = new Decimal(snapshot.balanceOriginal);
+      const costBasis = resolveCryptoOpenCostBasis(
+        dataset,
+        account.id,
+        currency,
+        heldQuantity,
+        asOfDate,
+      );
+      const unrealizedPnlEur =
+        currentValueEur !== null && costBasis.complete
+          ? new Decimal(currentValueEur)
+              .minus(costBasis.openCostBasisEur)
+              .toFixed(2)
+          : null;
 
       return [
         {
@@ -1019,12 +1217,20 @@ function buildCryptoSecurityHoldingRows(
           symbol: security.displaySymbol,
           securityName: security.name,
           quantity: snapshot.balanceOriginal,
-          avgCostEur: "0.00000000",
+          avgCostEur: costBasis.complete
+            ? costBasis.avgCostEur.toFixed(8)
+            : "0.00000000",
           currentPrice: price?.price ?? null,
           currentPriceCurrency: price?.currency ?? null,
           currentValueEur,
-          unrealizedPnlEur: null,
-          unrealizedPnlPercent: null,
+          unrealizedPnlEur,
+          unrealizedPnlPercent:
+            unrealizedPnlEur !== null
+              ? safeDividePercent(
+                  new Decimal(unrealizedPnlEur),
+                  costBasis.openCostBasisEur,
+                )
+              : null,
           quoteFreshness: latestKnownPrice
             ? !latestKnownPrice.isDelayed
               ? "fresh"
@@ -1033,7 +1239,7 @@ function buildCryptoSecurityHoldingRows(
                 : "delayed"
             : "missing",
           quoteTimestamp: latestKnownPrice?.quoteTimestamp ?? null,
-          unrealizedComplete: false,
+          unrealizedComplete: costBasis.complete,
         },
       ];
     })
