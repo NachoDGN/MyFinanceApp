@@ -21,6 +21,7 @@ import {
   type HoldingDisplayMetric,
   getHoldingDisplayMetricKey,
 } from "./investment-display";
+import { resolveDiscoveredRevolutLowRiskFund } from "./discovered-revolut-investment";
 import {
   buildManualInvestmentMatchHaystack,
   parseManualInvestmentMatcherTerms,
@@ -616,6 +617,10 @@ export function buildInvestmentsPageModel(
       };
     })
     .filter((row) => row !== null);
+  const discoveredRevolutInvestment = resolveDiscoveredRevolutLowRiskFund(
+    model.dataset,
+    model.referenceDate,
+  );
 
   const pricedPortfolioValueEur = model.holdings.holdings.reduce(
     (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
@@ -974,6 +979,29 @@ export function buildInvestmentsPageModel(
       amountEur: toDisplayAmount(model, row.amountEur) ?? "0.00",
     })),
     holdingRows,
+    discoveredRevolutInvestment: discoveredRevolutInvestment
+      ? {
+          label: discoveredRevolutInvestment.label,
+          principalDisplay: formatCurrency(
+            discoveredRevolutInvestment.principalOriginal,
+            discoveredRevolutInvestment.principalCurrency,
+          ),
+          currentValueDisplay: formatCurrency(
+            discoveredRevolutInvestment.currentValueOriginal,
+            discoveredRevolutInvestment.principalCurrency,
+          ),
+          returnDisplay: formatCurrency(
+            discoveredRevolutInvestment.returnOriginal,
+            discoveredRevolutInvestment.principalCurrency,
+          ),
+          returnOriginal: discoveredRevolutInvestment.returnOriginal,
+          returnCurrency: discoveredRevolutInvestment.principalCurrency,
+          snapshotDate: discoveredRevolutInvestment.snapshotDate,
+          matchedTransactionCount:
+            discoveredRevolutInvestment.matchedTransactionCount,
+          fundingAccountName: discoveredRevolutInvestment.fundingAccountName,
+        }
+      : null,
     manualInvestmentSummaries,
     manualInvestmentEntities: model.dataset.entities
       .filter((entity) => entity.active)

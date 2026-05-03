@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { AppShell } from "./app-shell";
+import { DiscoveredInvestmentReturnForm } from "./discovered-investment-return-form";
 import { InvestmentPriceRefreshButton } from "./investment-price-refresh-button";
 import {
   DistributionList,
@@ -513,6 +514,10 @@ export function InvestmentsPageView({
         </div>
 
         <PortfolioOverviewSection model={model} />
+
+        <DiscoveredInvestmentReturnForm
+          investment={model.discoveredRevolutInvestment}
+        />
 
         <div className="investments-position-grid">
           <PositionListSection

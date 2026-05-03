@@ -1,5 +1,6 @@
 "use server";
 
+import { Decimal } from "decimal.js";
 import { z } from "zod";
 
 import {
@@ -13,7 +14,7 @@ import {
   createTemplateConfig,
 } from "@myfinance/domain";
 import { logImportDebug } from "@myfinance/ingestion";
-import { domain } from "../lib/action-service";
+import { domain, repository } from "../lib/action-service";
 import {
   accountSchema,
   accountUpdateSchema,
@@ -23,6 +24,7 @@ import {
   entityUpdateSchema,
   manualInvestmentValuationSchema,
   promptProfileUpdateSchema,
+  revolutLowRiskFundReturnSchema,
   templateSchema,
   updateManualInvestmentSchema,
   workspaceProfileSchema,
@@ -41,6 +43,12 @@ import {
   revalidateTemplatePaths,
   revalidateWorkspacePaths,
 } from "../lib/api-revalidate";
+import {
+  REVOLUT_LOW_RISK_FUND_LABEL,
+  REVOLUT_LOW_RISK_FUND_MATCHER_TEXT,
+  REVOLUT_LOW_RISK_FUND_NOTE,
+  resolveDiscoveredRevolutLowRiskFund,
+} from "../lib/discovered-revolut-investment";
 
 const uuidSchema = z.string().uuid();
 const webActor = { actorName: "web-action", sourceChannel: "web" as const };
@@ -308,6 +316,60 @@ export async function recordManualInvestmentValuationAction(
   return revalidated(
     domain.recordManualInvestmentValuation(
       command(manualInvestmentValuationSchema.parse(input)),
+    ),
+    revalidateWorkspacePaths,
+  );
+}
+
+export async function recordRevolutLowRiskFundReturnAction(
+  input: z.input<typeof revolutLowRiskFundReturnSchema>,
+) {
+  const parsed = revolutLowRiskFundReturnSchema.parse(input);
+  const dataset = await repository.getDataset();
+  const discovered = resolveDiscoveredRevolutLowRiskFund(
+    dataset,
+    parsed.snapshotDate,
+  );
+  if (!discovered) {
+    throw new Error("No Revolut low-risk fund transfers were found.");
+  }
+
+  const currentValueOriginal = new Decimal(discovered.principalOriginal)
+    .plus(parsed.returnOriginal)
+    .toFixed(2);
+  if (new Decimal(currentValueOriginal).lt(0)) {
+    throw new Error("Return cannot reduce the fund value below zero.");
+  }
+
+  if (discovered.manualInvestmentId) {
+    return revalidated(
+      domain.recordManualInvestmentValuation(
+        command({
+          manualInvestmentId: discovered.manualInvestmentId,
+          snapshotDate: parsed.snapshotDate,
+          currentValueOriginal,
+          currentValueCurrency: discovered.principalCurrency,
+          note: "User-entered return for the auto-discovered Revolut low-risk fund.",
+        }),
+      ),
+      revalidateWorkspacePaths,
+    );
+  }
+
+  return revalidated(
+    domain.createManualInvestment(
+      command({
+        entityId: discovered.entityId,
+        fundingAccountId: discovered.fundingAccountId,
+        label: REVOLUT_LOW_RISK_FUND_LABEL,
+        matcherText: REVOLUT_LOW_RISK_FUND_MATCHER_TEXT,
+        note: REVOLUT_LOW_RISK_FUND_NOTE,
+        snapshotDate: parsed.snapshotDate,
+        currentValueOriginal,
+        currentValueCurrency: discovered.principalCurrency,
+        valuationNote:
+          "User-entered return for the auto-discovered Revolut low-risk fund.",
+      }),
     ),
     revalidateWorkspacePaths,
   );

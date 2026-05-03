@@ -100,6 +100,23 @@ export const nonNegativeAmountStringSchema = z.preprocess(
     ),
 );
 
+export const signedAmountStringSchema = z.preprocess(
+  (value) => {
+    if (typeof value === "number") {
+      return value.toString();
+    }
+    return value;
+  },
+  z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (value) => Number.isFinite(Number(value)),
+      "Enter a valid amount.",
+    ),
+);
+
 export const accountFieldsSchema = z.object({
   institutionName: z.string().trim().min(1),
   displayName: z.string().trim().min(1),
@@ -273,4 +290,9 @@ export const manualInvestmentValuationSchema = z.object({
     .trim()
     .optional()
     .transform((value) => value || null),
+});
+
+export const revolutLowRiskFundReturnSchema = z.object({
+  snapshotDate: isoDateSchema,
+  returnOriginal: signedAmountStringSchema,
 });

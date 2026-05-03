@@ -34,6 +34,7 @@ import {
   formatQuantity,
 } from "./formatters";
 import { domain as domainService, repository } from "./action-service";
+import { augmentDatasetWithDiscoveredRevolutLowRiskFund } from "./discovered-revolut-investment";
 
 export type RawSearchParams =
   | Promise<Record<string, string | string[] | undefined>>
@@ -620,9 +621,14 @@ export async function getTemplatesModel(searchParams: RawSearchParams) {
 
 export async function getInvestmentsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
+  const dataset = augmentDatasetWithDiscoveredRevolutLowRiskFund(
+    state.dataset,
+    state.referenceDate,
+  );
   return {
     ...state,
-    ...buildInvestmentsReadModel(state.dataset, {
+    dataset,
+    ...buildInvestmentsReadModel(dataset, {
       scope: state.scope,
       displayCurrency: state.currency,
       period: state.period,
