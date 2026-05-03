@@ -3427,7 +3427,7 @@ textarea {
   grid-column: 1 / -1;
   position: relative;
   z-index: 1;
-  padding: 24px;
+  overflow: visible;
 }
 
 .income-chart-header {
@@ -3435,8 +3435,8 @@ textarea {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid rgba(15, 15, 15, 0.08);
+  padding: 24px;
+  border-bottom: 1px solid rgba(15, 15, 15, 0.06);
 }
 
 .income-chart-title {
@@ -3446,30 +3446,89 @@ textarea {
   color: #111111;
 }
 
+.income-chart-description {
+  margin: 6px 0 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.income-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 16px 24px 0;
+}
+
+.income-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.income-chart-legend-item strong {
+  color: #111111;
+  font-weight: 800;
+}
+
+.income-chart-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.income-chart-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  gap: 24px;
+  padding: 24px;
+  border-radius: 0 0 24px 24px;
+  background: rgba(15, 15, 15, 0.015);
+}
+
+.income-chart-plot,
+.income-chart-side {
+  border-radius: 20px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 15, 15, 0.06);
+  box-shadow: 0 16px 36px -28px rgba(15, 15, 15, 0.34);
+}
+
+.income-chart-plot {
+  min-width: 0;
+  overflow: visible;
+}
+
 .income-chart-body {
   position: relative;
   display: flex;
-  min-height: 320px;
-  padding-top: 28px;
-  padding-left: 52px;
+  min-height: 360px;
+  padding: 28px 24px 42px 72px;
 }
 
 .income-y-axis {
   position: absolute;
-  left: 0;
+  left: 18px;
   top: 28px;
-  bottom: 28px;
+  bottom: 42px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-subtle);
+  font-weight: 800;
+  color: rgba(26, 26, 26, 0.58);
+  font-variant-numeric: tabular-nums;
 }
 
 .income-grid-lines {
   position: absolute;
-  inset: 28px 0 28px 52px;
+  inset: 28px 24px 42px 72px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -3478,7 +3537,7 @@ textarea {
 .income-grid-line {
   width: 100%;
   height: 1px;
-  background: rgba(15, 15, 15, 0.08);
+  background: rgba(15, 15, 15, 0.07);
 }
 
 .income-chart-bars {
@@ -3486,7 +3545,7 @@ textarea {
   z-index: 1;
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 24px;
+  gap: 28px;
   width: 100%;
   align-items: end;
 }
@@ -3496,16 +3555,82 @@ textarea {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 2px;
-  width: min(100%, 56px);
+  gap: 0;
+  width: min(100%, 58px);
   height: 100%;
   margin: 0 auto;
 }
 
 .income-bar-segment {
+  position: relative;
   width: 100%;
   min-height: 0;
-  transition: height 220ms ease;
+  border-top: 2px solid #ffffff;
+  cursor: default;
+  transition:
+    filter 160ms ease,
+    transform 160ms ease,
+    height 220ms ease;
+}
+
+.income-bar-segment:hover,
+.income-bar-segment:focus-visible {
+  z-index: 4;
+  filter: brightness(0.96);
+  transform: scaleX(1.04);
+  outline: none;
+}
+
+.income-bar-segment:first-child {
+  border-radius: 8px 8px 0 0;
+  border-top: 0;
+}
+
+.income-bar-segment:last-child {
+  border-radius: 0 0 6px 6px;
+}
+
+.income-bar-segment:only-child {
+  border-radius: 8px 8px 0 0;
+}
+
+.income-bar-tooltip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 10;
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #111111;
+  color: #ffffff;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.25;
+  opacity: 0;
+  pointer-events: none;
+  text-align: left;
+  transform: translate(-50%, calc(-50% + 6px));
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.income-bar-tooltip strong {
+  font-size: 12px;
+}
+
+.income-bar-tooltip small {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+}
+
+.income-bar-segment:hover .income-bar-tooltip,
+.income-bar-segment:focus-visible .income-bar-tooltip {
+  opacity: 1;
+  transform: translate(-50%, -50%);
 }
 
 .income-bar-segment-operating {
@@ -3519,17 +3644,114 @@ textarea {
 
 .income-bar-label {
   position: absolute;
-  bottom: -32px;
+  bottom: -30px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--color-text-muted);
 }
 
 .income-bar-label.active {
   color: #111111;
   font-weight: 800;
+}
+
+.income-chart-empty-state {
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.income-chart-side {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 18px;
+}
+
+.income-chart-total {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border-radius: 18px;
+  background: #faf9f7;
+  border: 1px solid rgba(15, 15, 15, 0.06);
+}
+
+.income-chart-total > span {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.income-chart-total > strong {
+  color: #111111;
+  font-size: clamp(26px, 2.2vw, 34px);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.income-chart-side-list {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.income-chart-side-list h3 {
+  margin-bottom: 6px;
+  color: rgba(26, 26, 26, 0.46);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.income-chart-side-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.income-chart-side-row:hover {
+  background: rgba(15, 15, 15, 0.025);
+  border-color: rgba(15, 15, 15, 0.05);
+}
+
+.income-chart-side-row > span:nth-child(2) {
+  overflow: hidden;
+  color: #333333;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.income-chart-side-row small {
+  color: rgba(26, 26, 26, 0.42);
+  font-size: 11px;
+}
+
+.income-chart-side-row strong {
+  color: #111111;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .income-bottom-grid {
@@ -3600,6 +3822,65 @@ textarea {
   border-bottom: none;
 }
 
+.spending-category-link-row {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 10px;
+  transition:
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.spending-category-link-row:hover {
+  background: rgba(255, 74, 34, 0.06);
+  transform: translateX(2px);
+}
+
+.spending-category-link-row:focus-visible {
+  outline: 2px solid rgba(255, 74, 34, 0.42);
+  outline-offset: 2px;
+}
+
+.spending-category-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.spending-category-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spending-page-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(15, 15, 15, 0.05);
+  color: #111111;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.spending-page-link.disabled {
+  color: var(--color-text-muted);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.spending-back-link {
+  margin-top: 18px;
+}
+
 .income-breakdown-head .amount,
 .income-breakdown-row .amount {
   text-align: right;
@@ -3623,6 +3904,132 @@ textarea {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #ff4a22 0%, #ff8267 100%);
+}
+
+.merchant-breakdown-details {
+  border-bottom: 1px solid rgba(15, 15, 15, 0.08);
+}
+
+.merchant-breakdown-details:last-child {
+  border-bottom: none;
+}
+
+.merchant-breakdown-details[open] {
+  margin: 0 -10px;
+  padding: 0 10px 10px;
+  border-radius: 16px;
+  background: rgba(255, 74, 34, 0.035);
+}
+
+.merchant-breakdown-summary {
+  position: relative;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 2fr) minmax(0, 3fr) minmax(120px, 1fr)
+    minmax(90px, 0.9fr);
+  gap: 16px;
+  align-items: center;
+  min-height: 64px;
+  padding: 14px 28px 14px 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+}
+
+.merchant-breakdown-summary::-webkit-details-marker {
+  display: none;
+}
+
+.merchant-breakdown-summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(15, 15, 15, 0.36);
+  border-bottom: 2px solid rgba(15, 15, 15, 0.36);
+  transform: translateY(-60%) rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.merchant-breakdown-details[open] .merchant-breakdown-summary::after {
+  transform: translateY(-30%) rotate(225deg);
+}
+
+.merchant-breakdown-summary:focus-visible {
+  outline: 2px solid rgba(255, 74, 34, 0.42);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+.merchant-breakdown-count {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.merchant-breakdown-distribution {
+  display: grid;
+  gap: 8px;
+}
+
+.merchant-breakdown-transactions {
+  display: grid;
+  gap: 8px;
+  padding: 0 0 8px;
+}
+
+.merchant-breakdown-transaction {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(15, 15, 15, 0.06);
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.merchant-breakdown-transaction-copy {
+  min-width: 0;
+}
+
+.merchant-breakdown-transaction-title {
+  overflow: hidden;
+  color: #111111;
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merchant-breakdown-transaction-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 5px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.merchant-breakdown-transaction-meta span {
+  min-width: 0;
+}
+
+.merchant-breakdown-transaction-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.merchant-breakdown-transaction-actions > strong {
+  color: #111111;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .income-summary-stat {
@@ -3770,12 +4177,26 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .income-chart-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .income-chart-side {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .income-chart-bars {
     gap: 18px;
   }
 
   .income-breakdown-head,
   .income-breakdown-row {
+    grid-template-columns:
+      minmax(0, 1.6fr) minmax(0, 2fr) minmax(110px, 1fr)
+      80px;
+  }
+
+  .merchant-breakdown-summary {
     grid-template-columns:
       minmax(0, 1.6fr) minmax(0, 2fr) minmax(110px, 1fr)
       80px;
@@ -3853,23 +4274,50 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .income-chart-card,
   .income-breakdown-card,
   .income-summary-card {
     padding: 20px;
   }
 
+  .income-chart-card {
+    padding: 0;
+  }
+
+  .income-chart-header {
+    flex-direction: column;
+    padding: 20px;
+  }
+
+  .income-chart-layout {
+    padding: 16px;
+  }
+
   .income-chart-body {
     min-height: 280px;
-    padding-left: 40px;
+    padding: 24px 16px 38px 48px;
+  }
+
+  .income-y-axis {
+    left: 12px;
+    top: 24px;
+    bottom: 38px;
   }
 
   .income-grid-lines {
-    left: 40px;
+    inset: 24px 16px 38px 48px;
   }
 
   .income-chart-bars {
     gap: 14px;
+  }
+
+  .income-bar-group {
+    width: min(100%, 46px);
+  }
+
+  .income-chart-side {
+    grid-template-columns: 1fr;
+    padding: 14px;
   }
 
   .income-breakdown-head {
@@ -3884,6 +4332,29 @@ textarea {
 
   .income-breakdown-row .amount {
     text-align: left;
+  }
+
+  .merchant-breakdown-summary {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 16px 26px 16px 0;
+  }
+
+  .merchant-breakdown-summary .amount {
+    text-align: left;
+  }
+
+  .merchant-breakdown-transaction {
+    grid-template-columns: 1fr;
+  }
+
+  .merchant-breakdown-transaction-title {
+    white-space: normal;
+  }
+
+  .merchant-breakdown-transaction-actions {
+    align-items: flex-start;
+    justify-content: space-between;
   }
 
   .investment-price-refresh {

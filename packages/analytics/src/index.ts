@@ -214,6 +214,84 @@ function resolveSpendingCounterpartyLabel(transaction: Transaction) {
   return transaction.descriptionClean || transaction.descriptionRaw;
 }
 
+type SpendingCategoryAmountRow = {
+  categoryCode: string;
+  label: string;
+  amountEur: string;
+};
+
+type SpendingCategoryMonthlySeriesRow = {
+  month: string;
+  totalSpendingEur: string;
+  categories: SpendingCategoryAmountRow[];
+};
+
+function resolveSpendingCategoryLabel(
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  categoryCode: string,
+) {
+  const explicitCategory = categoryByCode.get(categoryCode);
+  if (explicitCategory) {
+    return explicitCategory.displayName;
+  }
+
+  switch (categoryCode) {
+    case "__credit_card_payments":
+      return "Credit Card Payments";
+    case "__loan_principal_payment":
+      return "Loan Principal";
+    case "__loan_interest_payment":
+      return "Loan Interest";
+    case "__fees":
+      return "Fees";
+    case "__refunds":
+      return "Refunds";
+    default:
+      return categoryCode.startsWith("__")
+        ? humanizeTransactionClass(
+            categoryCode.slice(2) as Transaction["transactionClass"],
+          )
+        : null;
+  }
+}
+
+function aggregateSpendingCategoryRows(
+  transactions: Transaction[],
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+): SpendingCategoryAmountRow[] {
+  return [
+    ...transactions
+      .reduce((totals, transaction) => {
+        const contribution = spendingContributionEur(transaction);
+        if (!contribution) {
+          return totals;
+        }
+
+        const bucket = resolveSpendingCategoryBucket(
+          categoryByCode,
+          transaction,
+        );
+        const current = totals.get(bucket.categoryCode) ?? {
+          categoryCode: bucket.categoryCode,
+          label: bucket.label,
+          amountEur: new Decimal(0),
+        };
+
+        current.amountEur = current.amountEur.plus(contribution);
+        totals.set(bucket.categoryCode, current);
+        return totals;
+      }, new Map<string, { categoryCode: string; label: string; amountEur: Decimal }>())
+      .values(),
+  ]
+    .map((row) => ({
+      categoryCode: row.categoryCode,
+      label: row.label,
+      amountEur: row.amountEur.toFixed(2),
+    }))
+    .filter((row) => new Decimal(row.amountEur).gt(0))
+    .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
+}
+
 function shiftMonthIso(value: string, months: number) {
   const date = new Date(`${startOfMonthIso(value)}T00:00:00Z`);
   date.setUTCMonth(date.getUTCMonth() + months);
@@ -297,6 +375,82 @@ function buildMonthlyFlowSeries(
       operatingNetEur: row.incomeEur.minus(row.spendingEur).toFixed(2),
     }),
   );
+}
+
+function buildMonthlySpendingCategorySeries(
+  dataset: DomainDataset,
+  scope: Scope,
+  startDate: string,
+  endDate: string,
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+): SpendingCategoryMonthlySeriesRow[] {
+  const seriesStart = startOfMonthIso(startDate);
+  const seriesEnd = startOfMonthIso(endDate);
+  const monthRows = new Map<
+    string,
+    {
+      month: string;
+      totalSpendingEur: Decimal;
+      categoryTotals: Map<
+        string,
+        { categoryCode: string; label: string; amountEur: Decimal }
+      >;
+    }
+  >();
+
+  for (
+    let month = seriesStart;
+    month <= seriesEnd;
+    month = shiftMonthIso(month, 1)
+  ) {
+    monthRows.set(month, {
+      month,
+      totalSpendingEur: new Decimal(0),
+      categoryTotals: new Map(),
+    });
+  }
+
+  for (const transaction of resolvedTransactionsInWindow(
+    dataset,
+    scope,
+    startDate,
+    endDate,
+  )) {
+    const contribution = spendingContributionEur(transaction);
+    if (!contribution) {
+      continue;
+    }
+
+    const month = startOfMonthIso(transaction.transactionDate);
+    const row = monthRows.get(month);
+    if (!row) {
+      continue;
+    }
+
+    const bucket = resolveSpendingCategoryBucket(categoryByCode, transaction);
+    const category = row.categoryTotals.get(bucket.categoryCode) ?? {
+      categoryCode: bucket.categoryCode,
+      label: bucket.label,
+      amountEur: new Decimal(0),
+    };
+
+    category.amountEur = category.amountEur.plus(contribution);
+    row.totalSpendingEur = row.totalSpendingEur.plus(contribution);
+    row.categoryTotals.set(bucket.categoryCode, category);
+  }
+
+  return [...monthRows.values()].map((row) => ({
+    month: row.month,
+    totalSpendingEur: row.totalSpendingEur.toFixed(2),
+    categories: [...row.categoryTotals.values()]
+      .map((category) => ({
+        categoryCode: category.categoryCode,
+        label: category.label,
+        amountEur: category.amountEur.toFixed(2),
+      }))
+      .filter((category) => new Decimal(category.amountEur).gt(0))
+      .sort((left, right) => Number(right.amountEur) - Number(left.amountEur)),
+  }));
 }
 
 function resolveScopedSeriesStartDate(
@@ -832,37 +986,10 @@ export function buildDashboardSummary(
   const resolvedScopedTransactions = scopedTransactions.filter((transaction) =>
     isTransactionResolvedForAnalytics(transaction),
   );
-  const spendingByCategory = [
-    ...resolvedScopedTransactions
-      .reduce((totals, transaction) => {
-        const contribution = spendingContributionEur(transaction);
-        if (!contribution) {
-          return totals;
-        }
-
-        const bucket = resolveSpendingCategoryBucket(
-          categoryByCode,
-          transaction,
-        );
-        const current = totals.get(bucket.categoryCode) ?? {
-          categoryCode: bucket.categoryCode,
-          label: bucket.label,
-          amountEur: new Decimal(0),
-        };
-
-        current.amountEur = current.amountEur.plus(contribution);
-        totals.set(bucket.categoryCode, current);
-        return totals;
-      }, new Map<string, { categoryCode: string; label: string; amountEur: Decimal }>())
-      .values(),
-  ]
-    .map((row) => ({
-      categoryCode: row.categoryCode,
-      label: row.label,
-      amountEur: row.amountEur.toFixed(2),
-    }))
-    .filter((row) => new Decimal(row.amountEur).gt(0))
-    .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
+  const spendingByCategory = aggregateSpendingCategoryRows(
+    resolvedScopedTransactions,
+    categoryByCode,
+  );
 
   const holdings = buildLiveHoldingRows(
     dataset,
@@ -1194,6 +1321,20 @@ export function buildSpendingReadModel(
       new Decimal(0),
     )
     .toFixed(2);
+  const monthlyWindow = resolveMonthlySeriesWindow(
+    dataset,
+    input.scope,
+    summary.period,
+    context.referenceDate,
+    summary.period.preset === "24m" ? 24 : 6,
+  );
+  const spendingCategoryMonthlySeries = buildMonthlySpendingCategorySeries(
+    dataset,
+    input.scope,
+    monthlyWindow.start,
+    monthlyWindow.end,
+    context.categoryByCode,
+  );
   const hasCreditCardAccount = dataset.accounts.some(
     (account) => account.accountType === "credit_card" && account.isActive,
   );
@@ -1203,6 +1344,7 @@ export function buildSpendingReadModel(
     transactions,
     spendMetric,
     trendSeries: summary.monthlySeries,
+    spendingCategoryMonthlySeries,
     trailingThreeMonthAverage: averageMonthlySeries(
       summary.monthlySeries,
       "spendingEur",
@@ -1217,6 +1359,158 @@ export function buildSpendingReadModel(
     topCategory: summary.spendingByCategory[0],
     merchantRows,
     topMerchant: merchantRows[0] ?? null,
+  };
+}
+
+function isSpendingCategoryTransaction(
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  categoryCode: string,
+  transaction: Transaction,
+) {
+  const contribution = spendingContributionEur(transaction);
+  if (!contribution) {
+    return false;
+  }
+  return (
+    resolveSpendingCategoryBucket(categoryByCode, transaction).categoryCode ===
+    categoryCode
+  );
+}
+
+function spendingCategoryAmountForPeriod(
+  dataset: DomainDataset,
+  scope: Scope,
+  period: PeriodSelection,
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  categoryCode: string,
+) {
+  return filterTransactionsByPeriod(
+    filterTransactionsByScope(dataset, scope),
+    period,
+  )
+    .filter((transaction) => isTransactionResolvedForAnalytics(transaction))
+    .reduce((sum, transaction) => {
+      if (
+        !isSpendingCategoryTransaction(
+          categoryByCode,
+          categoryCode,
+          transaction,
+        )
+      ) {
+        return sum;
+      }
+      return sum.plus(spendingContributionEur(transaction) ?? new Decimal(0));
+    }, new Decimal(0));
+}
+
+export function buildSpendingCategoryReadModel(
+  dataset: DomainDataset,
+  input: {
+    scope: Scope;
+    displayCurrency: string;
+    categoryCode: string;
+    period?: PeriodSelection;
+    referenceDate?: string;
+  },
+) {
+  const summary = buildDashboardSummary(dataset, input);
+  const context = buildAnalyticsReadModelContext(dataset, input, summary);
+  const categoryLabel = resolveSpendingCategoryLabel(
+    context.categoryByCode,
+    input.categoryCode,
+  );
+  const transactions = selectTransactions(
+    context.resolvedScopedPeriodTransactions,
+    (transaction) =>
+      isSpendingCategoryTransaction(
+        context.categoryByCode,
+        input.categoryCode,
+        transaction,
+      ),
+  );
+  const categoryAmount = transactions.reduce(
+    (sum, transaction) =>
+      sum.plus(spendingContributionEur(transaction) ?? new Decimal(0)),
+    new Decimal(0),
+  );
+  const spendMetric = findMetric(summary, "spending_mtd_total");
+  const spendTotal = new Decimal(spendMetric?.valueBaseEur ?? 0);
+  const comparisonPeriod = getPreviousComparablePeriod(summary.period);
+  const comparisonAmount = spendingCategoryAmountForPeriod(
+    dataset,
+    input.scope,
+    comparisonPeriod,
+    context.categoryByCode,
+    input.categoryCode,
+  );
+  const periodSharePercent = spendTotal.gt(0)
+    ? categoryAmount.div(spendTotal).mul(100).toFixed(2)
+    : null;
+  const comparisonDeltaPercent = comparisonAmount.eq(0)
+    ? null
+    : categoryAmount
+        .minus(comparisonAmount)
+        .div(comparisonAmount.abs())
+        .mul(100)
+        .toFixed(2);
+  const monthlySeries = buildMonthlySpendingCategorySeries(
+    dataset,
+    input.scope,
+    summary.period.start,
+    summary.period.end,
+    context.categoryByCode,
+  ).map((row) => {
+    const category = row.categories.find(
+      (candidate) => candidate.categoryCode === input.categoryCode,
+    );
+    return {
+      month: row.month,
+      amountEur: category?.amountEur ?? "0.00",
+      totalSpendingEur: row.totalSpendingEur,
+    };
+  });
+  const merchantRows = aggregateAmountRows(
+    transactions,
+    (transaction) => resolveSpendingCounterpartyLabel(transaction),
+    (transaction) => spendingContributionEur(transaction) ?? new Decimal(0),
+  );
+  const largestTransaction =
+    [...transactions].sort(
+      (left, right) =>
+        Math.abs(Number(right.amountBaseEur)) -
+        Math.abs(Number(left.amountBaseEur)),
+    )[0] ?? null;
+  const averageTransactionEur =
+    transactions.length > 0
+      ? categoryAmount.div(transactions.length).toFixed(2)
+      : "0.00";
+  const category =
+    summary.spendingByCategory.find(
+      (row) => row.categoryCode === input.categoryCode,
+    ) ??
+    (categoryLabel
+      ? {
+          categoryCode: input.categoryCode,
+          label: categoryLabel,
+          amountEur: categoryAmount.toFixed(2),
+        }
+      : null);
+
+  return {
+    summary,
+    category,
+    transactions,
+    spendMetric,
+    amountEur: categoryAmount.toFixed(2),
+    periodSharePercent,
+    comparisonAmountEur: comparisonAmount.toFixed(2),
+    comparisonDeltaPercent,
+    monthlySeries,
+    merchantRows,
+    topMerchant: merchantRows[0] ?? null,
+    transactionCount: transactions.length,
+    averageTransactionEur,
+    largestTransaction,
   };
 }
 

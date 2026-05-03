@@ -23,7 +23,7 @@ import {
   getPeriodLabel,
 } from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
-import { getSpendingModel } from "../../lib/queries";
+import { buildHref, getSpendingModel } from "../../lib/queries";
 
 function formatDisplayAmount(
   amountBaseEur: string | null | undefined,
@@ -98,30 +98,93 @@ function formatStatementDateParts(value: string) {
   };
 }
 
+const SPENDING_CATEGORY_COLORS = [
+  "#ff4a22",
+  "#005f73",
+  "#0a9396",
+  "#2a9d8f",
+  "#e9c46a",
+  "#f4a261",
+  "#457b9d",
+  "#3d405b",
+  "#6d597a",
+  "#8d99ae",
+  "#2f3e46",
+  "#bc4749",
+];
+
+const CATEGORY_PAGE_SIZE = 8;
+
+function normalizePageParam(value: string | string[] | undefined) {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  const parsed = Number.parseInt(rawValue ?? "1", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function categoryColor(index: number) {
+  return SPENDING_CATEGORY_COLORS[index % SPENDING_CATEGORY_COLORS.length]!;
+}
+
 export default async function SpendingPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const model = await getSpendingModel(searchParams);
-  const chartRows = model.trendSeries.map((row) => {
+  const params = await searchParams;
+  const model = await getSpendingModel(params);
+  const categoryRows = model.summary.spendingByCategory;
+  const categoryColorByCode = new Map<string, string>();
+  const ensureCategoryColor = (categoryCode: string) => {
+    const existing = categoryColorByCode.get(categoryCode);
+    if (existing) {
+      return existing;
+    }
+
+    const color = categoryColor(categoryColorByCode.size);
+    categoryColorByCode.set(categoryCode, color);
+    return color;
+  };
+  categoryRows.forEach((row) => ensureCategoryColor(row.categoryCode));
+  model.spendingCategoryMonthlySeries.forEach((row) => {
+    row.categories.forEach((category) =>
+      ensureCategoryColor(category.categoryCode),
+    );
+  });
+  const chartRows = model.spendingCategoryMonthlySeries.map((row) => {
     const effectiveDate =
       endOfMonthIso(row.month) <= model.referenceDate
         ? endOfMonthIso(row.month)
         : model.referenceDate;
-    const spendingDisplay = convertBaseEurToDisplayAmountWithFallback(
-      model.dataset,
-      row.spendingEur,
-      model.currency,
-      effectiveDate,
-      { fallbackDate: model.referenceDate },
+    let usedFallbackFx = false;
+    const categories = row.categories.map((category) => {
+      const displayAmount = convertBaseEurToDisplayAmountWithFallback(
+        model.dataset,
+        category.amountEur,
+        model.currency,
+        effectiveDate,
+        { fallbackDate: model.referenceDate },
+      );
+      usedFallbackFx =
+        usedFallbackFx ||
+        (model.currency !== "EUR" && displayAmount.usedFallbackFx);
+
+      return {
+        ...category,
+        color: ensureCategoryColor(category.categoryCode),
+        displayAmount: Math.max(Number(displayAmount.amount ?? 0), 0),
+        valueLabel: formatCurrency(displayAmount.amount, model.currency),
+      };
+    });
+    const spendingDisplay = categories.reduce(
+      (sum, category) => sum + category.displayAmount,
+      0,
     );
 
     return {
       ...row,
-      spendingDisplay: Number(spendingDisplay.amount ?? 0),
-      usedFallbackFx:
-        model.currency !== "EUR" && spendingDisplay.usedFallbackFx,
+      categories,
+      spendingDisplay,
+      usedFallbackFx,
     };
   });
   const fallbackFxMonths = chartRows
@@ -134,16 +197,51 @@ export default async function SpendingPage({
         : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
       : null;
   const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
+  const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
+  const chartLegendTotals = [
+    ...chartRows
+      .flatMap((row) => row.categories)
+      .reduce((totals, category) => {
+        const current = totals.get(category.categoryCode) ?? {
+          label: category.label,
+          color: category.color,
+          displayAmount: 0,
+        };
+        current.displayAmount += category.displayAmount;
+        totals.set(category.categoryCode, current);
+        return totals;
+      }, new Map<string, { label: string; color: string; displayAmount: number }>())
+      .values(),
+  ].sort((left, right) => right.displayAmount - left.displayAmount);
+  const chartLegendTotal = chartLegendTotals.reduce(
+    (sum, row) => sum + row.displayAmount,
+    0,
+  );
   const trendRows = chartRows.map((row) => ({
     month: row.month,
-    segments: [
-      {
-        className: "income-bar-segment-operating",
-        height: (row.spendingDisplay / chartMax) * 100,
-      },
-    ],
+    segments: row.categories.map((category) => ({
+      color: category.color,
+      height: (category.displayAmount / chartMax) * 100,
+      label: category.label,
+      valueLabel: category.valueLabel,
+      shareLabel:
+        row.spendingDisplay > 0
+          ? `${formatPercentLabel(
+              (category.displayAmount / row.spendingDisplay) * 100,
+            )} of ${formatMonthLabel(row.month)}`
+          : undefined,
+    })),
   }));
-  const chartAxisValues = [1, 0.66, 0.33, 0].map((step) =>
+  const legendItems = chartLegendTotals.map((row) => ({
+    label: row.label,
+    color: row.color,
+    valueLabel: formatCurrency(row.displayAmount.toFixed(2), model.currency),
+    shareLabel:
+      chartLegendTotal > 0
+        ? formatPercentLabel((row.displayAmount / chartLegendTotal) * 100)
+        : undefined,
+  }));
+  const chartAxisValues = [1, 0.75, 0.5, 0.25, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
   const chartRangeLabel =
@@ -153,7 +251,6 @@ export default async function SpendingPage({
           chartRows[chartRows.length - 1].month,
         )
       : "No spending data";
-  const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
   const coveragePercent = Number(model.coverage);
   const uncategorizedShare = Math.max(100 - coveragePercent, 0);
   const completenessLabel =
@@ -176,6 +273,24 @@ export default async function SpendingPage({
       .filter((batch) => batch.creditCardSettlementTransactionId)
       .map((batch) => [batch.creditCardSettlementTransactionId!, batch]),
   );
+  const requestedCategoryPage = normalizePageParam(params.categoryPage);
+  const categoryPageCount = Math.max(
+    1,
+    Math.ceil(categoryRows.length / CATEGORY_PAGE_SIZE),
+  );
+  const categoryPage = Math.min(requestedCategoryPage, categoryPageCount);
+  const categoryStartIndex = (categoryPage - 1) * CATEGORY_PAGE_SIZE;
+  const visibleCategoryRows = categoryRows.slice(
+    categoryStartIndex,
+    categoryStartIndex + CATEGORY_PAGE_SIZE,
+  );
+  const categoryRangeLabel =
+    categoryRows.length > 0
+      ? `${categoryStartIndex + 1}-${Math.min(
+          categoryStartIndex + CATEGORY_PAGE_SIZE,
+          categoryRows.length,
+        )} of ${categoryRows.length}`
+      : "0 categories";
   const largestTransactions = [...model.transactions]
     .sort(
       (left, right) =>
@@ -193,6 +308,7 @@ export default async function SpendingPage({
       pathname="/spending"
       scopeOptions={model.scopeOptions}
       state={model.navigationState}
+      pageQueryParams={{ categoryPage: String(categoryPage) }}
     >
       <div className="dashboard-grid income-editorial-shell">
         <FlowPageHeader
@@ -276,12 +392,23 @@ export default async function SpendingPage({
 
         <FlowTrendChart
           title="Monthly Spend Trend"
+          description="Category-level composition for each month in the selected range."
           rangeLabel={chartRangeLabel}
           fallbackFxRangeLabel={fallbackFxRangeLabel}
           currency={model.currency}
           referenceDate={model.referenceDate}
           axisLabels={chartAxisValues}
           rows={trendRows}
+          legendItems={legendItems}
+          summary={{
+            title: "Total Period Spend",
+            value: formatCurrency(
+              model.spendMetric?.valueDisplay,
+              model.currency,
+            ),
+            badge: `${formatDeltaBadge(model.spendMetric?.deltaPercent)} vs prior`,
+          }}
+          emptyLabel="No spending data is available for this period."
         />
 
         <section className="income-bottom-grid span-12">
@@ -296,14 +423,23 @@ export default async function SpendingPage({
                 No resolved spending categories are available for this period.
               </div>
             ) : (
-              model.summary.spendingByCategory.slice(0, 6).map((row) => {
+              visibleCategoryRows.map((row) => {
                 const share =
                   spendTotal > 0
                     ? (Number(row.amountEur) / spendTotal) * 100
                     : 0;
+                const categoryHref = buildHref(
+                  `/spending/${encodeURIComponent(row.categoryCode)}`,
+                  model.navigationState,
+                  {},
+                );
 
                 return (
-                  <div className="income-breakdown-row" key={row.categoryCode}>
+                  <a
+                    className="income-breakdown-row spending-category-link-row"
+                    href={categoryHref}
+                    key={row.categoryCode}
+                  >
                     <div className="source-name">{row.label}</div>
                     <div className="source-progress-track">
                       <div
@@ -320,10 +456,61 @@ export default async function SpendingPage({
                       )}
                     </div>
                     <div className="amount">{formatPercentLabel(share)}</div>
-                  </div>
+                  </a>
                 );
               })
             )}
+            {categoryRows.length > CATEGORY_PAGE_SIZE ? (
+              <div className="spending-category-pagination">
+                <span>{categoryRangeLabel}</span>
+                <div>
+                  <a
+                    className={
+                      categoryPage <= 1
+                        ? "spending-page-link disabled"
+                        : "spending-page-link"
+                    }
+                    aria-disabled={categoryPage <= 1}
+                    href={
+                      categoryPage <= 1
+                        ? undefined
+                        : buildHref(
+                            "/spending",
+                            model.navigationState,
+                            {},
+                            {
+                              categoryPage: String(categoryPage - 1),
+                            },
+                          )
+                    }
+                  >
+                    Previous
+                  </a>
+                  <a
+                    className={
+                      categoryPage >= categoryPageCount
+                        ? "spending-page-link disabled"
+                        : "spending-page-link"
+                    }
+                    aria-disabled={categoryPage >= categoryPageCount}
+                    href={
+                      categoryPage >= categoryPageCount
+                        ? undefined
+                        : buildHref(
+                            "/spending",
+                            model.navigationState,
+                            {},
+                            {
+                              categoryPage: String(categoryPage + 1),
+                            },
+                          )
+                    }
+                  >
+                    Next
+                  </a>
+                </div>
+              </div>
+            ) : null}
           </FlowBreakdownCard>
 
           <FlowSummaryCard>

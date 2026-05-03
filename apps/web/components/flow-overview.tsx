@@ -4,7 +4,21 @@ import { formatMonthLabel } from "../lib/dashboard";
 
 export type FlowTrendRow = {
   month: string;
-  segments: Array<{ className: string; height: number }>;
+  segments: Array<{
+    className?: string;
+    color?: string;
+    height: number;
+    label?: string;
+    valueLabel?: string;
+    shareLabel?: string;
+  }>;
+};
+
+type FlowTrendLegendItem = {
+  label: string;
+  color: string;
+  valueLabel?: string;
+  shareLabel?: string;
 };
 
 export function FlowPageHeader({
@@ -71,26 +85,47 @@ export function FlowKpiGrid({
 
 export function FlowTrendChart({
   title,
+  description,
   rangeLabel,
   fallbackFxRangeLabel,
   currency,
   referenceDate,
   axisLabels,
   rows,
+  legendItems = [],
+  summary,
+  emptyLabel = "No spending data is available for this period.",
 }: {
   title: string;
+  description?: ReactNode;
   rangeLabel: string;
   fallbackFxRangeLabel: string | null;
   currency: string;
   referenceDate: string;
   axisLabels: string[];
   rows: FlowTrendRow[];
+  legendItems?: FlowTrendLegendItem[];
+  summary?: {
+    title: string;
+    value: string;
+    badge?: ReactNode;
+  };
+  emptyLabel?: string;
 }) {
+  const visibleRows = rows.map((row) => ({
+    ...row,
+    segments: row.segments.filter((segment) => segment.height > 0),
+  }));
+  const hasData = visibleRows.some((row) => row.segments.length > 0);
+
   return (
     <section className="income-chart-card span-12">
       <div className="income-chart-header">
         <div>
           <h2 className="income-chart-title">{title}</h2>
+          {description ? (
+            <p className="income-chart-description">{description}</p>
+          ) : null}
         </div>
         <div className="income-kpi-badge neutral">{rangeLabel}</div>
       </div>
@@ -102,37 +137,116 @@ export function FlowTrendChart({
         </div>
       ) : null}
 
-      <div className="income-chart-body">
-        <div className="income-y-axis">
-          {axisLabels.map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </div>
-        <div className="income-grid-lines" aria-hidden="true">
-          {axisLabels.map((label) => (
-            <div className="income-grid-line" key={label} />
-          ))}
-        </div>
-        <div className="income-chart-bars">
-          {rows.map((row, index) => (
-            <div className="income-bar-group" key={row.month}>
-              {row.segments.map((segment) => (
-                <div
-                  className={`income-bar-segment ${segment.className}`}
-                  key={segment.className}
-                  style={{ height: `${Math.max(0, segment.height)}%` }}
-                />
-              ))}
+      <div className="income-chart-layout">
+        <div className="income-chart-plot">
+          {hasData ? (
+            <div className="income-chart-body">
+              <div className="income-y-axis">
+                {axisLabels.map((label) => (
+                  <span key={label}>{label}</span>
+                ))}
+              </div>
+              <div className="income-grid-lines" aria-hidden="true">
+                {axisLabels.map((label) => (
+                  <div className="income-grid-line" key={label} />
+                ))}
+              </div>
               <div
-                className={`income-bar-label ${
-                  index === rows.length - 1 ? "active" : ""
-                }`}
+                className="income-chart-bars"
+                style={{
+                  gridTemplateColumns: `repeat(${Math.max(visibleRows.length, 1)}, minmax(32px, 1fr))`,
+                }}
               >
-                {formatMonthLabel(row.month)}
+                {visibleRows.map((row, index) => (
+                  <div className="income-bar-group" key={row.month}>
+                    {row.segments.map((segment, segmentIndex) => {
+                      const tooltipParts = [
+                        segment.label,
+                        segment.valueLabel,
+                        segment.shareLabel,
+                      ].filter(Boolean);
+
+                      return (
+                        <div
+                          aria-label={tooltipParts.join(", ")}
+                          className={`income-bar-segment ${segment.className ?? ""}`}
+                          key={`${segment.label ?? segment.className ?? "segment"}-${segmentIndex}`}
+                          role="img"
+                          style={{
+                            height: `${Math.max(0, segment.height)}%`,
+                            background: segment.color,
+                          }}
+                          tabIndex={0}
+                        >
+                          {tooltipParts.length > 0 ? (
+                            <span className="income-bar-tooltip">
+                              {segment.label ? (
+                                <strong>{segment.label}</strong>
+                              ) : null}
+                              {segment.valueLabel ? (
+                                <span>{segment.valueLabel}</span>
+                              ) : null}
+                              {segment.shareLabel ? (
+                                <small>{segment.shareLabel}</small>
+                              ) : null}
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                    <div
+                      className={`income-bar-label ${
+                        index === visibleRows.length - 1 ? "active" : ""
+                      }`}
+                    >
+                      {formatMonthLabel(row.month)}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
+          ) : (
+            <div className="income-chart-empty-state">
+              <span>{emptyLabel}</span>
+            </div>
+          )}
         </div>
+
+        {(summary || legendItems.length > 0) && hasData ? (
+          <aside className="income-chart-side">
+            {summary ? (
+              <div className="income-chart-total">
+                <span>{summary.title}</span>
+                <strong>{summary.value}</strong>
+                {summary.badge ? (
+                  <div className="income-kpi-badge accent">{summary.badge}</div>
+                ) : null}
+              </div>
+            ) : null}
+            {legendItems.length > 0 ? (
+              <div className="income-chart-side-list">
+                <h3>Breakdown</h3>
+                {legendItems.map((item, index) => (
+                  <div
+                    className="income-chart-side-row"
+                    key={`${item.label}-${index}`}
+                  >
+                    <span
+                      className="income-chart-legend-swatch"
+                      style={{ background: item.color }}
+                      aria-hidden="true"
+                    />
+                    <span>{item.label}</span>
+                    {item.shareLabel ? <small>{item.shareLabel}</small> : null}
+                    {item.valueLabel ? (
+                      <strong>{item.valueLabel}</strong>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </aside>
+        ) : null}
       </div>
     </section>
   );

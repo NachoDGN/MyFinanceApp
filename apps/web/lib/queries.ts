@@ -5,6 +5,7 @@ import {
   buildDashboardSummary,
   buildIncomeReadModel,
   buildInvestmentsReadModel,
+  buildSpendingCategoryReadModel,
   buildSpendingReadModel,
 } from "@myfinance/analytics";
 import { NON_AI_RULE_SUMMARIES } from "@myfinance/classification";
@@ -508,7 +509,9 @@ export async function getTransactionsModel(searchParams: RawSearchParams) {
         ? transactionsPeriod.start
         : undefined,
     end:
-      transactionsPeriod.preset === "custom" ? transactionsPeriod.end : undefined,
+      transactionsPeriod.preset === "custom"
+        ? transactionsPeriod.end
+        : undefined,
   };
   const ledger = await domainService.listTransactions(state.scope, {
     referenceDate: projectedReferenceDate,
@@ -644,6 +647,23 @@ export async function getSpendingModel(searchParams: RawSearchParams) {
     ...buildSpendingReadModel(state.dataset, {
       scope: state.scope,
       displayCurrency: state.currency,
+      period: state.period,
+      referenceDate: state.referenceDate,
+    }),
+  };
+}
+
+export async function getSpendingCategoryModel(
+  searchParams: RawSearchParams,
+  categoryCode: string,
+) {
+  const state = await resolveAppState(searchParams);
+  return {
+    ...state,
+    ...buildSpendingCategoryReadModel(state.dataset, {
+      scope: state.scope,
+      displayCurrency: state.currency,
+      categoryCode,
       period: state.period,
       referenceDate: state.referenceDate,
     }),
