@@ -413,6 +413,13 @@ function normalizeStatementAssetType(
   if (normalized.includes("etf")) {
     return "etf";
   }
+  if (
+    normalized.includes("crypto") ||
+    normalized.includes("bitcoin") ||
+    normalized.includes("ethereum")
+  ) {
+    return "crypto";
+  }
   if (normalized.includes("cash")) {
     return "cash";
   }

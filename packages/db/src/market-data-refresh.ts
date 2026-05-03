@@ -1,6 +1,10 @@
 import {
+  CRYPTO_SECURITY_SPECS,
+  createCryptoSecurityFromSpec,
   getDatasetLatestDate,
   getLatestAccountBalances,
+  getCryptoSecuritySpec,
+  isCryptoCurrency,
   rebuildInvestmentState,
   type DomainDataset,
   type FxRate,
@@ -29,7 +33,9 @@ const MAX_CURRENT_FUND_NAV_DRIFT_DAYS = 15;
 function isRefreshableOwnedStockSecurity(security: Security) {
   return (
     security.providerName === "twelve_data" &&
-    (security.assetType === "stock" || security.assetType === "etf")
+    (security.assetType === "stock" ||
+      security.assetType === "etf" ||
+      security.assetType === "crypto")
   );
 }
 
@@ -54,17 +60,75 @@ function buildOwnedSecurityIds(
   return new Set(positions.map((position) => position.securityId));
 }
 
+function selectOwnedCryptoCurrencies(
+  dataset: DomainDataset,
+  referenceDate = getDatasetLatestDate(dataset),
+) {
+  const accountsById = new Map(
+    dataset.accounts.map((account) => [account.id, account]),
+  );
+
+  return new Set(
+    getLatestAccountBalances(dataset, referenceDate)
+      .flatMap((snapshot) => {
+        const account = accountsById.get(snapshot.accountId);
+        if (!account || account.accountType === "credit_card") {
+          return [];
+        }
+
+        const currency = (
+          snapshot.balanceCurrency ?? account.defaultCurrency
+        ).toUpperCase();
+        return isCryptoCurrency(currency) ? [currency] : [];
+      })
+      .sort(),
+  );
+}
+
 export function selectOwnedStockPriceRefreshSecurities(
   dataset: DomainDataset,
   referenceDate = getDatasetLatestDate(dataset),
 ) {
   const ownedSecurityIds = buildOwnedSecurityIds(dataset, referenceDate);
-
-  return dataset.securities.filter(
-    (security) =>
-      ownedSecurityIds.has(security.id) &&
-      isRefreshableOwnedStockSecurity(security),
+  const ownedCryptoCurrencies = selectOwnedCryptoCurrencies(
+    dataset,
+    referenceDate,
   );
+
+  const selected = dataset.securities.filter((security) => {
+    if (
+      ownedSecurityIds.has(security.id) &&
+      isRefreshableOwnedStockSecurity(security)
+    ) {
+      return true;
+    }
+
+    if (security.assetType !== "crypto") {
+      return false;
+    }
+
+    const spec = getCryptoSecuritySpec(security.displaySymbol);
+    return Boolean(
+      spec &&
+      ownedCryptoCurrencies.has(spec.currency) &&
+      security.providerName === spec.providerName &&
+      security.providerSymbol.toUpperCase() === spec.providerSymbol,
+    );
+  });
+  const selectedProviderSymbols = new Set(
+    selected.map((security) => security.providerSymbol.toUpperCase()),
+  );
+  const virtualCryptoSecurities = [...ownedCryptoCurrencies].flatMap(
+    (currency) => {
+      const spec = getCryptoSecuritySpec(currency);
+      if (!spec || selectedProviderSymbols.has(spec.providerSymbol)) {
+        return [];
+      }
+      return [createCryptoSecurityFromSpec(spec)];
+    },
+  );
+
+  return [...selected, ...virtualCryptoSecurities];
 }
 
 export function selectOwnedFundNavRefreshSecurities(
@@ -99,7 +163,9 @@ export function selectTrackedEurFxPairs(
     const currency = (snapshot.balanceCurrency ?? account.defaultCurrency)
       .trim()
       .toUpperCase();
-    return currency && currency !== "EUR" ? [currency] : [];
+    return currency && currency !== "EUR" && !isCryptoCurrency(currency)
+      ? [currency]
+      : [];
   });
   const holdingCurrencies = selectOwnedStockPriceRefreshSecurities(
     dataset,
@@ -340,6 +406,45 @@ async function updateSecurityPriceRefreshMetadata(
   `;
 }
 
+async function ensureCryptoSecurityRows(sql: SqlClient) {
+  const nowIso = new Date().toISOString();
+  for (const spec of CRYPTO_SECURITY_SPECS) {
+    const security = createCryptoSecurityFromSpec(spec, nowIso);
+    await sql`
+      insert into public.securities ${sql({
+        id: security.id,
+        provider_name: security.providerName,
+        provider_symbol: security.providerSymbol,
+        canonical_symbol: security.canonicalSymbol,
+        display_symbol: security.displaySymbol,
+        name: security.name,
+        exchange_name: security.exchangeName,
+        mic_code: security.micCode,
+        asset_type: security.assetType,
+        quote_currency: security.quoteCurrency,
+        country: security.country,
+        isin: security.isin,
+        figi: security.figi,
+        active: security.active,
+        metadata_json: serializeJson(sql, security.metadataJson),
+        last_price_refresh_at: security.lastPriceRefreshAt,
+        created_at: security.createdAt,
+      } as Record<string, unknown>)}
+      on conflict (provider_name, provider_symbol)
+      do update set
+        canonical_symbol = excluded.canonical_symbol,
+        display_symbol = excluded.display_symbol,
+        name = excluded.name,
+        exchange_name = excluded.exchange_name,
+        mic_code = excluded.mic_code,
+        asset_type = excluded.asset_type,
+        quote_currency = excluded.quote_currency,
+        active = true,
+        metadata_json = excluded.metadata_json
+    `;
+  }
+}
+
 export interface RefreshOwnedStockPricesResult {
   totalTrackedStocks: number;
   totalTrackedFunds: number;
@@ -366,6 +471,7 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
 
   return withSeededUserContext(async (sql) => {
     return withInvestmentMutationLock(sql, runtime.seededUserId, async () => {
+      await ensureCryptoSecurityRows(sql);
       const dataset = await loadDatasetForUser(sql, runtime.seededUserId);
       const stockSecurities = selectOwnedStockPriceRefreshSecurities(dataset);
       const fundSecurities = selectOwnedFundNavRefreshSecurities(dataset);

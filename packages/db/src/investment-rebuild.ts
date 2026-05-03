@@ -349,7 +349,7 @@ function supportsTwelveDataMarketData(
 ) {
   return (
     Boolean(security.providerSymbol?.trim()) &&
-    ["stock", "etf"].includes(security.assetType)
+    ["stock", "etf", "crypto"].includes(security.assetType)
   );
 }
 
@@ -1137,6 +1137,7 @@ function mapAssetType(instrumentType: string): Security["assetType"] {
   if (normalized.includes("MUTUAL") || normalized.includes("FUND"))
     return "other";
   if (normalized.includes("STOCK")) return "stock";
+  if (normalized.includes("CRYPTO")) return "crypto";
   if (normalized.includes("CASH")) return "cash";
   return "other";
 }

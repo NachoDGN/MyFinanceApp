@@ -7283,6 +7283,46 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
   });
   const dataset = createDataset({
     accounts: [eurAccount, btcAccount],
+    securities: [
+      {
+        id: "security-btc",
+        providerName: "twelve_data",
+        providerSymbol: "BTC/EUR",
+        canonicalSymbol: "BTC",
+        displaySymbol: "BTC",
+        name: "Bitcoin",
+        exchangeName: "Coinbase Pro",
+        micCode: null,
+        assetType: "crypto",
+        quoteCurrency: "EUR",
+        country: null,
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {
+          instrumentType: "crypto",
+          baseCurrency: "BTC",
+          quoteCurrency: "EUR",
+        },
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+    ],
+    securityPrices: [
+      {
+        securityId: "security-btc",
+        priceDate: "2026-04-11",
+        quoteTimestamp: "2026-04-11T16:00:00Z",
+        price: "80000.00000000",
+        currency: "EUR",
+        sourceName: "twelve_data",
+        isRealtime: false,
+        isDelayed: true,
+        marketState: "closed",
+        rawJson: {},
+        createdAt: "2026-04-11T16:00:00Z",
+      },
+    ],
     accountBalanceSnapshots: [
       {
         accountId: eurAccount.id,
@@ -7301,17 +7341,6 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
         balanceBaseEur: "0.01000000",
         sourceKind: "statement",
         importBatchId: null,
-      },
-    ],
-    fxRates: [
-      {
-        baseCurrency: "BTC",
-        quoteCurrency: "EUR",
-        asOfDate: "2026-04-11",
-        asOfTimestamp: "2026-04-11T16:00:00Z",
-        rate: "80000.00000000",
-        sourceName: "twelve_data",
-        rawJson: {},
       },
     ],
   });
@@ -7350,10 +7379,11 @@ test("cash KPI excludes crypto cash balances while portfolio value includes them
   assert.equal(cashMetric.valueBaseEur, "1000.00");
   assert.equal(portfolioMetric.valueBaseEur, "800.00");
   assert.equal(netWorthMetric.valueBaseEur, "1800.00");
-  assert.equal(investmentsModel.holdings.cryptoBalances.length, 1);
+  assert.equal(investmentsModel.holdings.cryptoBalances.length, 0);
   assert.equal(
-    investmentsModel.holdings.cryptoBalances[0]?.currentValueEur,
-    "800.00000000",
+    investmentsModel.holdings.holdings.find((row) => row.symbol === "BTC")
+      ?.currentValueEur,
+    "800.00",
   );
 });
 

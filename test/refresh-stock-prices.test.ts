@@ -169,6 +169,64 @@ test("owned stock price refresh selection includes only open stock and ETF posit
   ]);
 });
 
+test("owned stock price refresh selection includes crypto securities backed by cash balances", () => {
+  const btcAccount = createAccount({
+    id: "btc-company-account",
+    accountType: "company_bank",
+    assetDomain: "cash",
+    defaultCurrency: "BTC",
+  });
+  const dataset = createDataset({
+    accounts: [btcAccount],
+    accountBalanceSnapshots: [
+      {
+        accountId: btcAccount.id,
+        asOfDate: "2026-04-10",
+        balanceOriginal: "0.01500000",
+        balanceCurrency: "BTC",
+        balanceBaseEur: "0.01500000",
+        sourceKind: "statement",
+        importBatchId: null,
+      },
+    ],
+    securities: [
+      {
+        id: "security-btc",
+        providerName: "twelve_data",
+        providerSymbol: "BTC/EUR",
+        canonicalSymbol: "BTC",
+        displaySymbol: "BTC",
+        name: "Bitcoin",
+        exchangeName: "Coinbase Pro",
+        micCode: null,
+        assetType: "crypto",
+        quoteCurrency: "EUR",
+        country: null,
+        isin: null,
+        figi: null,
+        active: true,
+        metadataJson: {
+          instrumentType: "crypto",
+          baseCurrency: "BTC",
+          quoteCurrency: "EUR",
+        },
+        lastPriceRefreshAt: null,
+        createdAt: "2026-04-01T08:00:00Z",
+      },
+    ],
+  });
+
+  const selected = selectOwnedStockPriceRefreshSecurities(
+    dataset,
+    "2026-04-10",
+  );
+
+  assert.deepEqual(
+    selected.map((security) => security.displaySymbol),
+    ["BTC"],
+  );
+});
+
 test("owned fund NAV refresh selection includes only open fund positions with ISINs", () => {
   const investmentAccount = createAccount({
     id: "brokerage-1",
@@ -281,12 +339,13 @@ test("owned fund NAV refresh selection includes only open fund positions with IS
 
   const selected = selectOwnedFundNavRefreshSecurities(dataset, "2026-04-10");
 
-  assert.deepEqual(selected.map((security) => security.displaySymbol), [
-    "VUSAFUND",
-  ]);
+  assert.deepEqual(
+    selected.map((security) => security.displaySymbol),
+    ["VUSAFUND"],
+  );
 });
 
-test("tracked EUR FX pairs include cash-account and held-security currencies", () => {
+test("tracked EUR FX pairs include cash-account and held-security currencies but exclude crypto", () => {
   const eurAccount = createAccount({
     id: "eur-company-account",
     accountType: "company_bank",
@@ -367,8 +426,5 @@ test("tracked EUR FX pairs include cash-account and held-security currencies", (
     ],
   });
 
-  assert.deepEqual(selectTrackedEurFxPairs(dataset, "2026-04-10"), [
-    "BTC",
-    "USD",
-  ]);
+  assert.deepEqual(selectTrackedEurFxPairs(dataset, "2026-04-10"), ["USD"]);
 });

@@ -8,6 +8,7 @@ import type {
   HoldingRow,
   PeriodSelection,
   PriceFreshness,
+  Security,
   SecurityPrice,
   Scope,
   Transaction,
@@ -27,6 +28,32 @@ const liveInvestmentPositionsCache = new WeakMap<
   Map<string, DomainDataset["investmentPositions"]>
 >();
 const CRYPTO_CURRENCY_CODES = new Set(["BTC", "ETH"]);
+export const CRYPTO_SECURITY_SPECS = [
+  {
+    id: "00000000-0000-0000-0000-00000000c001",
+    currency: "BTC",
+    providerName: "twelve_data",
+    providerSymbol: "BTC/EUR",
+    canonicalSymbol: "BTC",
+    displaySymbol: "BTC",
+    name: "Bitcoin",
+    exchangeName: "Coinbase Pro",
+    micCode: null,
+    quoteCurrency: "EUR",
+  },
+  {
+    id: "00000000-0000-0000-0000-00000000c002",
+    currency: "ETH",
+    providerName: "twelve_data",
+    providerSymbol: "ETH/EUR",
+    canonicalSymbol: "ETH",
+    displaySymbol: "ETH",
+    name: "Ethereum",
+    exchangeName: "Coinbase Pro",
+    micCode: null,
+    quoteCurrency: "EUR",
+  },
+] as const;
 
 function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
   return (
@@ -330,6 +357,28 @@ export function getScopeLatestDate(
     ...scopedTransactions
       .map((transaction) => transaction.securityId)
       .filter((securityId): securityId is string => Boolean(securityId)),
+    ...getLatestAccountBalances(dataset, cappedFallback).flatMap((snapshot) => {
+      const account = dataset.accounts.find(
+        (candidate) => candidate.id === snapshot.accountId,
+      );
+      if (
+        !account ||
+        account.assetDomain !== "cash" ||
+        account.accountType === "credit_card" ||
+        !entityIds.has(account.entityId) ||
+        (scope.kind === "account" && account.id !== scope.accountId) ||
+        !isCryptoCurrency(snapshot.balanceCurrency ?? account.defaultCurrency)
+      ) {
+        return [];
+      }
+
+      const currency = snapshot.balanceCurrency ?? account.defaultCurrency;
+      const spec = getCryptoSecuritySpec(currency);
+      const security =
+        findCryptoSecurity(dataset, currency) ??
+        (spec ? createCryptoSecurityFromSpec(spec) : null);
+      return security ? [security.id] : [];
+    }),
   ]);
 
   const latest = [
@@ -521,6 +570,66 @@ export function tryResolveFxRate(
 
 export function isCryptoCurrency(currency: string | null | undefined) {
   return typeof currency === "string" && CRYPTO_CURRENCY_CODES.has(currency);
+}
+
+export function getCryptoSecuritySpec(currency: string | null | undefined) {
+  const normalized = currency?.trim().toUpperCase();
+  return (
+    CRYPTO_SECURITY_SPECS.find((spec) => spec.currency === normalized) ?? null
+  );
+}
+
+export function createCryptoSecurityFromSpec(
+  spec: (typeof CRYPTO_SECURITY_SPECS)[number],
+  createdAt = "2026-01-01T00:00:00Z",
+): Security {
+  return {
+    id: spec.id,
+    providerName: spec.providerName,
+    providerSymbol: spec.providerSymbol,
+    canonicalSymbol: spec.canonicalSymbol,
+    displaySymbol: spec.displaySymbol,
+    name: spec.name,
+    exchangeName: spec.exchangeName,
+    micCode: spec.micCode,
+    assetType: "crypto",
+    quoteCurrency: spec.quoteCurrency,
+    country: null,
+    isin: null,
+    figi: null,
+    active: true,
+    metadataJson: {
+      instrumentType: "crypto",
+      baseCurrency: spec.currency,
+      quoteCurrency: spec.quoteCurrency,
+    },
+    lastPriceRefreshAt: null,
+    createdAt,
+  };
+}
+
+export function findCryptoSecurity(
+  dataset: Pick<DomainDataset, "securities">,
+  currency: string | null | undefined,
+) {
+  const spec = getCryptoSecuritySpec(currency);
+  if (!spec) {
+    return null;
+  }
+
+  return (
+    dataset.securities.find(
+      (security) =>
+        security.providerName === spec.providerName &&
+        security.providerSymbol.toUpperCase() === spec.providerSymbol,
+    ) ??
+    dataset.securities.find(
+      (security) =>
+        security.assetType === "crypto" &&
+        security.displaySymbol.toUpperCase() === spec.displaySymbol,
+    ) ??
+    null
+  );
 }
 
 export function getLatestBalanceSnapshots(
@@ -831,38 +940,11 @@ export function getLatestInvestmentCashBalances(
   );
 }
 
-function resolveCryptoBalanceFreshness(
-  dataset: DomainDataset,
-  currency: string,
-  asOfDate: string,
-) {
-  const latestFx = findLatestFxRateRecord(dataset, currency, "EUR", asOfDate);
-  if (!latestFx) {
-    return {
-      currentPriceEur: null,
-      quoteFreshness: "missing" as const,
-      quoteTimestamp: null,
-    };
-  }
-
-  const ageDays = dayDistance(latestFx.asOfDate, asOfDate);
-  return {
-    currentPriceEur: latestFx.rate.toFixed(8),
-    quoteFreshness:
-      ageDays <= 1
-        ? ("fresh" as const)
-        : ageDays <= 3
-          ? ("delayed" as const)
-          : ("stale" as const),
-    quoteTimestamp: latestFx.asOfTimestamp,
-  };
-}
-
-export function buildCryptoBalanceRows(
+function buildCryptoSecurityHoldingRows(
   dataset: DomainDataset,
   scope: Scope,
   asOfDate = todayIso(),
-): CryptoBalanceRow[] {
+): HoldingRow[] {
   const accountsById = new Map(
     dataset.accounts.map((account) => [account.id, account]),
   );
@@ -874,7 +956,10 @@ export function buildCryptoBalanceRows(
       if (!account) {
         return false;
       }
-      if (account.assetDomain !== "cash" || account.accountType === "credit_card") {
+      if (
+        account.assetDomain !== "cash" ||
+        account.accountType === "credit_card"
+      ) {
         return false;
       }
       if (!entityIds.has(account.entityId)) {
@@ -884,32 +969,86 @@ export function buildCryptoBalanceRows(
         return false;
       }
 
-      return isCryptoCurrency(snapshot.balanceCurrency ?? account.defaultCurrency);
+      return isCryptoCurrency(
+        snapshot.balanceCurrency ?? account.defaultCurrency,
+      );
     })
-    .map((snapshot) => {
+    .flatMap((snapshot): HoldingRow[] => {
       const account = accountsById.get(snapshot.accountId)!;
-      const currency = snapshot.balanceCurrency ?? account.defaultCurrency;
-      const quote = resolveCryptoBalanceFreshness(dataset, currency, asOfDate);
+      const currency = (
+        snapshot.balanceCurrency ?? account.defaultCurrency
+      ).toUpperCase();
+      const spec = getCryptoSecuritySpec(currency);
+      const security =
+        findCryptoSecurity(dataset, currency) ??
+        (spec ? createCryptoSecurityFromSpec(spec) : null);
+      if (!security) {
+        return [];
+      }
 
-      return {
-        accountId: account.id,
-        entityId: account.entityId,
-        currency,
-        balanceOriginal: snapshot.balanceOriginal,
-        currentPriceEur: quote.currentPriceEur,
-        currentValueEur: quote.currentPriceEur
-          ? new Decimal(snapshot.balanceOriginal)
-              .mul(quote.currentPriceEur)
-              .toFixed(8)
-          : null,
-        quoteFreshness: quote.quoteFreshness,
-        quoteTimestamp: quote.quoteTimestamp,
-      };
+      const latestKnownPrice = latestSecurityPrice(
+        dataset,
+        security.id,
+        asOfDate,
+      );
+      const price = latestSecurityPrice(
+        dataset,
+        security.id,
+        asOfDate,
+        MAX_CURRENT_QUOTE_AGE_DAYS,
+      );
+      const priceFx = price
+        ? resolveFxRate(dataset, price.currency, "EUR", asOfDate)
+        : new Decimal(1);
+      const quoteAgeDays = latestKnownPrice
+        ? dayDistance(latestKnownPrice.priceDate.slice(0, 10), asOfDate)
+        : null;
+      const currentValueEur = price
+        ? new Decimal(snapshot.balanceOriginal)
+            .mul(price.price)
+            .mul(priceFx)
+            .toFixed(2)
+        : null;
+
+      return [
+        {
+          securityId: security.id,
+          accountId: account.id,
+          entityId: account.entityId,
+          holdingSource: "priced_security" as const,
+          symbol: security.displaySymbol,
+          securityName: security.name,
+          quantity: snapshot.balanceOriginal,
+          avgCostEur: "0.00000000",
+          currentPrice: price?.price ?? null,
+          currentPriceCurrency: price?.currency ?? null,
+          currentValueEur,
+          unrealizedPnlEur: null,
+          unrealizedPnlPercent: null,
+          quoteFreshness: latestKnownPrice
+            ? !latestKnownPrice.isDelayed
+              ? "fresh"
+              : quoteAgeDays !== null && quoteAgeDays > 5
+                ? "stale"
+                : "delayed"
+            : "missing",
+          quoteTimestamp: latestKnownPrice?.quoteTimestamp ?? null,
+          unrealizedComplete: false,
+        },
+      ];
     })
     .sort(
       (left, right) =>
         Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
     );
+}
+
+export function buildCryptoBalanceRows(
+  _dataset: DomainDataset,
+  _scope: Scope,
+  _asOfDate = todayIso(),
+): CryptoBalanceRow[] {
+  return [];
 }
 
 export function summarizeQuoteFreshness(
@@ -1221,6 +1360,7 @@ export function buildHoldingRows(
 
   return [
     ...pricedSecurityHoldings,
+    ...buildCryptoSecurityHoldingRows(dataset, scope, asOfDate),
     ...buildManualInvestmentHoldingRows(dataset, scope, asOfDate, entityIds),
   ];
 }

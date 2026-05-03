@@ -548,19 +548,22 @@ export function buildInvestmentsPageModel(
       unrealizedDisplayPercent: null,
     };
   const manualHoldings = sortedHoldings.filter(isManualHolding);
+  const cryptoHoldings = sortedHoldings.filter(
+    (holding) =>
+      !isManualHolding(holding) &&
+      securityById.get(holding.securityId)?.assetType === "crypto",
+  );
   const fundHoldings = sortedHoldings.filter(
     (holding) =>
       !isManualHolding(holding) &&
+      securityById.get(holding.securityId)?.assetType !== "crypto" &&
       holdingLooksLikeFund(securityById.get(holding.securityId)),
   );
   const stockHoldings = sortedHoldings.filter(
     (holding) =>
       !isManualHolding(holding) &&
+      securityById.get(holding.securityId)?.assetType !== "crypto" &&
       !holdingLooksLikeFund(securityById.get(holding.securityId)),
-  );
-  const cryptoBalances = [...model.holdings.cryptoBalances].sort(
-    (left, right) =>
-      Number(right.currentValueEur ?? 0) - Number(left.currentValueEur ?? 0),
   );
   const manualInvestmentSummaries = manualHoldings
     .map((holding) => {
@@ -626,14 +629,12 @@ export function buildInvestmentsPageModel(
     (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
     new Decimal(0),
   );
-  const cryptoPortfolioValueEur = cryptoBalances.reduce(
-    (sum, balance) => sum.plus(balance.currentValueEur ?? 0),
+  const cryptoPortfolioValueEur = cryptoHoldings.reduce(
+    (sum, holding) => sum.plus(holding.currentValueEur ?? 0),
     new Decimal(0),
   );
   const cashValueEur = new Decimal(model.holdings.brokerageCashEur);
-  const totalPortfolioValueEur = pricedPortfolioValueEur
-    .plus(cryptoPortfolioValueEur)
-    .plus(cashValueEur);
+  const totalPortfolioValueEur = pricedPortfolioValueEur.plus(cashValueEur);
   const totalPortfolioValueDisplay = new Decimal(
     toDisplayAmount(model, totalPortfolioValueEur.toFixed(2)) ?? 0,
   );
@@ -784,10 +785,6 @@ export function buildInvestmentsPageModel(
       label: holding.symbol,
       amountEur: toDisplayAmount(model, holding.currentValueEur) ?? "0.00",
     })),
-    ...cryptoBalances.map((balance) => ({
-      label: balance.currency,
-      amountEur: toDisplayAmount(model, balance.currentValueEur) ?? "0.00",
-    })),
   ];
 
   return {
@@ -866,9 +863,6 @@ export function buildInvestmentsPageModel(
           ...model.holdings.holdings.map((holding) =>
             toDisplayChartValue(model, holding.currentValueEur),
           ),
-          ...cryptoBalances.map((balance) =>
-            toDisplayChartValue(model, balance.currentValueEur),
-          ),
         ],
       },
       {
@@ -927,7 +921,7 @@ export function buildInvestmentsPageModel(
       {
         key: "crypto",
         label: "Crypto",
-        title: `${cryptoBalances.length} crypto balance${cryptoBalances.length === 1 ? "" : "s"}`,
+        title: `${cryptoHoldings.length} crypto securit${cryptoHoldings.length === 1 ? "y" : "ies"}`,
         value: formatDisplayAmount(model, cryptoPortfolioValueEur.toFixed(2)),
         pill: formatPercent(
           safePercent(cryptoPortfolioValueEur, totalPortfolioValueEur),
@@ -965,15 +959,22 @@ export function buildInvestmentsPageModel(
         getHoldingDisplayMetric,
       );
     }),
-    cryptoRows: cryptoBalances.map((balance) => ({
-      key: `${balance.accountId}:${balance.currency}`,
-      title: balance.currency,
-      subtitle: `${accountById.get(balance.accountId)?.displayName ?? balance.accountId} · ${formatQuantity(balance.balanceOriginal)} units`,
-      value: formatDisplayAmount(model, balance.currentValueEur),
-      fallbackNote: balance.currentPriceEur
-        ? `${formatDisplayAmount(model, balance.currentPriceEur)} per ${balance.currency}`
-        : "Current quote unavailable",
-    })),
+    cryptoRows: cryptoHoldings.map((holding) => {
+      const displayMetric = getHoldingDisplayMetric(holding);
+      return {
+        key: `${holding.accountId}:${holding.securityId}`,
+        title: holding.symbol,
+        subtitle: `${accountById.get(holding.accountId)?.displayName ?? holding.accountId} · ${formatQuantity(holding.quantity)} units`,
+        value: formatCurrency(
+          displayMetric.currentValueDisplay,
+          model.currency,
+        ),
+        fallbackNote:
+          holding.currentPrice && holding.currentPriceCurrency
+            ? `${formatCurrency(holding.currentPrice, holding.currentPriceCurrency)} per ${holding.symbol}`
+            : "Current quote unavailable",
+      };
+    }),
     accountAllocationRows: model.accountAllocation.map((row) => ({
       ...row,
       amountEur: toDisplayAmount(model, row.amountEur) ?? "0.00",

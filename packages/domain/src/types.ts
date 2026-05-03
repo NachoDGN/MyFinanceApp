@@ -459,7 +459,7 @@ export interface Security {
   name: string;
   exchangeName: string;
   micCode?: string | null;
-  assetType: "stock" | "etf" | "cash" | "other";
+  assetType: "stock" | "etf" | "crypto" | "cash" | "other";
   quoteCurrency: CurrencyCode;
   country?: string | null;
   isin?: string | null;
