@@ -20,12 +20,44 @@ test("transaction analysis schema accepts camelCase Gemini output and fills safe
   assert.equal(parsed.counterparty_name, "Cdad Prop Jardin De La Reina");
   assert.equal(parsed.merchant_normalized, null);
   assert.equal(parsed.security_hint, null);
+  assert.equal(parsed.category_creation, null);
   assert.equal(parsed.reason, parsed.explanation);
   assert.equal(parsed.confidence, 0.85);
   assert.equal(
     parsed.resolution_process,
     "The description identifies a homeowners association fee.",
   );
+});
+
+test("transaction analysis schema accepts category_creation tool requests", () => {
+  const parsed = transactionAnalysisResponseSchema.parse({
+    transactionClass: "expense",
+    categoryCode: "pets",
+    merchantNormalized: "Marinocanis",
+    counterpartyName: "Marinocanis S.l.",
+    economicEntityOverride: null,
+    categoryCreation: {
+      code: "pets",
+      displayName: "Pets",
+      parentCode: null,
+      scopeKind: "personal",
+      directionKind: "expense",
+      rationale: "User said this is doggie daycare.",
+    },
+    confidence: 0.96,
+    explanation: "User review identifies a pet expense.",
+    reason: "Doggie daycare belongs in a missing Pets category.",
+  });
+
+  assert.equal(parsed.category_code, "pets");
+  assert.deepEqual(parsed.category_creation, {
+    code: "pets",
+    display_name: "Pets",
+    parent_code: null,
+    scope_kind: "personal",
+    direction_kind: "expense",
+    reason: "User said this is doggie daycare.",
+  });
 });
 
 test("transaction analysis schema normalizes string confidence and preserves snake_case payloads", () => {

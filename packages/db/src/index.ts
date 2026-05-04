@@ -351,10 +351,6 @@ function shouldApplySelectedCategoryOverride(input: {
     return false;
   }
 
-  if (input.transaction.transactionClass === "unknown") {
-    return false;
-  }
-
   if (needsCreditCardStatementUpload(input.transaction)) {
     return false;
   }
@@ -376,6 +372,27 @@ function shouldApplySelectedCategoryOverride(input: {
     input.transaction.categoryCode == null ||
     isUncategorizedCategoryCode(input.transaction.categoryCode)
   );
+}
+
+function resolveManualCategoryOverrideTransactionClass(input: {
+  transaction: Transaction;
+  selectedCategory: DomainDataset["categories"][number] | null;
+}): Transaction["transactionClass"] | null {
+  if (!input.selectedCategory) {
+    return null;
+  }
+
+  if (input.selectedCategory.directionKind === "expense") {
+    return "expense";
+  }
+
+  if (input.selectedCategory.directionKind === "income") {
+    return "income";
+  }
+
+  return input.transaction.transactionClass === "unknown"
+    ? null
+    : input.transaction.transactionClass;
 }
 
 async function loadSimilarResolvedTransactionsForResolvedReview(
@@ -518,6 +535,11 @@ export async function reanalyzeTransactionReview(
           (category) => category.code === normalizedSelectedCategoryCode,
         ) ?? null)
       : null;
+    const selectedCategoryDefinition = normalizedSelectedCategoryCode
+      ? (dataset.categories.find(
+          (category) => category.code === normalizedSelectedCategoryCode,
+        ) ?? null)
+      : null;
     if (normalizedSelectedCategoryCode && !selectedCategory) {
       throw new Error(
         `Category ${normalizedSelectedCategoryCode} is not allowed for ${account.displayName}.`,
@@ -570,6 +592,7 @@ export async function reanalyzeTransactionReview(
     let afterTransaction: Transaction | null = null;
     let changedFields: string[] = [];
     let auditEvent: AuditEvent | null = null;
+    let auditAfterRow: Record<string, unknown> | null = null;
 
     await withInvestmentMutationLock(sql, userId, async () => {
       await input.onProgress?.({
@@ -669,10 +692,18 @@ export async function reanalyzeTransactionReview(
           !Array.isArray(currentLlmPayload.applied)
             ? (currentLlmPayload.applied as Record<string, unknown>)
             : {};
+        const manualTransactionClass =
+          resolveManualCategoryOverrideTransactionClass({
+            transaction: afterTransaction,
+            selectedCategory: selectedCategoryDefinition,
+          });
         const categoryOverrideRow = await updateTransactionRecord(sql, {
           userId,
           transactionId: afterTransaction.id,
           updatePayload: {
+            ...(manualTransactionClass
+              ? { transaction_class: manualTransactionClass }
+              : {}),
             category_code: normalizedSelectedCategoryCode,
             classification_status: "manual_override",
             classification_source: "manual",
@@ -689,6 +720,9 @@ export async function reanalyzeTransactionReview(
             },
             applied: {
               ...currentApplied,
+              ...(manualTransactionClass
+                ? { transactionClass: manualTransactionClass }
+                : {}),
               categoryCode: normalizedSelectedCategoryCode,
               needsReview: false,
               reviewReason: null,
@@ -698,6 +732,7 @@ export async function reanalyzeTransactionReview(
             },
           },
         });
+        auditAfterRow = categoryOverrideRow;
         afterTransaction = mapFromSql<Transaction>(categoryOverrideRow);
       }
       changedFields = getReviewReanalyzeChangedFields(
@@ -720,7 +755,7 @@ export async function reanalyzeTransactionReview(
         "transaction",
         input.transactionId,
         beforeRow,
-        after,
+        auditAfterRow ?? after,
       );
       await insertAuditEventRecord(
         sql,

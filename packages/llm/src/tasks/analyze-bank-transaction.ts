@@ -26,6 +26,39 @@ function normalizeOptionalNumber(value: unknown) {
   return null;
 }
 
+function normalizeCategoryCreationPayload(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const code = normalizeOptionalString(record.code);
+  const displayName =
+    normalizeOptionalString(record.display_name) ??
+    normalizeOptionalString(record.displayName);
+
+  if (!code || !displayName) {
+    return null;
+  }
+
+  return {
+    code,
+    display_name: displayName,
+    parent_code:
+      normalizeOptionalString(record.parent_code) ??
+      normalizeOptionalString(record.parentCode),
+    scope_kind:
+      normalizeOptionalString(record.scope_kind) ??
+      normalizeOptionalString(record.scopeKind),
+    direction_kind:
+      normalizeOptionalString(record.direction_kind) ??
+      normalizeOptionalString(record.directionKind),
+    reason:
+      normalizeOptionalString(record.reason) ??
+      normalizeOptionalString(record.rationale),
+  };
+}
+
 function normalizeTransactionAnalysisPayload(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return value;
@@ -115,11 +148,26 @@ function normalizeTransactionAnalysisPayload(value: unknown) {
     resolution_process:
       normalizeOptionalString(record.resolution_process) ??
       normalizeOptionalString(record.resolutionProcess),
+    category_creation: normalizeCategoryCreationPayload(
+      record.category_creation ?? record.categoryCreation,
+    ),
     confidence: inferredConfidence,
     explanation: truncateString(explanation, 240),
     reason: truncateString(reason, 320),
   };
 }
+
+const categoryCreationResponseObjectSchema = z.object({
+  code: z.string().min(1).max(64),
+  display_name: z.string().min(1).max(80),
+  parent_code: z.string().nullable().default(null),
+  scope_kind: z.enum(["personal", "company", "both"]).nullable().default(null),
+  direction_kind: z
+    .enum(["income", "expense", "neutral"])
+    .nullable()
+    .default(null),
+  reason: z.string().nullable().default(null),
+});
 
 const transactionAnalysisResponseObjectSchema = z.object({
   transaction_class: z.string().min(1),
@@ -140,6 +188,9 @@ const transactionAnalysisResponseObjectSchema = z.object({
   current_price_source: z.string().nullable().default(null),
   current_price_type: z.string().nullable().default(null),
   resolution_process: z.string().nullable().default(null),
+  category_creation: categoryCreationResponseObjectSchema
+    .nullable()
+    .default(null),
   confidence: z.number().min(0).max(1),
   explanation: z.string().min(1).max(240),
   reason: z.string().min(1).max(320),
@@ -151,9 +202,9 @@ export type TransactionAnalysisOutput = z.infer<
 
 export const transactionAnalysisResponseSchema: z.ZodType<TransactionAnalysisOutput> =
   z.preprocess(
-  normalizeTransactionAnalysisPayload,
-  transactionAnalysisResponseObjectSchema,
-) as z.ZodType<TransactionAnalysisOutput>;
+    normalizeTransactionAnalysisPayload,
+    transactionAnalysisResponseObjectSchema,
+  ) as z.ZodType<TransactionAnalysisOutput>;
 
 const transactionAnalysisJsonSchema = {
   type: "object",
@@ -177,6 +228,7 @@ const transactionAnalysisJsonSchema = {
     "current_price_source",
     "current_price_type",
     "resolution_process",
+    "category_creation",
     "confidence",
     "explanation",
     "reason",
@@ -200,6 +252,37 @@ const transactionAnalysisJsonSchema = {
     current_price_source: { type: ["string", "null"] },
     current_price_type: { type: ["string", "null"] },
     resolution_process: { type: ["string", "null"] },
+    category_creation: {
+      anyOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "code",
+            "display_name",
+            "parent_code",
+            "scope_kind",
+            "direction_kind",
+            "reason",
+          ],
+          properties: {
+            code: { type: "string", maxLength: 64 },
+            display_name: { type: "string", maxLength: 80 },
+            parent_code: { type: ["string", "null"] },
+            scope_kind: {
+              type: ["string", "null"],
+              enum: ["personal", "company", "both", null],
+            },
+            direction_kind: {
+              type: ["string", "null"],
+              enum: ["income", "expense", "neutral", null],
+            },
+            reason: { type: ["string", "null"] },
+          },
+        },
+        { type: "null" },
+      ],
+    },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     explanation: { type: "string", maxLength: 240 },
     reason: { type: "string", maxLength: 320 },
@@ -394,7 +477,9 @@ export async function analyzeBankTransaction(
       securityId: input.transaction.securityId ?? "null",
       quantity: input.transaction.quantity ?? "null",
       unitPriceOriginal: input.transaction.unitPriceOriginal ?? "null",
-      providerContext: JSON.stringify(input.transaction.providerContext ?? null),
+      providerContext: JSON.stringify(
+        input.transaction.providerContext ?? null,
+      ),
       rawPayload: JSON.stringify(input.transaction.rawPayload),
       deterministicHint: JSON.stringify(input.deterministicHint),
       portfolioState: JSON.stringify(input.portfolioState ?? null),
@@ -407,7 +492,9 @@ export async function analyzeBankTransaction(
             sourceBatchKey: input.batchContext.sourceBatchKey ?? "unknown",
             batchSummary: input.batchContext.batchSummary ?? "none",
             retrievalContext: input.batchContext.retrievalContext ?? "none",
-            totalTransactions: String(input.batchContext.totalTransactions ?? 0),
+            totalTransactions: String(
+              input.batchContext.totalTransactions ?? 0,
+            ),
             trustedResolvedCount: String(
               input.batchContext.trustedResolvedCount ?? 0,
             ),
@@ -479,14 +566,14 @@ export async function analyzeBankTransaction(
           : "Unknown LLM classification failure.",
       rawOutput:
         error instanceof LLMError
-          ? error.providerError ??
-            (error.rawOutput ? { invalidOutput: error.rawOutput } : null)
+          ? (error.providerError ??
+            (error.rawOutput ? { invalidOutput: error.rawOutput } : null))
           : null,
       provider:
         error instanceof LLMError
           ? error.provider
           : resolveModelProvider(modelName),
-      statusCode: error instanceof LLMError ? error.statusCode ?? null : null,
+      statusCode: error instanceof LLMError ? (error.statusCode ?? null) : null,
       failureKind: error instanceof LLMError ? error.kind : null,
     } satisfies AnalyzeBankTransactionResult;
   }

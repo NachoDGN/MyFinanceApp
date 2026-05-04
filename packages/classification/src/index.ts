@@ -10,6 +10,8 @@ import {
 } from "@myfinance/llm";
 import type {
   Account,
+  CategoryDirectionKind,
+  CategoryScopeKind,
   ClassificationRule,
   DomainDataset,
   Transaction,
@@ -162,6 +164,7 @@ type LlmClassification = {
   securityHint: string | null;
   quantity: string | null;
   unitPriceOriginal: string | null;
+  categoryCreation?: TransactionReviewCategoryCreation | null;
   confidence: string | null;
   explanation: string | null;
   reason: string | null;
@@ -177,6 +180,16 @@ type LlmClassification = {
   }>;
 };
 
+export interface TransactionReviewCategoryCreation {
+  toolName: "category_creation";
+  code: string;
+  displayName: string;
+  parentCode: string | null;
+  scopeKind: CategoryScopeKind;
+  directionKind: CategoryDirectionKind;
+  reason: string | null;
+}
+
 export interface TransactionEnrichmentDecision {
   transactionClass: string;
   categoryCode: string | null;
@@ -191,6 +204,7 @@ export interface TransactionEnrichmentDecision {
   securityHint: string | null;
   quantity: string | null;
   unitPriceOriginal: string | null;
+  categoryCreation?: TransactionReviewCategoryCreation | null;
   llmPayload: Record<string, unknown>;
 }
 
@@ -356,6 +370,147 @@ function normalizeCashCategoryCode(
   }
 
   return categoryCode;
+}
+
+const CATEGORY_CREATION_CODE_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
+const RESERVED_CATEGORY_CREATION_CODES = new Set([
+  "unknown",
+  "uncategorized_expense",
+  "uncategorized_income",
+  "uncategorized_investment",
+]);
+
+function normalizeCategoryCreationCode(value: string | null | undefined) {
+  const normalized = normalizeOptionalText(value)
+    ?.toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_")
+    .slice(0, 64);
+
+  if (
+    !normalized ||
+    RESERVED_CATEGORY_CREATION_CODES.has(normalized) ||
+    !CATEGORY_CREATION_CODE_PATTERN.test(normalized)
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function titleizeCategoryCode(code: string) {
+  return code
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function normalizeCategoryCreationDisplayName(
+  displayName: string | null | undefined,
+  code: string,
+) {
+  const normalized = normalizeOptionalText(displayName);
+  return normalized ? normalized.slice(0, 80) : titleizeCategoryCode(code);
+}
+
+function inferCategoryCreationDirectionKind(
+  transactionClass: string,
+  transaction: Pick<Transaction, "amountOriginal">,
+): "income" | "expense" | null {
+  if (transactionClass === "income") {
+    return "income";
+  }
+
+  if (transactionClass === "expense") {
+    return "expense";
+  }
+
+  const amount = Number(transaction.amountOriginal);
+  if (Number.isFinite(amount)) {
+    if (amount < 0) {
+      return "expense";
+    }
+    if (amount > 0) {
+      return "income";
+    }
+  }
+
+  return null;
+}
+
+function resolveAccountCategoryCreationScopeKind(
+  dataset: Pick<DomainDataset, "entities">,
+  account: Pick<Account, "entityId">,
+): "personal" | "company" {
+  const entityKind =
+    dataset.entities.find((entity) => entity.id === account.entityId)
+      ?.entityKind ?? "personal";
+  return entityKind === "company" ? "company" : "personal";
+}
+
+function resolveLlmCategoryCreation(input: {
+  dataset: DomainDataset;
+  account: Account;
+  transaction: Transaction;
+  options?: TransactionEnrichmentOptions;
+  reviewContext: ReturnType<typeof buildTransactionReviewContext>;
+  llm: LlmClassification;
+  llmTransactionClass: string;
+  allowedCategoryCodes: Set<string>;
+}): TransactionReviewCategoryCreation | null {
+  if (
+    input.options?.trigger !== "manual_review_update" &&
+    input.options?.trigger !== "manual_resolved_review"
+  ) {
+    return null;
+  }
+
+  if (!normalizeOptionalText(input.reviewContext.userProvidedContext)) {
+    return null;
+  }
+
+  if (input.account.assetDomain !== "cash" || !input.llm.categoryCreation) {
+    return null;
+  }
+
+  const requestedCode = normalizeCategoryCreationCode(
+    input.llm.categoryCreation.code,
+  );
+  if (!requestedCode || input.allowedCategoryCodes.has(requestedCode)) {
+    return null;
+  }
+
+  const llmCategoryCode = normalizeCategoryCreationCode(input.llm.categoryCode);
+  if (llmCategoryCode && llmCategoryCode !== requestedCode) {
+    return null;
+  }
+
+  const directionKind = inferCategoryCreationDirectionKind(
+    input.llmTransactionClass,
+    input.transaction,
+  );
+  if (!directionKind) {
+    return null;
+  }
+
+  return {
+    toolName: "category_creation",
+    code: requestedCode,
+    displayName: normalizeCategoryCreationDisplayName(
+      input.llm.categoryCreation.displayName,
+      requestedCode,
+    ),
+    parentCode: null,
+    scopeKind: resolveAccountCategoryCreationScopeKind(
+      input.dataset,
+      input.account,
+    ),
+    directionKind,
+    reason: normalizeOptionalText(input.llm.categoryCreation.reason),
+  };
 }
 
 export function getInvestmentTransactionClassifierConfig(
@@ -756,6 +911,18 @@ async function requestLlmClassification(
     unitPriceOriginal: normalizeOptionalText(
       result.output.unit_price_original ?? null,
     ),
+    categoryCreation: result.output.category_creation
+      ? {
+          toolName: "category_creation",
+          code: result.output.category_creation.code,
+          displayName: result.output.category_creation.display_name,
+          parentCode: result.output.category_creation.parent_code ?? null,
+          scopeKind: result.output.category_creation.scope_kind ?? "personal",
+          directionKind:
+            result.output.category_creation.direction_kind ?? "expense",
+          reason: result.output.category_creation.reason ?? null,
+        }
+      : null,
     confidence: result.output.confidence.toFixed(2),
     explanation: result.output.explanation,
     reason: result.output.reason,
@@ -820,6 +987,7 @@ export async function enrichImportedTransaction(
   let securityHint = deterministic.securityHint;
   let quantity = deterministic.quantity;
   let unitPriceOriginal = deterministic.unitPriceOriginal;
+  let categoryCreation: TransactionReviewCategoryCreation | null = null;
   const reviewCanBeResolvedByLlm =
     !deterministic.needsReview ||
     deterministic.reviewReason === "Needs LLM enrichment.";
@@ -830,10 +998,22 @@ export async function enrichImportedTransaction(
       llm.transactionClass && allowedClassSet.has(llm.transactionClass)
         ? llm.transactionClass
         : deterministic.transactionClass;
+    categoryCreation = resolveLlmCategoryCreation({
+      dataset,
+      account,
+      transaction,
+      options,
+      reviewContext,
+      llm,
+      llmTransactionClass,
+      allowedCategoryCodes,
+    });
     const llmCategoryCode =
       llm.categoryCode && allowedCategoryCodes.has(llm.categoryCode)
         ? llm.categoryCode
-        : deterministic.categoryCode;
+        : categoryCreation
+          ? categoryCreation.code
+          : deterministic.categoryCode;
 
     const deterministicWins =
       !deterministic.needsReview &&
@@ -953,6 +1133,7 @@ export async function enrichImportedTransaction(
     securityHint,
     quantity,
     unitPriceOriginal,
+    categoryCreation,
     llmPayload: {
       analysisStatus: llm.analysisStatus,
       model:
@@ -998,6 +1179,7 @@ export async function enrichImportedTransaction(
         securityHint,
         quantity,
         unitPriceOriginal,
+        categoryCreation,
       },
       analyzedAt: llm.completedAt,
     },
