@@ -8,9 +8,7 @@ import {
 
 import { loadDatasetForUser } from "./dataset-loader";
 import { mapFromSql, readOptionalRecord } from "./sql-json";
-import {
-  selectReviewPropagationCandidateMatches,
-} from "./review-propagation-support";
+import { selectReviewPropagationCandidateMatches } from "./review-propagation-support";
 import {
   getDbRuntimeConfig,
   withSeededUserContext,
@@ -85,8 +83,9 @@ function buildQueueTransactionRow(
   transaction: Transaction,
 ): ImportBatchReviewQueueTransaction {
   const account =
-    dataset.accounts.find((candidate) => candidate.id === transaction.accountId) ??
-    null;
+    dataset.accounts.find(
+      (candidate) => candidate.id === transaction.accountId,
+    ) ?? null;
   const categoryOptions = account
     ? buildReviewQueueCategoryOptions(dataset, account, transaction)
     : [];
@@ -94,8 +93,7 @@ function buildQueueTransactionRow(
   return {
     transactionId: transaction.id,
     accountId: transaction.accountId,
-    accountDisplayName:
-      account?.displayName ?? transaction.accountId,
+    accountDisplayName: account?.displayName ?? transaction.accountId,
     transactionDate: transaction.transactionDate,
     postedDate: transaction.postedDate ?? null,
     amountOriginal: transaction.amountOriginal,
@@ -110,9 +108,7 @@ function buildQueueTransactionRow(
   };
 }
 
-function isBrokerageCashManualCategoryEligible(
-  transaction: Transaction,
-) {
+function isBrokerageCashManualCategoryEligible(transaction: Transaction) {
   return (
     transaction.transactionClass === "unknown" ||
     transaction.transactionClass === "income" ||
@@ -207,9 +203,10 @@ type QueueReadinessInput = {
   latestSearchJobError: string | null;
 };
 
-export function resolveImportReviewQueueReadiness(
-  input: QueueReadinessInput,
-): { readiness: ImportReviewQueueReadiness; message: string | null } {
+export function resolveImportReviewQueueReadiness(input: QueueReadinessInput): {
+  readiness: ImportReviewQueueReadiness;
+  message: string | null;
+} {
   if (input.classificationJobStatus === "failed") {
     return {
       readiness: "failed",
@@ -260,7 +257,9 @@ export function resolveImportReviewQueueReadiness(
 function readClassificationJobPhase(
   job: DomainDataset["jobs"][number] | null,
 ): QueueReadinessInput["classificationPhase"] {
-  const progress = readOptionalRecord(readOptionalRecord(job?.payloadJson)?.progress);
+  const progress = readOptionalRecord(
+    readOptionalRecord(job?.payloadJson)?.progress,
+  );
   const phase = progress?.phase;
   return phase === "search_index_bootstrap" ||
     phase === "parallel_first_pass" ||
@@ -295,9 +294,7 @@ async function readLatestBatchJob(
     limit 1
   `;
 
-  return rows[0]
-    ? mapFromSql<DomainDataset["jobs"][number]>(rows[0])
-    : null;
+  return rows[0] ? mapFromSql<DomainDataset["jobs"][number]>(rows[0]) : null;
 }
 
 async function readSearchRowReadiness(
@@ -313,15 +310,14 @@ async function readSearchRowReadiness(
   return sql`
     select
       t.id as transaction_id,
-      sr.transaction_id as indexed_transaction_id,
-      sr.embedding is not null as has_embedding,
-      sr.embedding_status,
-      sb.status as batch_status
+      case
+        when t.search_contextualized_text is not null then t.id
+        else null
+      end as indexed_transaction_id,
+      t.search_embedding is not null as has_embedding,
+      t.search_embedding_status as embedding_status,
+      null::text as batch_status
     from public.transactions as t
-    left join public.transaction_search_rows as sr
-      on sr.transaction_id = t.id
-    left join public.transaction_search_batches as sb
-      on sb.id = sr.batch_id
     where t.id in ${sql(input.transactionIds)}
   `;
 }
@@ -367,31 +363,30 @@ async function readSimilarDeferredTransactionIds(
 
     const rows = await sql`
       with source as (
-        select embedding
-        from public.transaction_search_rows
-        where transaction_id = ${sourceTransactionId}
+        select search_embedding as embedding
+        from public.transactions
+        where id = ${sourceTransactionId}
           and user_id = ${input.userId}
-          and embedding is not null
+          and search_embedding is not null
         limit 1
       ),
       approximate_candidates as (
         select
-          r.transaction_id,
-          r.embedding
-        from public.transaction_search_rows as r
-        join public.transactions as t
-          on t.id = r.transaction_id
+          t.id as transaction_id,
+          t.search_embedding as embedding
+        from public.transactions as t
         cross join source
-        where r.user_id = ${input.userId}
-          and r.account_id = ${account.id}
+        where t.user_id = ${input.userId}
+          and t.account_id = ${account.id}
           and t.import_batch_id = ${input.importBatchId}
-          and r.transaction_id in ${sql(unresolvedIds)}
-          and r.transaction_id <> ${sourceTransactionId}
+          and t.id in ${sql(unresolvedIds)}
+          and t.id <> ${sourceTransactionId}
           and coalesce(t.needs_review, false) = true
           and t.voided_at is null
-          and r.embedding_status in ('ready', 'stale')
+          and t.search_embedding_status in ('ready', 'stale')
+          and t.search_embedding is not null
         order by
-          r.embedding::halfvec(3072) <=> source.embedding::halfvec(3072) asc
+          t.search_embedding::halfvec(3072) <=> source.embedding::halfvec(3072) asc
         limit ${Math.max(
           DEFAULT_REVIEW_QUEUE_CANDIDATE_LIMIT,
           unresolvedIds.length,
@@ -465,7 +460,9 @@ export async function getImportBatchReviewQueueState(input: {
       .sort(compareTransactionsNewestFirst);
 
     const readinessRows = await readSearchRowReadiness(sql, {
-      transactionIds: unresolvedTransactions.map((transaction) => transaction.id),
+      transactionIds: unresolvedTransactions.map(
+        (transaction) => transaction.id,
+      ),
     });
     const allUnresolvedEmbeddingsReady = readinessRows.every(
       (row) =>
@@ -505,13 +502,16 @@ export async function getImportBatchReviewQueueState(input: {
         ),
       ),
     ];
-    const deferredTransactionIds = await readSimilarDeferredTransactionIds(sql, {
-      userId,
-      importBatchId: input.importBatchId,
-      dataset,
-      unresolvedTransactions,
-      reviewedSourceTransactionIds,
-    });
+    const deferredTransactionIds = await readSimilarDeferredTransactionIds(
+      sql,
+      {
+        userId,
+        importBatchId: input.importBatchId,
+        dataset,
+        unresolvedTransactions,
+        reviewedSourceTransactionIds,
+      },
+    );
     const nextIndependentTransactions = unresolvedTransactions.filter(
       (transaction) =>
         !reviewedSourceTransactionIds.includes(transaction.id) &&

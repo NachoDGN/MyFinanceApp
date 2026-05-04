@@ -1,7 +1,4 @@
-import {
-  type DomainDataset,
-  type Transaction,
-} from "@myfinance/domain";
+import { type DomainDataset, type Transaction } from "@myfinance/domain";
 import { type PromptProfileOverrides } from "@myfinance/llm";
 
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
@@ -21,14 +18,9 @@ import {
   type PropagatedContextEntry,
   type ResolvedSourcePrecedent,
 } from "./review-propagation-support";
-import {
-  mapFromSql,
-  readOptionalRecord,
-} from "./sql-json";
+import { mapFromSql, readOptionalRecord } from "./sql-json";
 import { type SqlClient } from "./sql-runtime";
-import {
-  readTransactionReviewContext,
-} from "./transaction-embedding-search";
+import { readTransactionReviewContext } from "./transaction-embedding-search";
 import {
   executeTransactionEnrichmentPipeline,
   selectTransactionRowById,
@@ -262,11 +254,11 @@ export async function processReviewPropagationJob(
   }
 
   const sourceSearchEmbeddingRows = await sql`
-    select embedding
-    from public.transaction_search_rows
-    where transaction_id = ${sourceTransactionId}
+    select search_embedding as embedding
+    from public.transactions
+    where id = ${sourceTransactionId}
       and user_id = ${userId}
-      and embedding is not null
+      and search_embedding is not null
     limit 1
   `;
   if (!sourceSearchEmbeddingRows[0]?.embedding) {
@@ -286,33 +278,29 @@ export async function processReviewPropagationJob(
   const candidateIds = candidateTransactions.map((candidate) => candidate.id);
   const rows = await sql`
     with source as (
-      select embedding
-      from public.transaction_search_rows
-      where transaction_id = ${sourceTransactionId}
+      select search_embedding as embedding
+      from public.transactions
+      where id = ${sourceTransactionId}
         and user_id = ${userId}
-        and embedding is not null
+        and search_embedding is not null
       limit 1
     ),
     approximate_candidates as (
       select
-        r.transaction_id,
-        r.embedding
-      from public.transaction_search_rows as r
-      join public.transactions as t
-        on t.id = r.transaction_id
-      join public.transaction_search_batches as b
-        on b.id = r.batch_id
+        t.id as transaction_id,
+        t.search_embedding as embedding
+      from public.transactions as t
       cross join source
-      where r.user_id = ${userId}
-        and r.account_id = ${account.id}
-        and r.transaction_id in ${sql(candidateIds)}
-        and r.transaction_id <> ${sourceTransactionId}
+      where t.user_id = ${userId}
+        and t.account_id = ${account.id}
+        and t.id in ${sql(candidateIds)}
+        and t.id <> ${sourceTransactionId}
         and (${includeResolvedTargets} or coalesce(t.needs_review, false) = true)
         and t.voided_at is null
-        and r.embedding_status in ('ready', 'stale')
-        and b.status in ('ready', 'processing', 'stale')
+        and t.search_embedding_status in ('ready', 'stale')
+        and t.search_embedding is not null
       order by
-        r.embedding::halfvec(3072) <=>
+        t.search_embedding::halfvec(3072) <=>
         source.embedding::halfvec(3072) asc
       limit ${Math.max(REVIEW_PROPAGATION_CANDIDATE_LIMIT, candidateIds.length)}
     )
@@ -430,9 +418,9 @@ export async function processReviewPropagationJob(
       }
     }
 
-    let rebuilt:
-      | Awaited<ReturnType<typeof applyInvestmentRebuildWithinLock>>
-      | null = null;
+    let rebuilt: Awaited<
+      ReturnType<typeof applyInvestmentRebuildWithinLock>
+    > | null = null;
     if (mode === "resolved_source_rereview" && shouldRunInvestmentRebuild) {
       rebuilt = await applyInvestmentRebuildWithinLock(sql, userId, {
         historicalLookupTransactionIds: appliedTransactionIds,

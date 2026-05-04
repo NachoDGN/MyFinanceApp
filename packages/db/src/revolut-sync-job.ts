@@ -28,7 +28,7 @@ import {
 import { mapFromSql } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 import {
-  markTransactionSearchRowsStale,
+  markTransactionSearchDocumentsStale,
   queueTransactionSearchIndexJob,
 } from "./transaction-search-index";
 import { transactionColumnsSql } from "./transaction-columns";
@@ -374,7 +374,7 @@ export async function processRevolutSyncJob(
         });
       }
       if (mutatedExistingTransactionIds.length > 0) {
-        await markTransactionSearchRowsStale(sql, {
+        await markTransactionSearchDocumentsStale(sql, {
           userId,
           transactionIds: mutatedExistingTransactionIds,
         });

@@ -93,9 +93,7 @@ function normalizeConfidence(value: unknown) {
   }
 
   const numeric = Number(value);
-  return Number.isFinite(numeric)
-    ? Math.max(0, Math.min(1, numeric))
-    : null;
+  return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : null;
 }
 
 function resolveCitationEvidence(input: {
@@ -104,7 +102,9 @@ function resolveCitationEvidence(input: {
   insufficiencyReason: string | null;
 }) {
   const explicitIds = Array.isArray(input.citationIds)
-    ? input.citationIds.filter((value): value is string => typeof value === "string")
+    ? input.citationIds.filter(
+        (value): value is string => typeof value === "string",
+      )
     : [];
   const citations = explicitIds.flatMap((id) => {
     const evidence = input.context.state.evidenceById.get(id);
@@ -119,12 +119,10 @@ function resolveCitationEvidence(input: {
     return [];
   }
 
-  return input.context.state.evidenceOrder
-    .slice(-4)
-    .flatMap((id) => {
-      const evidence = input.context.state.evidenceById.get(id);
-      return evidence ? [evidence] : [];
-    });
+  return input.context.state.evidenceOrder.slice(-4).flatMap((id) => {
+    const evidence = input.context.state.evidenceById.get(id);
+    return evidence ? [evidence] : [];
+  });
 }
 
 async function executeAnswer(
@@ -309,12 +307,23 @@ async function selectTransactionContext(
           `
         : Promise.resolve([]),
       sql`
-        select source_batch_key, original_text, contextualized_text, document_summary, review_state, direction
-        from public.transaction_search_rows as r
-        join public.transaction_search_batches as b
-          on b.id = r.batch_id
-        where r.user_id = ${userId}
-          and r.transaction_id = ${transactionId}
+        select
+          coalesce(search_source_batch_key, 'transaction:' || id::text) as source_batch_key,
+          description_raw as original_text,
+          coalesce(search_contextualized_text, description_raw) as contextualized_text,
+          coalesce(search_document_summary, '') as document_summary,
+          public.transaction_search_review_state(
+            needs_review,
+            category_code,
+            credit_card_statement_status,
+            description_raw,
+            description_clean,
+            llm_payload
+          ) as review_state,
+          public.transaction_search_direction(amount_original) as direction
+        from public.transactions
+        where user_id = ${userId}
+          and id = ${transactionId}
         limit 1
       `,
     ]);
@@ -471,7 +480,11 @@ export async function executeTransactionAgentTool(input: {
     case "get_transaction":
       return executeGetTransaction(input.sql, input.arguments, input.context);
     case "get_related_entries":
-      return executeGetRelatedEntries(input.sql, input.arguments, input.context);
+      return executeGetRelatedEntries(
+        input.sql,
+        input.arguments,
+        input.context,
+      );
   }
 }
 
@@ -484,7 +497,9 @@ export function summarizeTransactionAgentToolResult(
   }
 
   if (toolName === "hybrid_transaction_search") {
-    const rows = Array.isArray(payload.results) ? payload.results.slice(0, 3) : [];
+    const rows = Array.isArray(payload.results)
+      ? payload.results.slice(0, 3)
+      : [];
     return rows.map((row) => {
       const result = row as Record<string, unknown>;
       return `transaction:${String(result.transactionId)} ${String(result.transactionDate)} ${String(result.amountOriginal)} ${String(result.currencyOriginal)} ${String(result.merchantNormalized ?? result.counterpartyName ?? result.descriptionRaw ?? "")}`;

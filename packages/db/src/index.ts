@@ -205,11 +205,11 @@ export {
   type TransactionSemanticCandidate,
 } from "./transaction-search-fusion";
 import {
-  markTransactionSearchRowsStale,
+  markTransactionSearchDocumentsStale,
   queueTransactionSearchIndexJob,
 } from "./transaction-search-index";
 export {
-  markTransactionSearchRowsStale,
+  markTransactionSearchDocumentsStale,
   processTransactionSearchIndexJob,
   queueTransactionSearchIndexJob,
   syncTransactionSearchIndex,
@@ -226,9 +226,7 @@ export {
   type TransactionSearchResultRow,
 } from "./transaction-search";
 import { runTransactionQuestionAgent } from "./transaction-agent";
-export {
-  runTransactionQuestionAgent,
-} from "./transaction-agent";
+export { runTransactionQuestionAgent } from "./transaction-agent";
 export type {
   TransactionAgentDecision,
   TransactionAgentSettings,
@@ -704,7 +702,7 @@ export async function reanalyzeTransactionReview(
         beforeTransaction,
         afterTransaction,
       );
-      await markTransactionSearchRowsStale(sql, {
+      await markTransactionSearchDocumentsStale(sql, {
         userId,
         transactionIds: [afterTransaction.id],
       });
@@ -1062,7 +1060,7 @@ class SqlFinanceRepository implements FinanceRepository {
           auditEvent,
           `Updated entity ${afterJson.displayName}.`,
         );
-        await markTransactionSearchRowsStale(sql, {
+        await markTransactionSearchDocumentsStale(sql, {
           userId: this.userId,
           entityIds: [input.entityId],
         });
@@ -1433,7 +1431,7 @@ class SqlFinanceRepository implements FinanceRepository {
           auditEvent,
           `Updated account ${afterJson.displayName}.`,
         );
-        await markTransactionSearchRowsStale(sql, {
+        await markTransactionSearchDocumentsStale(sql, {
           userId: this.userId,
           accountIds: [input.accountId],
         });
@@ -1808,7 +1806,7 @@ class SqlFinanceRepository implements FinanceRepository {
           transactionId: afterTransaction.id,
           accountId: afterTransaction.accountId,
         });
-        await markTransactionSearchRowsStale(sql, {
+        await markTransactionSearchDocumentsStale(sql, {
           userId: this.userId,
           transactionIds: [afterTransaction.id],
         });

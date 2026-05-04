@@ -84,11 +84,7 @@ export function getBatchClassificationFirstPassConcurrency(
     Number.isFinite(configuredCap) && configuredCap > 0
       ? Math.max(1, Math.floor(configuredCap))
       : DEFAULT_FIRST_PASS_CONCURRENCY_CAP;
-  return Math.min(
-    normalizedCount,
-    normalizedCap,
-    MAX_FIRST_PASS_CONCURRENCY,
-  );
+  return Math.min(normalizedCount, normalizedCap, MAX_FIRST_PASS_CONCURRENCY);
 }
 
 export function getTrustedBatchResolutionConfidence() {
@@ -121,7 +117,9 @@ function getEscalationContextLimit() {
     : DEFAULT_ESCALATION_CONTEXT_LIMIT;
 }
 
-function getResolvedConfidence(transaction: Pick<Transaction, "classificationConfidence">) {
+function getResolvedConfidence(
+  transaction: Pick<Transaction, "classificationConfidence">,
+) {
   const parsed = Number(transaction.classificationConfidence ?? "0");
   return Number.isFinite(parsed) ? parsed : 0;
 }
@@ -166,7 +164,9 @@ export function shouldEscalateBatchTransaction(
   );
 }
 
-function isPendingBatchClassification(transaction: Pick<Transaction, "llmPayload">) {
+function isPendingBatchClassification(
+  transaction: Pick<Transaction, "llmPayload">,
+) {
   const status = getTransactionAnalysisStatus(transaction);
   return status === null || status === "pending";
 }
@@ -215,16 +215,12 @@ async function loadBatchSearchContext(
 ) {
   const rows = await sql`
     select
-      r.transaction_id,
-      r.contextualized_text,
-      b.source_batch_key,
-      b.batch_summary
-    from public.transaction_search_rows as r
-    join public.transaction_search_batches as b
-      on b.id = r.batch_id
-    join public.transactions as t
-      on t.id = r.transaction_id
-    where r.user_id = ${userId}
+      t.id as transaction_id,
+      t.search_contextualized_text as contextualized_text,
+      coalesce(t.search_source_batch_key, 'transaction:' || t.id::text) as source_batch_key,
+      coalesce(t.search_document_summary, '') as batch_summary
+    from public.transactions as t
+    where t.user_id = ${userId}
       and t.import_batch_id = ${importBatchId}
   `;
 
@@ -353,29 +349,29 @@ async function findResolvedEscalationMatches(
 
   const rows = await sql`
     with source as (
-      select embedding
-      from public.transaction_search_rows
+      select search_embedding as embedding
+      from public.transactions
       where user_id = ${input.userId}
-        and transaction_id = ${input.sourceTransactionId}
-        and embedding_status = 'ready'
+        and id = ${input.sourceTransactionId}
+        and search_embedding_status = 'ready'
+        and search_embedding is not null
       limit 1
     ),
     approximate_candidates as (
       select
-        r.transaction_id,
-        r.embedding
-      from public.transaction_search_rows as r
-      join public.transactions as t
-        on t.id = r.transaction_id
+        t.id as transaction_id,
+        t.search_embedding as embedding
+      from public.transactions as t
       cross join source
-      where r.user_id = ${input.userId}
-        and r.account_id = ${input.accountId}
-        and r.transaction_id <> ${input.sourceTransactionId}
-        and r.embedding_status = 'ready'
+      where t.user_id = ${input.userId}
+        and t.account_id = ${input.accountId}
+        and t.id <> ${input.sourceTransactionId}
+        and t.search_embedding_status = 'ready'
+        and t.search_embedding is not null
         and coalesce(t.needs_review, false) = false
         and t.voided_at is null
       order by
-        r.embedding::halfvec(3072) <=>
+        t.search_embedding::halfvec(3072) <=>
         source.embedding::halfvec(3072) asc
       limit ${candidateLimit}
     )
@@ -417,20 +413,22 @@ export async function processClassificationJob(
   const batchTransactions = dataset.transactions
     .filter(
       (transaction) =>
-        transaction.importBatchId === input.importBatchId && !transaction.voidedAt,
+        transaction.importBatchId === input.importBatchId &&
+        !transaction.voidedAt,
     )
     .sort(compareTransactionsByDate);
 
   const totalTransactions = batchTransactions.length;
-  const pendingTransactions = batchTransactions.filter(isPendingBatchClassification);
+  const pendingTransactions = batchTransactions.filter(
+    isPendingBatchClassification,
+  );
   const investmentAccountIds = new Set(
-    batchTransactions
-      .flatMap((transaction) => {
-        const account = dataset.accounts.find(
-          (candidate) => candidate.id === transaction.accountId,
-        );
-        return account?.assetDomain === "investment" ? [account.id] : [];
-      }),
+    batchTransactions.flatMap((transaction) => {
+      const account = dataset.accounts.find(
+        (candidate) => candidate.id === transaction.accountId,
+      );
+      return account?.assetDomain === "investment" ? [account.id] : [];
+    }),
   );
 
   let searchBootstrapStatus: BatchClassificationProgress["searchBootstrapStatus"];
@@ -444,7 +442,9 @@ export async function processClassificationJob(
   } catch (error) {
     searchBootstrapStatus = "failed";
     searchBootstrapError =
-      error instanceof Error ? error.message : "Transaction search bootstrap failed.";
+      error instanceof Error
+        ? error.message
+        : "Transaction search bootstrap failed.";
     if (await supportsJobType(sql, "transaction_search_index")) {
       await queueTransactionSearchIndexJob(sql, {
         userId,
@@ -522,13 +522,13 @@ export async function processClassificationJob(
         );
       }
 
-        const batchContext = getBatchContext(
-          searchContextByTransactionId,
-          transaction.id,
-          "parallel_first_pass",
-          totalTransactions,
-          trustedResolvedCount,
-        );
+      const batchContext = getBatchContext(
+        searchContextByTransactionId,
+        transaction.id,
+        "parallel_first_pass",
+        totalTransactions,
+        trustedResolvedCount,
+      );
 
       try {
         const { afterTransaction } = await executeTransactionEnrichmentPipeline(
@@ -568,13 +568,17 @@ export async function processClassificationJob(
 
         return { afterTransaction };
       } catch (error) {
-        const failedRow = await markTransactionClassificationFailure(sql, userId, {
-          transaction,
-          account,
-          error,
-          phase: "parallel_first_pass",
-          batchContext,
-        });
+        const failedRow = await markTransactionClassificationFailure(
+          sql,
+          userId,
+          {
+            transaction,
+            account,
+            error,
+            phase: "parallel_first_pass",
+            batchContext,
+          },
+        );
         const failedTransaction = failedRow
           ? mapFromSql<Transaction>(failedRow)
           : transaction;
@@ -606,7 +610,8 @@ export async function processClassificationJob(
   const postFirstPassBatchTransactions = dataset.transactions
     .filter(
       (transaction) =>
-        transaction.importBatchId === input.importBatchId && !transaction.voidedAt,
+        transaction.importBatchId === input.importBatchId &&
+        !transaction.voidedAt,
     )
     .sort(compareTransactionsByDate);
   const escalationCandidates = postFirstPassBatchTransactions.filter(
@@ -694,8 +699,10 @@ export async function processClassificationJob(
             null,
           ) as unknown as Record<string, unknown>;
         }
-        const { afterTransaction } =
-          await executeTransactionEnrichmentPipeline(sql, userId, {
+        const { afterTransaction } = await executeTransactionEnrichmentPipeline(
+          sql,
+          userId,
+          {
             dataset,
             account,
             transaction,
@@ -717,7 +724,8 @@ export async function processClassificationJob(
                 resolvedSourcePrecedent,
               },
             },
-          });
+          },
+        );
 
         dataset = replaceTransactionInDataset(dataset, afterTransaction);
         sequentialProcessedCount += 1;
@@ -770,7 +778,9 @@ export async function processClassificationJob(
     }
   }
 
-  const touchedTransactionIds = [...new Set(batchTransactions.map((tx) => tx.id))];
+  const touchedTransactionIds = [
+    ...new Set(batchTransactions.map((tx) => tx.id)),
+  ];
   let finalSearchRefreshStatus: BatchClassificationProgress["finalSearchRefreshStatus"];
   let finalSearchRefreshError: string | null = null;
   await reportProgress({
@@ -819,14 +829,16 @@ export async function processClassificationJob(
   const finalBatchTransactions = dataset.transactions
     .filter(
       (transaction) =>
-        transaction.importBatchId === input.importBatchId && !transaction.voidedAt,
+        transaction.importBatchId === input.importBatchId &&
+        !transaction.voidedAt,
     )
     .sort(compareTransactionsByDate);
 
   await reportProgress({
     phase: "final_search_refresh",
-    trustedResolvedCount: finalBatchTransactions.filter(isTrustedBatchResolution)
-      .length,
+    trustedResolvedCount: finalBatchTransactions.filter(
+      isTrustedBatchResolution,
+    ).length,
     remainingUnresolvedCount: countRemainingUnresolved(
       finalBatchTransactions,
       input.importBatchId,
@@ -844,8 +856,9 @@ export async function processClassificationJob(
     sequentialCandidateCount: escalationCandidates.length,
     sequentialProcessed: progress.sequentialProcessed,
     sequentialFailed: progress.sequentialFailed,
-    trustedResolvedCount: finalBatchTransactions.filter(isTrustedBatchResolution)
-      .length,
+    trustedResolvedCount: finalBatchTransactions.filter(
+      isTrustedBatchResolution,
+    ).length,
     remainingUnresolvedCount: countRemainingUnresolved(
       finalBatchTransactions,
       input.importBatchId,

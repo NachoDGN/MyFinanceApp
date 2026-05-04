@@ -66,17 +66,6 @@ type TransactionSearchSourceRow = {
   economicEntityKind: EntityKind | null;
 };
 
-type TransactionSearchBatchRow = {
-  id: string;
-  sourceBatchKey: string;
-  accountId: string | null;
-  accountName: string | null;
-  institutionName: string | null;
-  periodStart: string | null;
-  periodEnd: string | null;
-  status: string;
-};
-
 type TransactionSearchBatchGroup = {
   sourceBatchKey: string;
   accountId: string | null;
@@ -293,7 +282,9 @@ function buildContextualizedTransactionText(input: {
 
 function isRecoverableTransactionSearchProviderError(error: unknown) {
   const message =
-    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : String(error).toLowerCase();
 
   return (
     message.includes("gemini") ||
@@ -850,19 +841,15 @@ async function selectTransactionSearchSourceRows(
       on a.id = t.account_id
     left join public.entities as e
       on e.id = t.economic_entity_id
-    left join public.transaction_search_rows as sr
-      on sr.transaction_id = t.id
-    left join public.transaction_search_batches as sb
-      on sb.id = sr.batch_id
     where t.user_id = ${userId}
       and (${transactionIds.length === 0} or t.id in ${sql(transactionIds.length > 0 ? transactionIds : [EMPTY_UUID])})
       and (${importBatchIds.length === 0} or t.import_batch_id in ${sql(importBatchIds.length > 0 ? importBatchIds : [EMPTY_UUID])})
       and (${accountIds.length === 0} or t.account_id in ${sql(accountIds.length > 0 ? accountIds : [EMPTY_UUID])})
       and (${entityIds.length === 0} or t.economic_entity_id in ${sql(entityIds.length > 0 ? entityIds : [EMPTY_UUID])})
       and (${input.onlyStaleOrMissing !== true} or (
-        sr.transaction_id is null
-        or sr.embedding_status <> 'ready'
-        or coalesce(sb.status, 'stale') <> 'ready'
+        t.search_contextualized_text is null
+        or t.search_embedding is null
+        or t.search_embedding_status <> 'ready'
       ))
     order by t.transaction_date desc, t.created_at desc
   `;
@@ -870,97 +857,11 @@ async function selectTransactionSearchSourceRows(
   return rows.map((row) => parseSourceRow(row as Record<string, unknown>));
 }
 
-async function upsertTransactionSearchBatch(
-  sql: SqlClient,
-  userId: string,
-  input: {
-    sourceBatchKey: string;
-    accountId: string | null;
-    accountName: string | null;
-    institutionName: string | null;
-    periodStart: string | null;
-    periodEnd: string | null;
-    batchSummary: string;
-    extractedMetadata: Record<string, unknown>;
-    status: "ready" | "processing" | "stale" | "failed";
-  },
-) {
-  const rows = await sql`
-    insert into public.transaction_search_batches (
-      user_id,
-      source_batch_key,
-      account_id,
-      account_name,
-      institution_name,
-      period_start,
-      period_end,
-      batch_summary,
-      extracted_metadata,
-      status,
-      last_indexed_at
-    ) values (
-      ${userId},
-      ${input.sourceBatchKey},
-      ${input.accountId},
-      ${input.accountName},
-      ${input.institutionName},
-      ${input.periodStart},
-      ${input.periodEnd},
-      ${input.batchSummary},
-      ${serializeJson(sql, input.extractedMetadata)}::jsonb,
-      ${input.status},
-      ${input.status === "ready" ? new Date().toISOString() : null}
-    )
-    on conflict (source_batch_key)
-    do update
-    set
-      user_id = excluded.user_id,
-      account_id = excluded.account_id,
-      account_name = excluded.account_name,
-      institution_name = excluded.institution_name,
-      period_start = excluded.period_start,
-      period_end = excluded.period_end,
-      batch_summary = excluded.batch_summary,
-      extracted_metadata = excluded.extracted_metadata,
-      status = excluded.status,
-      last_indexed_at = excluded.last_indexed_at,
-      updated_at = timezone('utc', now())
-    returning
-      id,
-      source_batch_key,
-      account_id,
-      account_name,
-      institution_name,
-      period_start,
-      period_end,
-      status
-  `;
-
-  const row = rows[0] as Record<string, unknown> | undefined;
-  if (!row) {
-    throw new Error(
-      `Failed to upsert transaction search batch ${input.sourceBatchKey}.`,
-    );
-  }
-
-  return {
-    id: String(row.id ?? ""),
-    sourceBatchKey: String(row.source_batch_key ?? ""),
-    accountId: typeof row.account_id === "string" ? row.account_id : null,
-    accountName: typeof row.account_name === "string" ? row.account_name : null,
-    institutionName:
-      typeof row.institution_name === "string" ? row.institution_name : null,
-    periodStart: typeof row.period_start === "string" ? row.period_start : null,
-    periodEnd: typeof row.period_end === "string" ? row.period_end : null,
-    status: String(row.status ?? ""),
-  } satisfies TransactionSearchBatchRow;
-}
-
-async function upsertTransactionSearchRows(
+async function updateTransactionSearchDocuments(
   sql: SqlClient,
   input: {
-    batchId: string;
     rows: Array<{
+      sourceBatchKey: string;
       sourceRow: TransactionSearchSourceRow;
       reviewState: string;
       direction: "debit" | "credit" | "neutral";
@@ -977,66 +878,17 @@ async function upsertTransactionSearchRows(
 ) {
   for (const row of input.rows) {
     await sql`
-      insert into public.transaction_search_rows (
-        transaction_id,
-        batch_id,
-        user_id,
-        account_id,
-        economic_entity_id,
-        transaction_date,
-        posted_at,
-        amount,
-        currency,
-        merchant,
-        counterparty,
-        category,
-        account_name,
-        institution_name,
-        account_type,
-        economic_entity_name,
-        economic_entity_kind,
-        direction,
-        review_state,
-        review_reason,
-        original_text,
-        contextualized_text,
-        document_summary,
-        embedding,
-        embedding_model,
-        embedding_status,
-        embedding_source_text,
-        contextualization_model,
-        contextualization_payload
-      ) values (
-        ${row.sourceRow.transactionId},
-        ${input.batchId},
-        ${row.sourceRow.userId},
-        ${row.sourceRow.accountId},
-        ${row.sourceRow.economicEntityId},
-        ${row.sourceRow.transactionDate},
-        ${row.sourceRow.postedDate ?? row.sourceRow.transactionDate},
-        ${row.sourceRow.amountOriginal},
-        ${row.sourceRow.currencyOriginal},
-        ${row.sourceRow.merchantNormalized},
-        ${row.sourceRow.counterpartyName},
-        ${row.sourceRow.categoryCode},
-        ${row.sourceRow.accountName},
-        ${row.sourceRow.institutionName},
-        ${row.sourceRow.accountType},
-        ${row.sourceRow.economicEntityName},
-        ${row.sourceRow.economicEntityKind},
-        ${row.direction},
-        ${row.reviewState},
-        ${row.sourceRow.reviewReason},
-        ${row.sourceRow.descriptionRaw},
-        ${row.contextualizedText},
-        ${row.batchSummary},
-        ${serializeVector(row.embedding)}::extensions.vector(3072),
-        ${row.embeddingModel},
-        ${row.embeddingStatus},
-        ${"contextualized_text"},
-        ${row.contextualizationModel},
-        ${serializeJson(sql, {
+      update public.transactions
+      set
+        search_source_batch_key = ${row.sourceBatchKey},
+        search_contextualized_text = ${row.contextualizedText},
+        search_document_summary = ${row.batchSummary},
+        search_embedding = ${serializeVector(row.embedding)}::extensions.vector(3072),
+        search_embedding_model = ${row.embeddingModel},
+        search_embedding_status = ${row.embeddingStatus},
+        search_embedding_source_text = ${"search_contextualized_text"},
+        search_contextualization_model = ${row.contextualizationModel},
+        search_contextualization_payload = ${serializeJson(sql, {
           contextualNote: row.contextualNote,
           merchant: row.sourceRow.merchantNormalized,
           counterparty: row.sourceRow.counterpartyName,
@@ -1049,60 +901,16 @@ async function upsertTransactionSearchRows(
           direction: row.direction,
           reviewState: row.reviewState,
           ...row.contextualizationPayload,
-        })}::jsonb
-      )
-      on conflict (transaction_id)
-      do update
-      set
-        batch_id = excluded.batch_id,
-        user_id = excluded.user_id,
-        account_id = excluded.account_id,
-        economic_entity_id = excluded.economic_entity_id,
-        transaction_date = excluded.transaction_date,
-        posted_at = excluded.posted_at,
-        amount = excluded.amount,
-        currency = excluded.currency,
-        merchant = excluded.merchant,
-        counterparty = excluded.counterparty,
-        category = excluded.category,
-        account_name = excluded.account_name,
-        institution_name = excluded.institution_name,
-        account_type = excluded.account_type,
-        economic_entity_name = excluded.economic_entity_name,
-        economic_entity_kind = excluded.economic_entity_kind,
-        direction = excluded.direction,
-        review_state = excluded.review_state,
-        review_reason = excluded.review_reason,
-        original_text = excluded.original_text,
-        contextualized_text = excluded.contextualized_text,
-        document_summary = excluded.document_summary,
-        embedding = excluded.embedding,
-        embedding_model = excluded.embedding_model,
-        embedding_status = excluded.embedding_status,
-        embedding_source_text = excluded.embedding_source_text,
-        contextualization_model = excluded.contextualization_model,
-        contextualization_payload = excluded.contextualization_payload,
+        })}::jsonb,
+        search_indexed_at = timezone('utc', now()),
         updated_at = timezone('utc', now())
+      where id = ${row.sourceRow.transactionId}
+        and user_id = ${row.sourceRow.userId}
     `;
   }
 }
 
-async function cleanupEmptyTransactionSearchBatches(
-  sql: SqlClient,
-  userId: string,
-) {
-  await sql`
-    delete from public.transaction_search_batches as b
-    where b.user_id = ${userId}
-      and not exists (
-        select 1
-        from public.transaction_search_rows as r
-        where r.batch_id = b.id
-      )
-  `;
-}
-
-function groupTransactionSearchRows(rows: TransactionSearchSourceRow[]) {
+function groupTransactionSearchSourceRows(rows: TransactionSearchSourceRow[]) {
   const groups = new Map<string, TransactionSearchBatchGroup>();
 
   for (const row of rows) {
@@ -1115,10 +923,7 @@ function groupTransactionSearchRows(rows: TransactionSearchSourceRow[]) {
     if (existing) {
       existing.rows.push(row);
       if (isIsoDateString(transactionDate)) {
-        if (
-          !existing.periodStart ||
-          transactionDate < existing.periodStart
-        ) {
+        if (!existing.periodStart || transactionDate < existing.periodStart) {
           existing.periodStart = transactionDate;
         }
         if (!existing.periodEnd || transactionDate > existing.periodEnd) {
@@ -1133,8 +938,12 @@ function groupTransactionSearchRows(rows: TransactionSearchSourceRow[]) {
       accountId: row.accountId,
       accountName: row.accountName,
       institutionName: row.institutionName,
-      periodStart: row.importBatchId ? transactionDate : startOfMonthIso(dateReference ?? ""),
-      periodEnd: row.importBatchId ? transactionDate : endOfMonthIso(dateReference ?? ""),
+      periodStart: row.importBatchId
+        ? transactionDate
+        : startOfMonthIso(dateReference ?? ""),
+      periodEnd: row.importBatchId
+        ? transactionDate
+        : endOfMonthIso(dateReference ?? ""),
       rows: [row],
     });
   }
@@ -1146,8 +955,7 @@ function groupTransactionSearchRows(rows: TransactionSearchSourceRow[]) {
       : (group.rows
           .map((row) => normalizeSqlDateValue(row.transactionDate))
           .filter(isIsoDateString)
-          .sort()[0] ??
-        group.periodStart),
+          .sort()[0] ?? group.periodStart),
     periodEnd: group.sourceBatchKey.startsWith("account_month:")
       ? group.periodEnd
       : (group.rows
@@ -1158,7 +966,7 @@ function groupTransactionSearchRows(rows: TransactionSearchSourceRow[]) {
   }));
 }
 
-export async function markTransactionSearchRowsStale(
+export async function markTransactionSearchDocumentsStale(
   sql: SqlClient,
   input: {
     userId: string;
@@ -1182,42 +990,25 @@ export async function markTransactionSearchRowsStale(
     return;
   }
 
-  const touchedRows = await sql`
-    update public.transaction_search_rows as r
-    set embedding_status = 'stale',
+  await sql`
+    update public.transactions as t
+    set search_embedding_status = case
+          when t.search_embedding is null then 'missing'
+          when t.search_embedding_status = 'missing' then 'missing'
+          else 'stale'
+        end,
         updated_at = timezone('utc', now())
-    where r.user_id = ${input.userId}
+    where t.user_id = ${input.userId}
       and (
-        (${transactionIds.length > 0} and r.transaction_id in ${sql(transactionIds.length > 0 ? transactionIds : [EMPTY_UUID])})
-        or (${accountIds.length > 0} and r.account_id in ${sql(accountIds.length > 0 ? accountIds : [EMPTY_UUID])})
-        or (${entityIds.length > 0} and r.economic_entity_id in ${sql(entityIds.length > 0 ? entityIds : [EMPTY_UUID])})
+        (${transactionIds.length > 0} and t.id in ${sql(transactionIds.length > 0 ? transactionIds : [EMPTY_UUID])})
+        or (${accountIds.length > 0} and t.account_id in ${sql(accountIds.length > 0 ? accountIds : [EMPTY_UUID])})
+        or (${entityIds.length > 0} and t.economic_entity_id in ${sql(entityIds.length > 0 ? entityIds : [EMPTY_UUID])})
         or (
           ${importBatchIds.length > 0}
-          and exists (
-            select 1
-            from public.transactions as t
-            where t.id = r.transaction_id
-              and t.import_batch_id in ${sql(importBatchIds.length > 0 ? importBatchIds : [EMPTY_UUID])}
-          )
+          and t.import_batch_id in ${sql(importBatchIds.length > 0 ? importBatchIds : [EMPTY_UUID])}
         )
       )
-    returning batch_id
   `;
-
-  const batchIds = uniq(
-    touchedRows.flatMap((row) =>
-      typeof row.batch_id === "string" ? [row.batch_id] : [],
-    ),
-  );
-
-  if (batchIds.length > 0) {
-    await sql`
-      update public.transaction_search_batches
-      set status = 'stale',
-          updated_at = timezone('utc', now())
-      where id in ${sql(batchIds)}
-    `;
-  }
 }
 
 export async function queueTransactionSearchIndexJob(
@@ -1271,7 +1062,7 @@ export async function syncTransactionSearchIndex(
     };
   }
 
-  const grouped = groupTransactionSearchRows(sourceRows);
+  const grouped = groupTransactionSearchSourceRows(sourceRows);
   let llm: ReturnType<typeof createLLMClient> | null = null;
   try {
     llm = createLLMClient();
@@ -1291,21 +1082,6 @@ export async function syncTransactionSearchIndex(
 
   for (const group of grouped) {
     try {
-      await upsertTransactionSearchBatch(sql, userId, {
-        sourceBatchKey: group.sourceBatchKey,
-        accountId: group.accountId,
-        accountName: group.accountName,
-        institutionName: group.institutionName,
-        periodStart: group.periodStart,
-        periodEnd: group.periodEnd,
-        batchSummary: "Indexing in progress.",
-        extractedMetadata: {
-          sourceBatchKey: group.sourceBatchKey,
-          transactionCount: group.rows.length,
-        },
-        status: "processing",
-      });
-
       let batchSummary: string;
       let extractedMetadata: Record<string, unknown>;
       if (llm) {
@@ -1317,7 +1093,8 @@ export async function syncTransactionSearchIndex(
           if (!isRecoverableTransactionSearchProviderError(error)) {
             throw error;
           }
-          const fallbackSummary = buildDeterministicTransactionBatchSummary(group);
+          const fallbackSummary =
+            buildDeterministicTransactionBatchSummary(group);
           batchSummary = fallbackSummary.batchSummary;
           extractedMetadata = {
             ...fallbackSummary.extractedMetadata,
@@ -1326,7 +1103,8 @@ export async function syncTransactionSearchIndex(
           };
         }
       } else {
-        const fallbackSummary = buildDeterministicTransactionBatchSummary(group);
+        const fallbackSummary =
+          buildDeterministicTransactionBatchSummary(group);
         batchSummary = fallbackSummary.batchSummary;
         extractedMetadata = {
           ...fallbackSummary.extractedMetadata,
@@ -1349,39 +1127,42 @@ export async function syncTransactionSearchIndex(
       const summaryUsedFallback =
         String(extractedMetadata.summaryStrategy ?? "") ===
         "deterministic_fallback";
-      const contextualizedRows = summaryUsedFallback || !llm
-        ? group.rows.map((row) =>
-            buildDeterministicTransactionContextualization({
-              row,
-              batchSummary,
-              recurringMerchantLabels,
-            }),
-          )
-        : await mapWithConcurrency(
-            group.rows,
-            getTransactionSearchContextualizationConcurrency(group.rows.length),
-            async (row) => {
-              try {
-                return await contextualizeTransactionRow(
-                  {
+      const contextualizedRows =
+        summaryUsedFallback || !llm
+          ? group.rows.map((row) =>
+              buildDeterministicTransactionContextualization({
+                row,
+                batchSummary,
+                recurringMerchantLabels,
+              }),
+            )
+          : await mapWithConcurrency(
+              group.rows,
+              getTransactionSearchContextualizationConcurrency(
+                group.rows.length,
+              ),
+              async (row) => {
+                try {
+                  return await contextualizeTransactionRow(
+                    {
+                      row,
+                      batchSummary,
+                      recurringMerchantLabels,
+                    },
+                    llm,
+                  );
+                } catch (error) {
+                  if (!isRecoverableTransactionSearchProviderError(error)) {
+                    throw error;
+                  }
+                  return buildDeterministicTransactionContextualization({
                     row,
                     batchSummary,
                     recurringMerchantLabels,
-                  },
-                  llm,
-                );
-              } catch (error) {
-                if (!isRecoverableTransactionSearchProviderError(error)) {
-                  throw error;
+                  });
                 }
-                return buildDeterministicTransactionContextualization({
-                  row,
-                  batchSummary,
-                  recurringMerchantLabels,
-                });
-              }
-            },
-          );
+              },
+            );
       const contextualizationStrategy = contextualizedRows.some(
         (row) => row.contextualizationModel === "deterministic_fallback",
       )
@@ -1434,26 +1215,9 @@ export async function syncTransactionSearchIndex(
         };
       }
 
-      const batch = await upsertTransactionSearchBatch(sql, userId, {
-        sourceBatchKey: group.sourceBatchKey,
-        accountId: group.accountId,
-        accountName: group.accountName,
-        institutionName: group.institutionName,
-        periodStart: group.periodStart,
-        periodEnd: group.periodEnd,
-        batchSummary,
-        extractedMetadata: {
-          ...extractedMetadata,
-          contextualizationStrategy,
-          embeddingStrategy:
-            embeddingStatus === "ready" ? "gemini_embeddings" : "missing_fallback",
-        },
-        status: "ready",
-      });
-
-      await upsertTransactionSearchRows(sql, {
-        batchId: batch.id,
+      await updateTransactionSearchDocuments(sql, {
         rows: group.rows.map((row, index) => ({
+          sourceBatchKey: group.sourceBatchKey,
           sourceRow: row,
           reviewState: contextualizedRows[index].reviewState,
           direction: contextualizedRows[index].direction,
@@ -1465,33 +1229,28 @@ export async function syncTransactionSearchIndex(
           embeddingModel,
           contextualizationModel:
             contextualizedRows[index].contextualizationModel,
-          contextualizationPayload:
-            contextualizedRows[index].contextualizationPayload,
+          contextualizationPayload: {
+            ...contextualizedRows[index].contextualizationPayload,
+            sourceBatchKey: group.sourceBatchKey,
+            accountId: group.accountId,
+            accountName: group.accountName,
+            institutionName: group.institutionName,
+            periodStart: group.periodStart,
+            periodEnd: group.periodEnd,
+            contextualizationStrategy,
+            embeddingStrategy:
+              embeddingStatus === "ready"
+                ? "gemini_embeddings"
+                : "missing_fallback",
+            extractedMetadata,
+          },
         })),
       });
       processedTransactions += group.rows.length;
     } catch (error) {
-      await upsertTransactionSearchBatch(sql, userId, {
-        sourceBatchKey: group.sourceBatchKey,
-        accountId: group.accountId,
-        accountName: group.accountName,
-        institutionName: group.institutionName,
-        periodStart: group.periodStart,
-        periodEnd: group.periodEnd,
-        batchSummary:
-          error instanceof Error ? error.message : "Indexing failed.",
-        extractedMetadata: {
-          sourceBatchKey: group.sourceBatchKey,
-          transactionCount: group.rows.length,
-          error: error instanceof Error ? error.message : "unknown_error",
-        },
-        status: "failed",
-      });
       throw error;
     }
   }
-
-  await cleanupEmptyTransactionSearchBatches(sql, userId);
 
   return {
     processedBatches: grouped.length,

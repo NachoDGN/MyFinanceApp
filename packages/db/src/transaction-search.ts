@@ -155,8 +155,7 @@ function tokenizeNormalizedMatcher(value: string) {
     .map((token) => token.trim())
     .filter(
       (token) =>
-        token.length >= 3 &&
-        !TRANSACTION_SEARCH_QUERY_STOPWORDS.has(token),
+        token.length >= 3 && !TRANSACTION_SEARCH_QUERY_STOPWORDS.has(token),
     );
 }
 
@@ -549,7 +548,9 @@ export function buildDeterministicTransactionSearchQuery(input: {
   const entityIds = input.dataset.entities
     .filter((entity) => {
       const candidates = [entity.displayName, entity.legalName, entity.slug];
-      return candidates.some((candidate) => queryMentionsScopeCandidate(candidate));
+      return candidates.some((candidate) =>
+        queryMentionsScopeCandidate(candidate),
+      );
     })
     .map((entity) => entity.id);
 
@@ -855,8 +856,7 @@ function extractTransactionSearchEvidenceTokens(query: string) {
       .map((token) => token.trim())
       .filter(
         (token) =>
-          token.length >= 3 &&
-          !TRANSACTION_SEARCH_QUERY_STOPWORDS.has(token),
+          token.length >= 3 && !TRANSACTION_SEARCH_QUERY_STOPWORDS.has(token),
       ),
   );
 }
@@ -961,7 +961,8 @@ export function filterSemanticCandidatesByEvidence(input: {
   distinctiveTokens?: string[];
 }) {
   const queryTokens =
-    input.distinctiveTokens ?? extractTransactionSearchEvidenceTokens(input.query);
+    input.distinctiveTokens ??
+    extractTransactionSearchEvidenceTokens(input.query);
   if (queryTokens.length === 0) {
     return input.semanticCandidates;
   }
@@ -1014,14 +1015,14 @@ async function collectTransactionSearchIndexWarnings(
     await Promise.all([
       sql`
         select count(*)::int as count
-        from public.transaction_search_batches
-        where user_id = ${userId}
-          and status = 'processing'
+        from public.jobs
+        where job_type = 'transaction_search_index'
+          and status in ('queued', 'running')
       `,
       sql`
         select count(*)::int as count
-        from public.transaction_search_batches
-        where user_id = ${userId}
+        from public.jobs
+        where job_type = 'transaction_search_index'
           and status = 'failed'
       `,
       sql`
@@ -1029,11 +1030,7 @@ async function collectTransactionSearchIndexWarnings(
           select 1
           from public.transactions as t
           where t.user_id = ${userId}
-            and not exists (
-              select 1
-              from public.transaction_search_rows as r
-              where r.transaction_id = t.id
-            )
+            and t.search_contextualized_text is null
         ) as has_missing_rows
       `,
     ]);
@@ -1050,7 +1047,7 @@ async function collectTransactionSearchIndexWarnings(
 
   if ((failedStatusRows[0]?.count ?? 0) > 0) {
     warnings.push(
-      "Some search batches failed to index and need to be retried before results are complete.",
+      "Some transaction search indexing jobs failed and need to be retried before results are complete.",
     );
   }
 
