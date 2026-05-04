@@ -9,8 +9,9 @@ import {
   type Transaction,
 } from "@myfinance/domain";
 
-import { mapFromSql } from "./sql-json";
+import { applyTransactionReviewCategoryCreation } from "./category-creation";
 import { mergeEnrichmentDecisionWithExistingTransaction } from "./review-propagation-support";
+import { mapFromSql } from "./sql-json";
 import type { SqlClient } from "./sql-runtime";
 import { transactionColumnsSql } from "./transaction-columns";
 import { updateTransactionRecord } from "./transaction-record";
@@ -47,6 +48,23 @@ export async function updateTransactionFromEnrichmentDecision(
         decision,
       )
     : decision;
+  const categoryCreationResult = await applyTransactionReviewCategoryCreation(
+    sql,
+    {
+      userId,
+      transactionId,
+      categoryCreation: mergedDecision.categoryCreation,
+    },
+  );
+  const llmPayload = categoryCreationResult
+    ? {
+        ...mergedDecision.llmPayload,
+        categoryCreation: {
+          request: mergedDecision.categoryCreation,
+          result: categoryCreationResult,
+        },
+      }
+    : mergedDecision.llmPayload;
   const updatePayload: Record<string, unknown> = {
     transaction_class: mergedDecision.transactionClass,
     category_code: mergedDecision.categoryCode ?? null,
@@ -70,7 +88,7 @@ export async function updateTransactionFromEnrichmentDecision(
     userId,
     transactionId,
     updatePayload,
-    llmPayload: mergedDecision.llmPayload,
+    llmPayload,
   });
 }
 
