@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { FlowCategoryDetailPage } from "../../../components/flow-category-detail-page";
 import {
@@ -6,7 +6,10 @@ import {
   formatTransactionClassLabel,
 } from "../../../lib/flow-page";
 import { buildHref } from "../../../lib/navigation";
-import { getIncomeCategoryModel } from "../../../lib/queries";
+import {
+  categoryAppliesToScope,
+  getIncomeCategoryModel,
+} from "../../../lib/queries";
 
 type IncomeCategoryModel = Awaited<ReturnType<typeof getIncomeCategoryModel>>;
 type IncomeCategoryTransaction = IncomeCategoryModel["transactions"][number];
@@ -51,6 +54,10 @@ export default async function IncomeCategoryPage({
 
   if (!model.category) {
     notFound();
+  }
+
+  if (!categoryAppliesToScope(model.dataset, model.scope, categoryCode)) {
+    redirect(buildHref("/income", model.navigationState, {}));
   }
 
   return (

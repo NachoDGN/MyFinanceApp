@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { FlowCategoryDetailPage } from "../../../components/flow-category-detail-page";
 import {
@@ -6,7 +6,10 @@ import {
   formatTransactionClassLabel,
 } from "../../../lib/flow-page";
 import { buildHref } from "../../../lib/navigation";
-import { getSpendingCategoryModel } from "../../../lib/queries";
+import {
+  categoryAppliesToScope,
+  getSpendingCategoryModel,
+} from "../../../lib/queries";
 
 type SpendingCategoryModel = Awaited<
   ReturnType<typeof getSpendingCategoryModel>
@@ -82,6 +85,10 @@ export default async function SpendingCategoryPage({
     notFound();
   }
 
+  if (!categoryAppliesToScope(model.dataset, model.scope, categoryCode)) {
+    redirect(buildHref("/spending", model.navigationState, {}));
+  }
+
   return (
     <FlowCategoryDetailPage
       model={{ ...model, category: model.category }}
@@ -104,8 +111,7 @@ export default async function SpendingCategoryPage({
         breakdownDescription:
           "Merchant and counterparty buckets inside this category for the selected period.",
         breakdownHeader: "Merchant",
-        emptyGroupLabel:
-          "No merchant buckets are available for this category.",
+        emptyGroupLabel: "No merchant buckets are available for this category.",
         emptyTransactionsLabel:
           "No transactions are attached to this merchant bucket.",
         topGroupStatLabel: "Top Merchant",

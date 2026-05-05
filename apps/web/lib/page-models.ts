@@ -16,6 +16,7 @@ import {
   listPromptProfiles,
 } from "@myfinance/db";
 import {
+  buildAllowedCategoriesForAccount,
   buildLiveHoldingRows,
   type DomainDataset,
   type Entity,
@@ -199,6 +200,41 @@ export async function resolveAppState(searchParams: RawSearchParams) {
 }
 
 export { formatCurrency, formatDate, formatPercent, formatQuantity };
+
+export function categoryAppliesToScope(
+  dataset: DomainDataset,
+  scope: Scope,
+  categoryCode: string,
+) {
+  const category = dataset.categories.find((row) => row.code === categoryCode);
+  if (!category || categoryCode.startsWith("__")) {
+    return true;
+  }
+
+  if (scope.kind === "consolidated") {
+    return true;
+  }
+
+  if (scope.kind === "account" && scope.accountId) {
+    const account = dataset.accounts.find((row) => row.id === scope.accountId);
+    if (!account) {
+      return false;
+    }
+
+    return buildAllowedCategoriesForAccount(dataset, account).some(
+      (row) => row.code === categoryCode,
+    );
+  }
+
+  if (scope.kind === "entity" && scope.entityId) {
+    const entity = dataset.entities.find((row) => row.id === scope.entityId);
+    const entityScopeKind =
+      entity?.entityKind === "company" ? "company" : "personal";
+    return ["system", "both", entityScopeKind].includes(category.scopeKind);
+  }
+
+  return true;
+}
 
 function decimalFrom(value: string | null | undefined) {
   if (value === null || value === undefined) {
