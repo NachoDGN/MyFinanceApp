@@ -131,7 +131,7 @@ test("spending category read model returns matching transactions and selected-pe
   ]);
 });
 
-test("spending totals include pending negative cash-flow rows but skip card settlements", () => {
+test("global spending totals include unresolved card settlements without category attribution", () => {
   const dataset = createDataset({
     transactions: [
       createTransaction({
@@ -171,7 +171,7 @@ test("spending totals include pending negative cash-flow rows but skip card sett
           "Liquidacion De Las Tarjetas De Credito Del Contrato 0049",
         descriptionClean:
           "LIQUIDACION DE LAS TARJETAS DE CREDITO DEL CONTRATO 0049",
-        creditCardStatementStatus: "uploaded",
+        creditCardStatementStatus: "upload_required",
         classificationStatus: "unknown",
         classificationSource: "system_fallback",
         classificationConfidence: "0.00",
@@ -191,7 +191,8 @@ test("spending totals include pending negative cash-flow rows but skip card sett
     referenceDate: "2026-05-04",
   });
 
-  assert.equal(model.spendMetric?.valueBaseEur, "284.00");
+  assert.equal(model.spendMetric?.valueBaseEur, "10186.66");
+  assert.equal(model.excludedCreditCardSettlementAmountEur, "9902.66");
   assert.deepEqual(model.summary.spendingByCategory, [
     {
       categoryCode: "__unresolved_spending",

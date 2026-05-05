@@ -254,9 +254,9 @@ export default async function SpendingPage({
           title="Spending Overview"
           subtitle={
             <>
-              Primary spend KPIs exclude internal transfers and defer
-              credit-card settlement liquidations until the matching card
-              statement ledger is imported, so the dashboard reflects real
+              Primary spend KPIs include pending credit-card settlement
+              liquidations, while category and merchant breakdowns wait for the
+              matching card statement ledger so granular views reflect real
               merchant outflows instead of duplicate settlement payments.{" "}
               {scopeDescription}
             </>
@@ -264,16 +264,15 @@ export default async function SpendingPage({
           notice={
             model.excludedCreditCardSettlementCount > 0 ? (
               <div className="status-note">
-                Excluded {model.excludedCreditCardSettlementCount} credit-card
+                Holding {model.excludedCreditCardSettlementCount} credit-card
                 settlement payment
                 {model.excludedCreditCardSettlementCount === 1 ? "" : "s"}{" "}
                 totaling{" "}
                 {formatSpendingAmount(
                   model.excludedCreditCardSettlementAmountEur,
-                )}
-                . Their underlying card purchases stay out of the KPI layer
-                until the matching statement is uploaded against the settlement
-                row.
+                )}{" "}
+                out of category and merchant breakdowns until the matching
+                statement is uploaded against the settlement row.
               </div>
             ) : null
           }

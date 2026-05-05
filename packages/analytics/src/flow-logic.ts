@@ -4,6 +4,7 @@ import type { DomainDataset, Transaction } from "@myfinance/domain";
 import {
   isCreditCardSettlementTransaction,
   isTransactionResolvedForAnalytics,
+  needsCreditCardStatementUpload,
   resolveFxRate,
   todayIso,
 } from "@myfinance/domain";
@@ -70,6 +71,12 @@ export function isExcludedFromFlowAnalytics(transaction: Transaction) {
   );
 }
 
+function isExcludedFromGlobalFlowAnalytics(transaction: Transaction) {
+  return (
+    transaction.excludeFromAnalytics === true || Boolean(transaction.voidedAt)
+  );
+}
+
 export function isUnresolvedCashFlow(transaction: Transaction) {
   return (
     transaction.transactionClass === "unknown" &&
@@ -133,6 +140,20 @@ export function spendingContributionEur(transaction: Transaction) {
   return amountMagnitudeEur(transaction);
 }
 
+export function globalSpendingContributionEur(transaction: Transaction) {
+  if (isExcludedFromGlobalFlowAnalytics(transaction)) {
+    return null;
+  }
+
+  if (isCreditCardSettlementTransaction(transaction)) {
+    return needsCreditCardStatementUpload(transaction)
+      ? amountMagnitudeEur(transaction)
+      : null;
+  }
+
+  return spendingContributionEur(transaction);
+}
+
 export function hasIncomeContribution(transaction: Transaction) {
   return incomeContributionEur(transaction) !== null;
 }
@@ -143,6 +164,7 @@ export function hasSpendingContribution(transaction: Transaction) {
 
 export function hasFlowContribution(transaction: Transaction) {
   return (
-    hasIncomeContribution(transaction) || hasSpendingContribution(transaction)
+    hasIncomeContribution(transaction) ||
+    globalSpendingContributionEur(transaction) !== null
   );
 }

@@ -35,6 +35,7 @@ import {
 import { metricRegistry } from "./registry";
 import {
   amountMagnitudeEur,
+  globalSpendingContributionEur,
   hasFlowContribution,
   hasIncomeContribution,
   hasSpendingContribution,
@@ -397,7 +398,7 @@ function buildMonthlyFlowSeries(
     () => ({ incomeEur: new Decimal(0), spendingEur: new Decimal(0) }),
     (row, transaction) => {
       const income = incomeContributionEur(transaction);
-      const spending = spendingContributionEur(transaction);
+      const spending = globalSpendingContributionEur(transaction);
       if (income) row.incomeEur = row.incomeEur.plus(income);
       if (spending) row.spendingEur = row.spendingEur.plus(spending);
     },
@@ -732,7 +733,7 @@ function flowMetric(
 
   return transactions
     .reduce((sum, row) => {
-      const contribution = spendingContributionEur(row);
+      const contribution = globalSpendingContributionEur(row);
       return contribution ? sum.plus(contribution) : sum;
     }, new Decimal(0))
     .toFixed(2);
