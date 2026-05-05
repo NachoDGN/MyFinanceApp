@@ -17,14 +17,14 @@ import {
 import {
   formatDeltaBadge,
   formatMonthLabel,
-  formatMonthRange,
   formatPercentLabel,
   getPeriodLabel,
 } from "../../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../../lib/formatters";
 import {
-  flowSeriesColor,
+  createFlowSeriesColorResolver,
   formatFallbackFxRange,
+  formatFlowChartRange,
   formatFlowCategoryLabel,
   formatFlowDisplayAmount,
   formatTransactionClassLabel,
@@ -96,14 +96,14 @@ export default async function IncomeCategoryPage({
     },
     new Map<string, IncomeCategoryTransaction[]>(),
   );
-  const sourceRows = model.sourceRows.map((row, index) => ({
+  const resolveSourceColor = createFlowSeriesColorResolver(
+    model.sourceRows.map((row) => row.label),
+  );
+  const sourceRows = model.sourceRows.map((row) => ({
     ...row,
-    color: flowSeriesColor(index),
+    color: resolveSourceColor(row.label),
     transactions: transactionsBySource.get(row.label) ?? [],
   }));
-  const sourceColorByLabel = new Map(
-    sourceRows.map((row) => [row.label, row.color]),
-  );
   const sourceOrderByLabel = new Map(
     sourceRows.map((row, index) => [row.label, index]),
   );
@@ -142,7 +142,7 @@ export default async function IncomeCategoryPage({
         const rightOrder = sourceOrderByLabel.get(right[0]) ?? 9999;
         return leftOrder - rightOrder || right[1] - left[1];
       })
-      .map(([label, amountEur], index) => {
+      .map(([label, amountEur]) => {
         const displayAmount = convertBaseEurToDisplayAmountWithFallback(
           model.dataset,
           amountEur.toFixed(2),
@@ -156,9 +156,7 @@ export default async function IncomeCategoryPage({
 
         return {
           label,
-          color:
-            sourceColorByLabel.get(label) ??
-            flowSeriesColor(sourceColorByLabel.size + index),
+          color: resolveSourceColor(label),
           displayAmount: Math.max(Number(displayAmount.amount ?? 0), 0),
           valueLabel: formatCurrency(displayAmount.amount, model.currency),
         };
@@ -175,10 +173,9 @@ export default async function IncomeCategoryPage({
       usedFallbackFx,
     };
   });
-  const fallbackFxMonths = chartRows
-    .filter((row) => row.usedFallbackFx)
-    .map((row) => row.month);
-  const fallbackFxRangeLabel = formatFallbackFxRange(fallbackFxMonths);
+  const fallbackFxRangeLabel = formatFallbackFxRange(
+    chartRows.filter((row) => row.usedFallbackFx).map((row) => row.month),
+  );
   const chartMax = Math.max(...chartRows.map((row) => row.incomeDisplay), 1);
   const trendRows = chartRows.map((row) => ({
     month: row.month,
@@ -216,13 +213,10 @@ export default async function IncomeCategoryPage({
   const chartAxisValues = [1, 0.75, 0.5, 0.25, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
-  const chartRangeLabel =
-    chartRows.length > 0
-      ? formatMonthRange(
-          chartRows[0].month,
-          chartRows[chartRows.length - 1].month,
-        )
-      : "No category income data";
+  const chartRangeLabel = formatFlowChartRange(
+    chartRows,
+    "No category income data",
+  );
   const backHref = buildHref("/income", model.navigationState, {});
   const categoryAmount = formatBaseEurAmountForDisplay(
     model.dataset,

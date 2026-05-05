@@ -1,5 +1,6 @@
 export * from "./account-domain";
 export * from "./classification-constraints";
+export * from "./crypto-registry";
 export * from "./finance";
 export * from "./fund-order-history";
 export * from "./holdings";

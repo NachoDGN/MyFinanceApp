@@ -1,7 +1,7 @@
 import type { DomainDataset } from "@myfinance/domain";
 
 import { convertBaseEurToDisplayAmount } from "./currency";
-import { formatMonthLabel } from "./dashboard";
+import { formatMonthLabel, formatMonthRange } from "./dashboard";
 import { formatCurrency } from "./formatters";
 
 export const FLOW_CATEGORY_PAGE_SIZE = 8;
@@ -23,6 +23,23 @@ export const FLOW_SERIES_COLORS = [
 
 export function flowSeriesColor(index: number) {
   return FLOW_SERIES_COLORS[index % FLOW_SERIES_COLORS.length]!;
+}
+
+export function createFlowSeriesColorResolver(initialCodes: readonly string[]) {
+  const colorByCode = new Map<string, string>();
+  const resolveColor = (categoryCode: string) => {
+    const existing = colorByCode.get(categoryCode);
+    if (existing) {
+      return existing;
+    }
+
+    const color = flowSeriesColor(colorByCode.size);
+    colorByCode.set(categoryCode, color);
+    return color;
+  };
+
+  initialCodes.forEach(resolveColor);
+  return resolveColor;
 }
 
 export function startOfMonthIso(value: string) {
@@ -110,4 +127,13 @@ export function formatFallbackFxRange(months: readonly string[]) {
   return `${formatMonthLabel(months[0]!)}-${formatMonthLabel(
     months[months.length - 1]!,
   )}`;
+}
+
+export function formatFlowChartRange(
+  rows: readonly { month: string }[],
+  emptyLabel: string,
+) {
+  return rows.length > 0
+    ? formatMonthRange(rows[0]!.month, rows[rows.length - 1]!.month)
+    : emptyLabel;
 }

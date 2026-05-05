@@ -17,14 +17,14 @@ import {
 import {
   formatDeltaBadge,
   formatMonthLabel,
-  formatMonthRange,
   formatPercentLabel,
   getPeriodLabel,
 } from "../../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../../lib/formatters";
 import {
-  flowSeriesColor,
+  createFlowSeriesColorResolver,
   formatFallbackFxRange,
+  formatFlowChartRange,
   formatFlowCategoryLabel,
   formatFlowDisplayAmount,
   formatTransactionClassLabel,
@@ -121,14 +121,14 @@ export default async function SpendingCategoryPage({
     },
     new Map<string, SpendingCategoryTransaction[]>(),
   );
-  const merchantRows = model.merchantRows.map((row, index) => ({
+  const resolveMerchantColor = createFlowSeriesColorResolver(
+    model.merchantRows.map((row) => row.label),
+  );
+  const merchantRows = model.merchantRows.map((row) => ({
     ...row,
-    color: flowSeriesColor(index),
+    color: resolveMerchantColor(row.label),
     transactions: transactionsByMerchant.get(row.label) ?? [],
   }));
-  const merchantColorByLabel = new Map(
-    merchantRows.map((row) => [row.label, row.color]),
-  );
   const merchantOrderByLabel = new Map(
     merchantRows.map((row, index) => [row.label, index]),
   );
@@ -165,7 +165,7 @@ export default async function SpendingCategoryPage({
         const rightOrder = merchantOrderByLabel.get(right[0]) ?? 9999;
         return leftOrder - rightOrder || right[1] - left[1];
       })
-      .map(([label, amountEur], index) => {
+      .map(([label, amountEur]) => {
         const displayAmount = convertBaseEurToDisplayAmountWithFallback(
           model.dataset,
           amountEur.toFixed(2),
@@ -179,9 +179,7 @@ export default async function SpendingCategoryPage({
 
         return {
           label,
-          color:
-            merchantColorByLabel.get(label) ??
-            flowSeriesColor(merchantColorByLabel.size + index),
+          color: resolveMerchantColor(label),
           displayAmount: Math.max(Number(displayAmount.amount ?? 0), 0),
           valueLabel: formatCurrency(displayAmount.amount, model.currency),
         };
@@ -198,10 +196,9 @@ export default async function SpendingCategoryPage({
       usedFallbackFx,
     };
   });
-  const fallbackFxMonths = chartRows
-    .filter((row) => row.usedFallbackFx)
-    .map((row) => row.month);
-  const fallbackFxRangeLabel = formatFallbackFxRange(fallbackFxMonths);
+  const fallbackFxRangeLabel = formatFallbackFxRange(
+    chartRows.filter((row) => row.usedFallbackFx).map((row) => row.month),
+  );
   const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
   const trendRows = chartRows.map((row) => ({
     month: row.month,
@@ -239,13 +236,10 @@ export default async function SpendingCategoryPage({
   const chartAxisValues = [1, 0.75, 0.5, 0.25, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
-  const chartRangeLabel =
-    chartRows.length > 0
-      ? formatMonthRange(
-          chartRows[0].month,
-          chartRows[chartRows.length - 1].month,
-        )
-      : "No category spending data";
+  const chartRangeLabel = formatFlowChartRange(
+    chartRows,
+    "No category spending data",
+  );
   const backHref = buildHref("/spending", model.navigationState, {});
   const categoryAmount = formatBaseEurAmountForDisplay(
     model.dataset,

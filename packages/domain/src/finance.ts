@@ -8,13 +8,18 @@ import type {
   HoldingRow,
   PeriodSelection,
   PriceFreshness,
-  Security,
   SecurityPrice,
   Scope,
   Transaction,
 } from "./types";
 import { isTransactionResolvedForAnalytics } from "./transaction-review";
 import { normalizeMatcherText } from "./text";
+import {
+  createCryptoSecurityFromSpec,
+  findCryptoSecurity,
+  getCryptoSecuritySpec,
+  isCryptoCurrency,
+} from "./crypto-registry";
 
 type PeriodPreset = PeriodSelection["preset"];
 const MAX_CURRENT_QUOTE_AGE_DAYS = 30;
@@ -27,33 +32,6 @@ const liveInvestmentPositionsCache = new WeakMap<
   DomainDataset,
   Map<string, DomainDataset["investmentPositions"]>
 >();
-const CRYPTO_CURRENCY_CODES = new Set(["BTC", "ETH"]);
-export const CRYPTO_SECURITY_SPECS = [
-  {
-    id: "00000000-0000-0000-0000-00000000c001",
-    currency: "BTC",
-    providerName: "twelve_data",
-    providerSymbol: "BTC/EUR",
-    canonicalSymbol: "BTC",
-    displaySymbol: "BTC",
-    name: "Bitcoin",
-    exchangeName: "Coinbase Pro",
-    micCode: null,
-    quoteCurrency: "EUR",
-  },
-  {
-    id: "00000000-0000-0000-0000-00000000c002",
-    currency: "ETH",
-    providerName: "twelve_data",
-    providerSymbol: "ETH/EUR",
-    canonicalSymbol: "ETH",
-    displaySymbol: "ETH",
-    name: "Ethereum",
-    exchangeName: "Coinbase Pro",
-    micCode: null,
-    quoteCurrency: "EUR",
-  },
-] as const;
 
 function hasNonEmptyRawJson(value: unknown): value is Record<string, unknown> {
   return (
@@ -603,70 +581,6 @@ export function tryResolveFxRate(
 ) {
   if (from === to) return new Decimal(1);
   return findLatestFxRateRecord(dataset, from, to, asOfDate)?.rate ?? null;
-}
-
-export function isCryptoCurrency(currency: string | null | undefined) {
-  return typeof currency === "string" && CRYPTO_CURRENCY_CODES.has(currency);
-}
-
-export function getCryptoSecuritySpec(currency: string | null | undefined) {
-  const normalized = currency?.trim().toUpperCase();
-  return (
-    CRYPTO_SECURITY_SPECS.find((spec) => spec.currency === normalized) ?? null
-  );
-}
-
-export function createCryptoSecurityFromSpec(
-  spec: (typeof CRYPTO_SECURITY_SPECS)[number],
-  createdAt = "2026-01-01T00:00:00Z",
-): Security {
-  return {
-    id: spec.id,
-    providerName: spec.providerName,
-    providerSymbol: spec.providerSymbol,
-    canonicalSymbol: spec.canonicalSymbol,
-    displaySymbol: spec.displaySymbol,
-    name: spec.name,
-    exchangeName: spec.exchangeName,
-    micCode: spec.micCode,
-    assetType: "crypto",
-    quoteCurrency: spec.quoteCurrency,
-    country: null,
-    isin: null,
-    figi: null,
-    active: true,
-    metadataJson: {
-      instrumentType: "crypto",
-      baseCurrency: spec.currency,
-      quoteCurrency: spec.quoteCurrency,
-    },
-    lastPriceRefreshAt: null,
-    createdAt,
-  };
-}
-
-export function findCryptoSecurity(
-  dataset: Pick<DomainDataset, "securities">,
-  currency: string | null | undefined,
-) {
-  const spec = getCryptoSecuritySpec(currency);
-  if (!spec) {
-    return null;
-  }
-
-  return (
-    dataset.securities.find(
-      (security) =>
-        security.providerName === spec.providerName &&
-        security.providerSymbol.toUpperCase() === spec.providerSymbol,
-    ) ??
-    dataset.securities.find(
-      (security) =>
-        security.assetType === "crypto" &&
-        security.displaySymbol.toUpperCase() === spec.displaySymbol,
-    ) ??
-    null
-  );
 }
 
 export function getLatestBalanceSnapshots(

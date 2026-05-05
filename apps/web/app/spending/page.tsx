@@ -17,13 +17,14 @@ import {
 import {
   formatDeltaBadge,
   formatMonthLabel,
-  formatMonthRange,
   formatPercentLabel,
   getPeriodLabel,
 } from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
 import {
-  flowSeriesColor,
+  createFlowSeriesColorResolver,
+  formatFallbackFxRange,
+  formatFlowChartRange,
   formatFlowDisplayAmount,
   paginateFlowRows,
 } from "../../lib/flow-page";
@@ -90,18 +91,9 @@ export default async function SpendingPage({
   const params = await searchParams;
   const model = await getSpendingModel(params);
   const categoryRows = model.summary.spendingByCategory;
-  const categoryColorByCode = new Map<string, string>();
-  const ensureCategoryColor = (categoryCode: string) => {
-    const existing = categoryColorByCode.get(categoryCode);
-    if (existing) {
-      return existing;
-    }
-
-    const color = flowSeriesColor(categoryColorByCode.size);
-    categoryColorByCode.set(categoryCode, color);
-    return color;
-  };
-  categoryRows.forEach((row) => ensureCategoryColor(row.categoryCode));
+  const ensureCategoryColor = createFlowSeriesColorResolver(
+    categoryRows.map((row) => row.categoryCode),
+  );
   model.spendingCategoryMonthlySeries.forEach((row) => {
     row.categories.forEach((category) =>
       ensureCategoryColor(category.categoryCode),
@@ -144,15 +136,9 @@ export default async function SpendingPage({
       usedFallbackFx,
     };
   });
-  const fallbackFxMonths = chartRows
-    .filter((row) => row.usedFallbackFx)
-    .map((row) => formatMonthLabel(row.month));
-  const fallbackFxRangeLabel =
-    fallbackFxMonths.length > 0
-      ? fallbackFxMonths.length === 1
-        ? fallbackFxMonths[0]
-        : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
-      : null;
+  const fallbackFxRangeLabel = formatFallbackFxRange(
+    chartRows.filter((row) => row.usedFallbackFx).map((row) => row.month),
+  );
   const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
   const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
   const chartLegendTotals = [
@@ -201,13 +187,7 @@ export default async function SpendingPage({
   const chartAxisValues = [1, 0.75, 0.5, 0.25, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
-  const chartRangeLabel =
-    chartRows.length > 0
-      ? formatMonthRange(
-          chartRows[0].month,
-          chartRows[chartRows.length - 1].month,
-        )
-      : "No spending data";
+  const chartRangeLabel = formatFlowChartRange(chartRows, "No spending data");
   const coveragePercent = Number(model.coverage);
   const uncategorizedShare = Math.max(100 - coveragePercent, 0);
   const completenessLabel =

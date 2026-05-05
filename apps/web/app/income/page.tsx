@@ -14,14 +14,13 @@ import {
   endOfMonthIso,
   formatBaseEurAmountForDisplay,
 } from "../../lib/currency";
-import {
-  formatMonthLabel,
-  formatMonthRange,
-  formatPercentLabel,
-  getPeriodLabel,
-} from "../../lib/dashboard";
+import { formatPercentLabel, getPeriodLabel } from "../../lib/dashboard";
 import { formatCurrency } from "../../lib/formatters";
-import { paginateFlowRows } from "../../lib/flow-page";
+import {
+  formatFallbackFxRange,
+  formatFlowChartRange,
+  paginateFlowRows,
+} from "../../lib/flow-page";
 import { buildHref } from "../../lib/navigation";
 import { getIncomeModel } from "../../lib/queries";
 
@@ -77,15 +76,9 @@ export default async function IncomePage({
         Number(investmentIncomeDisplay.amount ?? 0),
     };
   });
-  const fallbackFxMonths = chartRows
-    .filter((row) => row.usedFallbackFx)
-    .map((row) => formatMonthLabel(row.month));
-  const fallbackFxRangeLabel =
-    fallbackFxMonths.length > 0
-      ? fallbackFxMonths.length === 1
-        ? fallbackFxMonths[0]
-        : `${fallbackFxMonths[0]}-${fallbackFxMonths[fallbackFxMonths.length - 1]}`
-      : null;
+  const fallbackFxRangeLabel = formatFallbackFxRange(
+    chartRows.filter((row) => row.usedFallbackFx).map((row) => row.month),
+  );
   const chartMax = Math.max(
     ...chartRows.map((row) => row.totalIncomeDisplay),
     1,
@@ -106,13 +99,7 @@ export default async function IncomePage({
   const chartAxisValues = [1, 0.66, 0.33, 0].map((step) =>
     formatCurrency((chartMax * step).toFixed(2), model.currency),
   );
-  const chartRangeLabel =
-    chartRows.length > 0
-      ? formatMonthRange(
-          chartRows[0].month,
-          chartRows[chartRows.length - 1].month,
-        )
-      : "No income data";
+  const chartRangeLabel = formatFlowChartRange(chartRows, "No income data");
   const currentPeriodIncome = Number(model.incomeMetric?.valueBaseEur ?? 0);
   const completenessPercent = Number(model.incomeCompletenessPercent);
   const completenessLabel =
