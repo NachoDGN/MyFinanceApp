@@ -54,6 +54,7 @@ function normalizeInstrumentText(value: string | null | undefined) {
 function describeProcessedRowsPeriodLabel(period: InvestmentsModel["period"]) {
   if (period.preset === "all") return "all-time";
   if (period.preset === "ytd") return "YTD";
+  if (period.preset === "last_month") return "last month";
   if (period.preset === "mtd") return "MTD";
   return "selected-period";
 }
@@ -61,6 +62,7 @@ function describeProcessedRowsPeriodLabel(period: InvestmentsModel["period"]) {
 function describeInvestmentsPeriodLabel(period: InvestmentsModel["period"]) {
   if (period.preset === "all") return "All Time";
   if (period.preset === "ytd") return "YTD";
+  if (period.preset === "last_month") return "Last Month";
   if (period.preset === "mtd") return "MTD";
   return "Selected Period";
 }
@@ -70,6 +72,7 @@ function describeInvestmentsComparisonLabel(
 ) {
   if (period.preset === "all") return "inception";
   if (period.preset === "ytd") return "year-start";
+  if (period.preset === "last_month") return "previous month";
   if (period.preset === "mtd") return "month-start";
   return formatDate(period.start);
 }

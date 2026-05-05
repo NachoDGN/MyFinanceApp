@@ -1,6 +1,6 @@
 import type { DashboardModel } from "../lib/queries";
 import { formatCurrency, formatDate } from "../lib/formatters";
-import { buildHref } from "../lib/queries";
+import { buildHref, type NavigationState } from "../lib/navigation";
 import {
   convertBaseEurToDisplayAmount,
   formatBaseEurAmountForDisplay,
@@ -11,6 +11,7 @@ import { MetricCard, QualityBanner, TimelinePanel } from "./primitives";
 function describePeriodLabel(period: string) {
   if (period === "all") return "All Time";
   if (period === "ytd") return "YTD";
+  if (period === "last_month") return "Last Month";
   if (period === "custom") return "Custom Range";
   return "MTD";
 }
@@ -18,6 +19,7 @@ function describePeriodLabel(period: string) {
 function describeComparisonLabel(period: string) {
   if (period === "all") return "inception";
   if (period === "ytd") return "year-start";
+  if (period === "last_month") return "previous month";
   if (period === "custom") return "prior window";
   return "month-start";
 }
@@ -61,14 +63,7 @@ function AccountBalancesPanel({
   model,
 }: {
   pathname: string;
-  state: {
-    scopeParam: string;
-    currency: string;
-    period: string;
-    referenceDate?: string;
-    start?: string;
-    end?: string;
-  };
+  state: NavigationState;
   model: DashboardModel;
 }) {
   const hasFutureActivity = model.accountBalances.hasFutureActivity;
@@ -204,15 +199,7 @@ export function DashboardView({
 }: {
   pathname: string;
   scopeOptions: Array<{ value: string; label: string }>;
-  state: {
-    scopeParam: string;
-    currency: string;
-    period: string;
-    referenceDate?: string;
-    latestReferenceDate?: string;
-    start?: string;
-    end?: string;
-  };
+  state: NavigationState;
   model: DashboardModel;
 }) {
   const selectedScopeLabel =

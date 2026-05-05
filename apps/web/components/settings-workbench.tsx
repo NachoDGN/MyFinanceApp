@@ -60,14 +60,18 @@ export function SettingsWorkbench({
         const defaultPeriodPreset =
           requestedDefaultPeriod === "all"
             ? "all"
-            : requestedDefaultPeriod === "ytd"
-              ? "ytd"
-              : "mtd";
+            : requestedDefaultPeriod === "last_month"
+              ? "last_month"
+              : requestedDefaultPeriod === "ytd"
+                ? "ytd"
+                : "mtd";
         await updateWorkspaceProfileAction({
           displayName: String(formData.get("displayName") ?? ""),
           defaultBaseCurrency,
           timezone: String(formData.get("timezone") ?? ""),
-          preferredScope: String(formData.get("preferredScope") ?? "consolidated"),
+          preferredScope: String(
+            formData.get("preferredScope") ?? "consolidated",
+          ),
           defaultDisplayCurrency,
           defaultPeriodPreset,
           defaultCashStaleAfterDays: Number(
@@ -146,7 +150,9 @@ export function SettingsWorkbench({
       return;
     }
 
-    if (!window.confirm(`Remove ${entity.displayName}? This cannot be undone.`)) {
+    if (
+      !window.confirm(`Remove ${entity.displayName}? This cannot be undone.`)
+    ) {
       return;
     }
 
@@ -247,6 +253,7 @@ export function SettingsWorkbench({
               defaultValue={workspaceSettings.defaultPeriodPreset}
             >
               <option value="mtd">Month to Date</option>
+              <option value="last_month">Last Month</option>
               <option value="ytd">Year to Date</option>
               <option value="all">All Time</option>
             </select>
@@ -332,7 +339,11 @@ export function SettingsWorkbench({
           </label>
           <label className="input-label">
             Entity Kind
-            <select className="input-select" name="entityKind" defaultValue="company">
+            <select
+              className="input-select"
+              name="entityKind"
+              defaultValue="company"
+            >
               <option value="company">Company</option>
               <option value="personal" disabled={hasPersonalEntity}>
                 Personal
@@ -373,7 +384,10 @@ export function SettingsWorkbench({
               className="draft-card"
               onSubmit={(event) => {
                 event.preventDefault();
-                handleUpdateEntity(entity.id, new FormData(event.currentTarget));
+                handleUpdateEntity(
+                  entity.id,
+                  new FormData(event.currentTarget),
+                );
               }}
             >
               <div className="draft-meta">
@@ -384,7 +398,11 @@ export function SettingsWorkbench({
                   <span className="pill">{entity.transactionCount} rows</span>
                 </div>
                 <div className="inline-actions">
-                  <button className="btn-pill" type="submit" disabled={isPending}>
+                  <button
+                    className="btn-pill"
+                    type="submit"
+                    disabled={isPending}
+                  >
                     {isPending ? "Saving..." : "Save"}
                   </button>
                   <button

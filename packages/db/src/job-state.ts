@@ -196,3 +196,27 @@ export async function recoverStaleRunningJobs(sql: SqlClient) {
     returning *
   `;
 }
+
+export async function recoverRetryableFailedJobs(sql: SqlClient) {
+  const rows = await sql`
+    update public.jobs
+    set status = 'queued',
+        available_at = ${new Date().toISOString()},
+        started_at = null,
+        finished_at = null,
+        last_error = null,
+        locked_by = null
+    where status = 'failed'
+      and job_type = 'classification'
+      and attempts < 3
+      and (
+        last_error like 'column t.search_contextualized_text does not exist%'
+        or last_error like 'column t.search_embedding does not exist%'
+      )
+    returning id
+  `;
+
+  return rows
+    .map((row) => row.id)
+    .filter((id): id is string => typeof id === "string");
+}

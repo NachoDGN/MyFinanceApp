@@ -13,7 +13,8 @@ import { ReviewEditorCell } from "../../components/review-editor-cell";
 import { UnresolvedTransactionsReviewPanel } from "../../components/unresolved-transactions-review-panel";
 import { convertBaseEurToDisplayAmount } from "../../lib/currency";
 import { formatCurrency, formatDate } from "../../lib/formatters";
-import { buildHref, getTransactionsModel } from "../../lib/queries";
+import { buildHref } from "../../lib/navigation";
+import { getTransactionsModel } from "../../lib/queries";
 
 function getSearchSummary(input: {
   query: string;

@@ -156,6 +156,29 @@ export function startOfTrailingMonthsIso(value: string, monthCount: number) {
   return toIsoDate(date);
 }
 
+function previousMonthBounds(referenceDate: string) {
+  const currentMonthStart = toDate(startOfMonthIso(referenceDate));
+  const previousMonthStart = new Date(
+    Date.UTC(
+      currentMonthStart.getUTCFullYear(),
+      currentMonthStart.getUTCMonth() - 1,
+      1,
+    ),
+  );
+  const previousMonthEnd = new Date(
+    Date.UTC(
+      currentMonthStart.getUTCFullYear(),
+      currentMonthStart.getUTCMonth(),
+      0,
+    ),
+  );
+
+  return {
+    start: toIsoDate(previousMonthStart),
+    end: toIsoDate(previousMonthEnd),
+  };
+}
+
 function isIsoDate(value: string | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
 }
@@ -216,6 +239,13 @@ export function resolvePeriodSelection(input: {
     };
   }
 
+  if (preset === "last_month") {
+    return {
+      ...previousMonthBounds(referenceDate),
+      preset: "last_month",
+    };
+  }
+
   if (preset === "ytd") {
     return {
       start: startOfYearIso(referenceDate),
@@ -239,6 +269,13 @@ export function getPreviousComparablePeriod(
       start: period.start,
       end: shiftIsoDate(period.start, -1),
       preset: "custom",
+    };
+  }
+
+  if (period.preset === "last_month") {
+    return {
+      ...previousMonthBounds(period.start),
+      preset: "last_month",
     };
   }
 

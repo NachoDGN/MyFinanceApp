@@ -11,6 +11,7 @@ import {
   type Security,
   type SecurityPrice,
 } from "@myfinance/domain";
+import { Decimal } from "decimal.js";
 import {
   isWeekendIso,
   readPayloadBoolean,
@@ -406,6 +407,78 @@ async function updateSecurityPriceRefreshMetadata(
   `;
 }
 
+function sameDecimalString(left: string, right: string) {
+  try {
+    return new Decimal(left).eq(new Decimal(right));
+  } catch {
+    return left === right;
+  }
+}
+
+function compareIsoTimestamp(left: string, right: string) {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (Number.isFinite(leftMs) && Number.isFinite(rightMs)) {
+    return Math.sign(leftMs - rightMs);
+  }
+  return left.localeCompare(right);
+}
+
+export function hasSecurityPriceAdvanced(
+  existingPrice: SecurityPrice | null | undefined,
+  nextPrice: SecurityPrice,
+) {
+  if (!existingPrice) {
+    return true;
+  }
+
+  if (nextPrice.priceDate > existingPrice.priceDate) {
+    return true;
+  }
+
+  if (nextPrice.priceDate < existingPrice.priceDate) {
+    return false;
+  }
+
+  const quoteTimestampComparison = compareIsoTimestamp(
+    nextPrice.quoteTimestamp,
+    existingPrice.quoteTimestamp,
+  );
+
+  if (quoteTimestampComparison > 0) {
+    return true;
+  }
+
+  if (quoteTimestampComparison < 0) {
+    return false;
+  }
+
+  return (
+    nextPrice.currency !== existingPrice.currency ||
+    nextPrice.sourceName !== existingPrice.sourceName ||
+    !sameDecimalString(nextPrice.price, existingPrice.price)
+  );
+}
+
+function getLatestSecurityPriceBySecurityId(dataset: DomainDataset) {
+  const latest = new Map<string, SecurityPrice>();
+  for (const price of [...dataset.securityPrices].sort(
+    (left, right) =>
+      right.priceDate.localeCompare(left.priceDate) ||
+      right.quoteTimestamp.localeCompare(left.quoteTimestamp) ||
+      right.createdAt.localeCompare(left.createdAt),
+  )) {
+    if (!latest.has(price.securityId)) {
+      latest.set(price.securityId, price);
+    }
+  }
+  return latest;
+}
+
+function buildUnchangedPriceReason(quote: SecurityPrice) {
+  return `Latest stored price already matches ${quote.sourceName} ${quote.priceDate}.`;
+}
+
 async function ensureCryptoSecurityRows(sql: SqlClient) {
   const nowIso = new Date().toISOString();
   for (const spec of CRYPTO_SECURITY_SPECS) {
@@ -445,7 +518,7 @@ async function ensureCryptoSecurityRows(sql: SqlClient) {
   }
 }
 
-export interface RefreshOwnedStockPricesResult {
+export interface RefreshOwnedPricesResult {
   totalTrackedStocks: number;
   totalTrackedFunds: number;
   totalTrackedFxPairs: number;
@@ -453,14 +526,18 @@ export interface RefreshOwnedStockPricesResult {
   skippedCount: number;
   refreshedSymbols: string[];
   skippedSymbols: string[];
+  unchangedSymbols: string[];
   skippedDetails: Array<{ symbol: string; reason: string }>;
+  unchangedDetails: Array<{ symbol: string; reason: string }>;
   refreshedFxPairs: string[];
   skippedFxPairs: Array<{ symbol: string; reason: string }>;
   latestPriceDate: string | null;
   generatedAt: string;
 }
 
-export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPricesResult> {
+export type RefreshOwnedStockPricesResult = RefreshOwnedPricesResult;
+
+export async function refreshOwnedPrices(): Promise<RefreshOwnedPricesResult> {
   const runtime = getDbRuntimeConfig();
   const apiKey = process.env.TWELVE_DATA_API_KEY?.trim();
   if (!apiKey) {
@@ -476,10 +553,14 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
       const stockSecurities = selectOwnedStockPriceRefreshSecurities(dataset);
       const fundSecurities = selectOwnedFundNavRefreshSecurities(dataset);
       const trackedFxPairs = selectTrackedEurFxPairs(dataset);
+      const latestSecurityPriceBySecurityId =
+        getLatestSecurityPriceBySecurityId(dataset);
       const requestDate = new Date().toISOString().slice(0, 10);
       const refreshedSymbols: string[] = [];
       const skippedSymbols: string[] = [];
+      const unchangedSymbols: string[] = [];
       const skippedDetails: Array<{ symbol: string; reason: string }> = [];
+      const unchangedDetails: Array<{ symbol: string; reason: string }> = [];
       const refreshedFxPairs: string[] = [];
       const skippedFxPairs: Array<{ symbol: string; reason: string }> = [];
       let latestPriceDate: string | null = null;
@@ -522,6 +603,20 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
           continue;
         }
 
+        if (
+          !hasSecurityPriceAdvanced(
+            latestSecurityPriceBySecurityId.get(security.id),
+            quote,
+          )
+        ) {
+          unchangedSymbols.push(security.displaySymbol);
+          unchangedDetails.push({
+            symbol: security.displaySymbol,
+            reason: buildUnchangedPriceReason(quote),
+          });
+          continue;
+        }
+
         await upsertSecurityPriceRow(sql, quote);
         await updateSecurityPriceRefreshMetadata(sql, {
           securityId: security.id,
@@ -548,6 +643,20 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
           continue;
         }
 
+        if (
+          !hasSecurityPriceAdvanced(
+            latestSecurityPriceBySecurityId.get(security.id),
+            quote,
+          )
+        ) {
+          unchangedSymbols.push(security.displaySymbol);
+          unchangedDetails.push({
+            symbol: security.displaySymbol,
+            reason: buildUnchangedPriceReason(quote),
+          });
+          continue;
+        }
+
         await upsertSecurityPriceRow(sql, quote);
         await updateSecurityPriceRefreshMetadata(sql, {
           securityId: security.id,
@@ -568,7 +677,9 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
         skippedCount: skippedSymbols.length,
         refreshedSymbols,
         skippedSymbols,
+        unchangedSymbols,
         skippedDetails,
+        unchangedDetails,
         refreshedFxPairs,
         skippedFxPairs,
         latestPriceDate,
@@ -577,3 +688,5 @@ export async function refreshOwnedStockPrices(): Promise<RefreshOwnedStockPrices
     });
   });
 }
+
+export const refreshOwnedStockPrices = refreshOwnedPrices;

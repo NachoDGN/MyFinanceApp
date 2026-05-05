@@ -6,7 +6,8 @@ import {
 
 import { AppShell } from "../../components/app-shell";
 import { TransactionCategoryManagementPanel } from "../../components/transaction-category-management-panel";
-import { buildHref, resolveAppState } from "../../lib/queries";
+import { buildHref } from "../../lib/navigation";
+import { resolveAppState } from "../../lib/queries";
 
 export default async function CategoriesPage({
   searchParams,

@@ -10,6 +10,7 @@ import {
   claimNextQueuedJob,
   completeJob,
   failJob,
+  recoverRetryableFailedJobs,
   recoverStaleRunningJobs,
   updateRunningJobPayload,
 } from "./job-state";
@@ -232,6 +233,7 @@ export async function runFinanceJobQueue(input: {
   return withSeededUserSession(async (sql) => {
     if (input.apply) {
       await recoverStaleRunningJobs(sql);
+      await recoverRetryableFailedJobs(sql);
     }
 
     const queued = await sql`

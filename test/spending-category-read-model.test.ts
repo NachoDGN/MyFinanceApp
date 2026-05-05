@@ -130,3 +130,74 @@ test("spending category read model returns matching transactions and selected-pe
     { label: "MARKET", amountEur: "125.00" },
   ]);
 });
+
+test("spending totals include pending negative cash-flow rows but skip card settlements", () => {
+  const dataset = createDataset({
+    transactions: [
+      createTransaction({
+        id: "resolved-software",
+        transactionDate: "2026-04-03",
+        postedDate: "2026-04-03",
+        amountOriginal: "-100.00",
+        amountBaseEur: "-100.00",
+        categoryCode: "software",
+        merchantNormalized: "CLOUD APP",
+      }),
+      createTransaction({
+        id: "pending-openai",
+        transactionDate: "2026-04-14",
+        postedDate: "2026-04-14",
+        amountOriginal: "-184.00",
+        amountBaseEur: "-184.00",
+        transactionClass: "unknown",
+        categoryCode: null,
+        merchantNormalized: "OpenAI",
+        classificationStatus: "unknown",
+        classificationSource: "system_fallback",
+        classificationConfidence: "0.00",
+        needsReview: true,
+        reviewReason: "Queued for automatic transaction analysis.",
+        llmPayload: { analysisStatus: "pending" },
+      }),
+      createTransaction({
+        id: "card-settlement",
+        transactionDate: "2026-04-20",
+        postedDate: "2026-04-20",
+        amountOriginal: "-9902.66",
+        amountBaseEur: "-9902.66",
+        transactionClass: "unknown",
+        categoryCode: null,
+        descriptionRaw:
+          "Liquidacion De Las Tarjetas De Credito Del Contrato 0049",
+        descriptionClean:
+          "LIQUIDACION DE LAS TARJETAS DE CREDITO DEL CONTRATO 0049",
+        creditCardStatementStatus: "uploaded",
+        classificationStatus: "unknown",
+        classificationSource: "system_fallback",
+        classificationConfidence: "0.00",
+        needsReview: true,
+        llmPayload: { analysisStatus: "pending" },
+      }),
+    ],
+  });
+
+  const model = buildSpendingReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period: resolvePeriodSelection({
+      preset: "last_month",
+      referenceDate: "2026-05-04",
+    }),
+    referenceDate: "2026-05-04",
+  });
+
+  assert.equal(model.spendMetric?.valueBaseEur, "284.00");
+  assert.deepEqual(model.summary.spendingByCategory, [
+    {
+      categoryCode: "__unresolved_spending",
+      label: "Unresolved Spending",
+      amountEur: "184.00",
+    },
+    { categoryCode: "software", label: "Software", amountEur: "100.00" },
+  ]);
+});

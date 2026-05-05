@@ -43,6 +43,7 @@ import {
   type ImportCommitResult,
   type ImportPreviewResult,
   type JobRunResult,
+  type PeriodSelection,
   type QueueRuleDraftInput,
   type RecordManualInvestmentValuationInput,
   type ResetWorkspaceInput,
@@ -64,10 +65,13 @@ import { withInvestmentMutationLock } from "./investment-mutation-lock";
 import { applyInvestmentRebuildWithinLock } from "./investment-rebuild-runner";
 import { processReviewPropagationJob } from "./review-propagation-job";
 export {
+  hasSecurityPriceAdvanced,
+  refreshOwnedPrices,
   refreshOwnedStockPrices,
   selectOwnedFundNavRefreshSecurities,
   selectOwnedStockPriceRefreshSecurities,
   selectTrackedEurFxPairs,
+  type RefreshOwnedPricesResult,
   type RefreshOwnedStockPricesResult,
 } from "./market-data-refresh";
 import { createAuditEvent, insertAuditEventRecord } from "./audit-log";
@@ -849,11 +853,7 @@ class SqlFinanceRepository implements FinanceRepository {
       | { kind: "consolidated" }
       | { kind: "entity"; entityId?: string }
       | { kind: "account"; accountId?: string };
-    period: {
-      start: string;
-      end: string;
-      preset: "mtd" | "ytd" | "week" | "24m" | "custom";
-    };
+    period: PeriodSelection;
     referenceDate: string;
     query: string;
   }) {

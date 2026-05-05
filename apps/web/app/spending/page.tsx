@@ -23,7 +23,8 @@ import {
   getPeriodLabel,
 } from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
-import { buildHref, getSpendingModel } from "../../lib/queries";
+import { buildHref } from "../../lib/navigation";
+import { getSpendingModel } from "../../lib/queries";
 
 function formatDisplayAmount(
   amountBaseEur: string | null | undefined,

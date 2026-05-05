@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  hasSecurityPriceAdvanced,
   selectOwnedFundNavRefreshSecurities,
   selectOwnedStockPriceRefreshSecurities,
   selectTrackedEurFxPairs,
@@ -427,4 +428,38 @@ test("tracked EUR FX pairs include cash-account and held-security currencies but
   });
 
   assert.deepEqual(selectTrackedEurFxPairs(dataset, "2026-04-10"), ["USD"]);
+});
+
+test("price refresh treats same-date same-value NAVs as checked but unchanged", () => {
+  const existingPrice = {
+    securityId: "security-fund",
+    priceDate: "2026-05-01",
+    quoteTimestamp: "2026-05-01T16:00:00.000Z",
+    price: "74.84000000",
+    currency: "EUR",
+    sourceName: "ft_markets_nav",
+    isRealtime: false,
+    isDelayed: true,
+    marketState: "reference_nav",
+    rawJson: {},
+    createdAt: "2026-05-01T16:00:00Z",
+  };
+
+  assert.equal(
+    hasSecurityPriceAdvanced(existingPrice, {
+      ...existingPrice,
+      price: "74.84",
+      createdAt: "2026-05-04T16:00:00Z",
+    }),
+    false,
+  );
+  assert.equal(
+    hasSecurityPriceAdvanced(existingPrice, {
+      ...existingPrice,
+      priceDate: "2026-05-02",
+      quoteTimestamp: "2026-05-02T16:00:00Z",
+      price: "75.01",
+    }),
+    true,
+  );
 });

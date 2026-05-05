@@ -18,6 +18,7 @@ import {
   getLatestAccountBalances,
   getPreviousComparablePeriod,
   needsCreditCardStatementUpload,
+  isCreditCardSettlementTransaction,
   isTransactionResolvedForAnalytics,
   isCryptoCurrency,
   isUnmatchedCreditCardSettlementTransaction,
@@ -107,6 +108,21 @@ function isExcludedIncome(transaction: Transaction) {
   ].includes(transaction.transactionClass);
 }
 
+function isExcludedFromFlowAnalytics(transaction: Transaction) {
+  return (
+    transaction.excludeFromAnalytics === true ||
+    Boolean(transaction.voidedAt) ||
+    isCreditCardSettlementTransaction(transaction)
+  );
+}
+
+function isUnresolvedCashFlow(transaction: Transaction) {
+  return (
+    transaction.transactionClass === "unknown" &&
+    !isExcludedFromFlowAnalytics(transaction)
+  );
+}
+
 function isSpendingLike(transaction: Transaction) {
   return [
     "expense",
@@ -118,6 +134,15 @@ function isSpendingLike(transaction: Transaction) {
 }
 
 function incomeContributionEur(transaction: Transaction) {
+  if (isExcludedFromFlowAnalytics(transaction)) {
+    return null;
+  }
+
+  if (isUnresolvedCashFlow(transaction)) {
+    const amount = new Decimal(transaction.amountBaseEur);
+    return amount.gt(0) ? amount : null;
+  }
+
   if (!isIncomeLike(transaction) || isExcludedIncome(transaction)) {
     return null;
   }
@@ -126,6 +151,15 @@ function incomeContributionEur(transaction: Transaction) {
 }
 
 function spendingContributionEur(transaction: Transaction) {
+  if (isExcludedFromFlowAnalytics(transaction)) {
+    return null;
+  }
+
+  if (isUnresolvedCashFlow(transaction)) {
+    const amount = new Decimal(transaction.amountBaseEur);
+    return amount.lt(0) ? amount.abs() : null;
+  }
+
   if (!isSpendingLike(transaction)) {
     return null;
   }
@@ -137,10 +171,32 @@ function spendingContributionEur(transaction: Transaction) {
   return amountMagnitudeEur(transaction);
 }
 
+function hasIncomeContribution(transaction: Transaction) {
+  return incomeContributionEur(transaction) !== null;
+}
+
+function hasSpendingContribution(transaction: Transaction) {
+  return spendingContributionEur(transaction) !== null;
+}
+
+function hasFlowContribution(transaction: Transaction) {
+  return (
+    hasIncomeContribution(transaction) || hasSpendingContribution(transaction)
+  );
+}
+
 function resolveSpendingCategoryBucket(
   categoryByCode: Map<string, DomainDataset["categories"][number]>,
   transaction: Transaction,
 ) {
+  if (isUnresolvedCashFlow(transaction)) {
+    return {
+      categoryCode: "__unresolved_spending",
+      label: "Unresolved Spending",
+      categorized: false,
+    };
+  }
+
   if (isUnmatchedCreditCardSettlementTransaction(transaction)) {
     return {
       categoryCode: "__credit_card_payments",
@@ -226,6 +282,18 @@ type SpendingCategoryMonthlySeriesRow = {
   categories: SpendingCategoryAmountRow[];
 };
 
+type IncomeCategoryAmountRow = {
+  categoryCode: string;
+  label: string;
+  amountEur: string;
+};
+
+type IncomeCategoryMonthlySeriesRow = {
+  month: string;
+  totalIncomeEur: string;
+  categories: IncomeCategoryAmountRow[];
+};
+
 function resolveSpendingCategoryLabel(
   categoryByCode: Map<string, DomainDataset["categories"][number]>,
   categoryCode: string,
@@ -246,6 +314,8 @@ function resolveSpendingCategoryLabel(
       return "Fees";
     case "__refunds":
       return "Refunds";
+    case "__unresolved_spending":
+      return "Unresolved Spending";
     default:
       return categoryCode.startsWith("__")
         ? humanizeTransactionClass(
@@ -253,6 +323,55 @@ function resolveSpendingCategoryLabel(
           )
         : null;
   }
+}
+
+function resolveIncomeCategoryBucket(
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  transaction: Transaction,
+) {
+  if (isUnresolvedCashFlow(transaction)) {
+    return {
+      categoryCode: "__unresolved_income",
+      label: "Unresolved Income",
+      categorized: false,
+    };
+  }
+
+  if (transaction.categoryCode) {
+    return {
+      categoryCode: transaction.categoryCode,
+      label:
+        categoryByCode.get(transaction.categoryCode)?.displayName ??
+        transaction.categoryCode,
+      categorized: !transaction.categoryCode.startsWith("uncategorized"),
+    };
+  }
+
+  return {
+    categoryCode: `__${transaction.transactionClass}`,
+    label: humanizeTransactionClass(transaction.transactionClass),
+    categorized: false,
+  };
+}
+
+function resolveIncomeCategoryLabel(
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  categoryCode: string,
+) {
+  const explicitCategory = categoryByCode.get(categoryCode);
+  if (explicitCategory) {
+    return explicitCategory.displayName;
+  }
+
+  if (categoryCode === "__unresolved_income") {
+    return "Unresolved Income";
+  }
+
+  return categoryCode.startsWith("__")
+    ? humanizeTransactionClass(
+        categoryCode.slice(2) as Transaction["transactionClass"],
+      )
+    : null;
 }
 
 function aggregateSpendingCategoryRows(
@@ -292,13 +411,47 @@ function aggregateSpendingCategoryRows(
     .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
 }
 
+function aggregateIncomeCategoryRows(
+  transactions: Transaction[],
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+): IncomeCategoryAmountRow[] {
+  return [
+    ...transactions
+      .reduce((totals, transaction) => {
+        const contribution = incomeContributionEur(transaction);
+        if (!contribution) {
+          return totals;
+        }
+
+        const bucket = resolveIncomeCategoryBucket(categoryByCode, transaction);
+        const current = totals.get(bucket.categoryCode) ?? {
+          categoryCode: bucket.categoryCode,
+          label: bucket.label,
+          amountEur: new Decimal(0),
+        };
+
+        current.amountEur = current.amountEur.plus(contribution);
+        totals.set(bucket.categoryCode, current);
+        return totals;
+      }, new Map<string, { categoryCode: string; label: string; amountEur: Decimal }>())
+      .values(),
+  ]
+    .map((row) => ({
+      categoryCode: row.categoryCode,
+      label: row.label,
+      amountEur: row.amountEur.toFixed(2),
+    }))
+    .filter((row) => new Decimal(row.amountEur).gt(0))
+    .sort((left, right) => Number(right.amountEur) - Number(left.amountEur));
+}
+
 function shiftMonthIso(value: string, months: number) {
   const date = new Date(`${startOfMonthIso(value)}T00:00:00Z`);
   date.setUTCMonth(date.getUTCMonth() + months);
   return date.toISOString().slice(0, 10);
 }
 
-function resolvedTransactionsInWindow(
+function flowTransactionsInWindow(
   dataset: DomainDataset,
   scope: Scope,
   startDate: string,
@@ -309,7 +462,7 @@ function resolvedTransactionsInWindow(
     endDate,
   ).filter(
     (transaction) =>
-      isTransactionResolvedForAnalytics(transaction) &&
+      hasFlowContribution(transaction) &&
       transaction.transactionDate >= startDate,
   );
 }
@@ -335,7 +488,7 @@ function buildMonthlyTransactionSeries<T extends Record<string, Decimal>, R>(
     monthRows.set(month, { month, ...seed() });
   }
 
-  for (const transaction of resolvedTransactionsInWindow(
+  for (const transaction of flowTransactionsInWindow(
     dataset,
     scope,
     startDate,
@@ -410,7 +563,7 @@ function buildMonthlySpendingCategorySeries(
     });
   }
 
-  for (const transaction of resolvedTransactionsInWindow(
+  for (const transaction of flowTransactionsInWindow(
     dataset,
     scope,
     startDate,
@@ -442,6 +595,82 @@ function buildMonthlySpendingCategorySeries(
   return [...monthRows.values()].map((row) => ({
     month: row.month,
     totalSpendingEur: row.totalSpendingEur.toFixed(2),
+    categories: [...row.categoryTotals.values()]
+      .map((category) => ({
+        categoryCode: category.categoryCode,
+        label: category.label,
+        amountEur: category.amountEur.toFixed(2),
+      }))
+      .filter((category) => new Decimal(category.amountEur).gt(0))
+      .sort((left, right) => Number(right.amountEur) - Number(left.amountEur)),
+  }));
+}
+
+function buildMonthlyIncomeCategorySeries(
+  dataset: DomainDataset,
+  scope: Scope,
+  startDate: string,
+  endDate: string,
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+): IncomeCategoryMonthlySeriesRow[] {
+  const seriesStart = startOfMonthIso(startDate);
+  const seriesEnd = startOfMonthIso(endDate);
+  const monthRows = new Map<
+    string,
+    {
+      month: string;
+      totalIncomeEur: Decimal;
+      categoryTotals: Map<
+        string,
+        { categoryCode: string; label: string; amountEur: Decimal }
+      >;
+    }
+  >();
+
+  for (
+    let month = seriesStart;
+    month <= seriesEnd;
+    month = shiftMonthIso(month, 1)
+  ) {
+    monthRows.set(month, {
+      month,
+      totalIncomeEur: new Decimal(0),
+      categoryTotals: new Map(),
+    });
+  }
+
+  for (const transaction of flowTransactionsInWindow(
+    dataset,
+    scope,
+    startDate,
+    endDate,
+  )) {
+    const contribution = incomeContributionEur(transaction);
+    if (!contribution) {
+      continue;
+    }
+
+    const month = startOfMonthIso(transaction.transactionDate);
+    const row = monthRows.get(month);
+    if (!row) {
+      continue;
+    }
+
+    const bucket = resolveIncomeCategoryBucket(categoryByCode, transaction);
+    const category = row.categoryTotals.get(bucket.categoryCode) ?? {
+      categoryCode: bucket.categoryCode,
+      label: bucket.label,
+      amountEur: new Decimal(0),
+    };
+
+    category.amountEur = category.amountEur.plus(contribution);
+    row.totalIncomeEur = row.totalIncomeEur.plus(contribution);
+    row.categoryTotals.set(bucket.categoryCode, category);
+  }
+
+  return [...monthRows.values()].map((row) => ({
+    month: row.month,
+    totalIncomeEur: row.totalIncomeEur.toFixed(2),
     categories: [...row.categoryTotals.values()]
       .map((category) => ({
         categoryCode: category.categoryCode,
@@ -639,7 +868,7 @@ function flowMetric(
   const transactions = filterTransactionsByPeriod(
     filterTransactionsByScope(dataset, scope),
     period,
-  ).filter((row) => isTransactionResolvedForAnalytics(row));
+  ).filter(hasFlowContribution);
 
   if (kind === "income") {
     return transactions
@@ -983,11 +1212,9 @@ export function buildDashboardSummary(
     filterTransactionsByScope(dataset, input.scope),
     period,
   );
-  const resolvedScopedTransactions = scopedTransactions.filter((transaction) =>
-    isTransactionResolvedForAnalytics(transaction),
-  );
+  const flowScopedTransactions = scopedTransactions.filter(hasFlowContribution);
   const spendingByCategory = aggregateSpendingCategoryRows(
-    resolvedScopedTransactions,
+    flowScopedTransactions,
     categoryByCode,
   );
 
@@ -1279,11 +1506,11 @@ export function buildSpendingReadModel(
   );
   const transactions = selectTransactions(
     context.scopedPeriodTransactions,
-    isSpendingLike,
+    hasSpendingContribution,
   );
   const resolvedTransactions = selectTransactions(
-    context.resolvedScopedPeriodTransactions,
-    isSpendingLike,
+    context.scopedPeriodTransactions,
+    hasSpendingContribution,
   );
   const spendMetric = findMetric(summary, "spending_mtd_total");
   const merchantRows = aggregateAmountRows(
@@ -1388,7 +1615,7 @@ function spendingCategoryAmountForPeriod(
     filterTransactionsByScope(dataset, scope),
     period,
   )
-    .filter((transaction) => isTransactionResolvedForAnalytics(transaction))
+    .filter(hasFlowContribution)
     .reduce((sum, transaction) => {
       if (
         !isSpendingCategoryTransaction(
@@ -1420,7 +1647,7 @@ export function buildSpendingCategoryReadModel(
     input.categoryCode,
   );
   const transactions = selectTransactions(
-    context.resolvedScopedPeriodTransactions,
+    context.scopedPeriodTransactions,
     (transaction) =>
       isSpendingCategoryTransaction(
         context.categoryByCode,
@@ -1514,6 +1741,150 @@ export function buildSpendingCategoryReadModel(
   };
 }
 
+function isIncomeCategoryTransaction(
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  categoryCode: string,
+  transaction: Transaction,
+) {
+  const contribution = incomeContributionEur(transaction);
+  if (!contribution) {
+    return false;
+  }
+  return (
+    resolveIncomeCategoryBucket(categoryByCode, transaction).categoryCode ===
+    categoryCode
+  );
+}
+
+function incomeCategoryAmountForPeriod(
+  dataset: DomainDataset,
+  scope: Scope,
+  period: PeriodSelection,
+  categoryByCode: Map<string, DomainDataset["categories"][number]>,
+  categoryCode: string,
+) {
+  return filterTransactionsByPeriod(
+    filterTransactionsByScope(dataset, scope),
+    period,
+  )
+    .filter(hasFlowContribution)
+    .reduce((sum, transaction) => {
+      if (
+        !isIncomeCategoryTransaction(categoryByCode, categoryCode, transaction)
+      ) {
+        return sum;
+      }
+      return sum.plus(incomeContributionEur(transaction) ?? new Decimal(0));
+    }, new Decimal(0));
+}
+
+export function buildIncomeCategoryReadModel(
+  dataset: DomainDataset,
+  input: {
+    scope: Scope;
+    displayCurrency: string;
+    categoryCode: string;
+    period?: PeriodSelection;
+    referenceDate?: string;
+  },
+) {
+  const summary = buildDashboardSummary(dataset, input);
+  const context = buildAnalyticsReadModelContext(dataset, input, summary);
+  const categoryLabel = resolveIncomeCategoryLabel(
+    context.categoryByCode,
+    input.categoryCode,
+  );
+  const transactions = selectTransactions(
+    context.scopedPeriodTransactions,
+    (transaction) =>
+      isIncomeCategoryTransaction(
+        context.categoryByCode,
+        input.categoryCode,
+        transaction,
+      ),
+  );
+  const categoryAmount = transactions.reduce(
+    (sum, transaction) =>
+      sum.plus(incomeContributionEur(transaction) ?? new Decimal(0)),
+    new Decimal(0),
+  );
+  const incomeMetric = findMetric(summary, "income_mtd_total");
+  const incomeTotal = new Decimal(incomeMetric?.valueBaseEur ?? 0);
+  const comparisonPeriod = getPreviousComparablePeriod(summary.period);
+  const comparisonAmount = incomeCategoryAmountForPeriod(
+    dataset,
+    input.scope,
+    comparisonPeriod,
+    context.categoryByCode,
+    input.categoryCode,
+  );
+  const periodSharePercent = incomeTotal.gt(0)
+    ? categoryAmount.div(incomeTotal).mul(100).toFixed(2)
+    : null;
+  const comparisonDeltaPercent = comparisonAmount.eq(0)
+    ? null
+    : categoryAmount
+        .minus(comparisonAmount)
+        .div(comparisonAmount.abs())
+        .mul(100)
+        .toFixed(2);
+  const monthlySeries = buildMonthlyIncomeCategorySeries(
+    dataset,
+    input.scope,
+    summary.period.start,
+    summary.period.end,
+    context.categoryByCode,
+  ).map((row) => {
+    const category = row.categories.find(
+      (candidate) => candidate.categoryCode === input.categoryCode,
+    );
+    return {
+      month: row.month,
+      amountEur: category?.amountEur ?? "0.00",
+      totalIncomeEur: row.totalIncomeEur,
+    };
+  });
+  const sourceRows = aggregateIncomeSourceRows(transactions);
+  const largestTransaction =
+    [...transactions].sort(
+      (left, right) =>
+        Math.abs(Number(right.amountBaseEur)) -
+        Math.abs(Number(left.amountBaseEur)),
+    )[0] ?? null;
+  const averageTransactionEur =
+    transactions.length > 0
+      ? categoryAmount.div(transactions.length).toFixed(2)
+      : "0.00";
+  const category =
+    aggregateIncomeCategoryRows(transactions, context.categoryByCode).find(
+      (row) => row.categoryCode === input.categoryCode,
+    ) ??
+    (categoryLabel
+      ? {
+          categoryCode: input.categoryCode,
+          label: categoryLabel,
+          amountEur: categoryAmount.toFixed(2),
+        }
+      : null);
+
+  return {
+    summary,
+    category,
+    transactions,
+    incomeMetric,
+    amountEur: categoryAmount.toFixed(2),
+    periodSharePercent,
+    comparisonAmountEur: comparisonAmount.toFixed(2),
+    comparisonDeltaPercent,
+    monthlySeries,
+    sourceRows,
+    topSource: sourceRows[0] ?? null,
+    transactionCount: transactions.length,
+    averageTransactionEur,
+    largestTransaction,
+  };
+}
+
 export function buildIncomeReadModel(
   dataset: DomainDataset,
   input: {
@@ -1532,14 +1903,18 @@ export function buildIncomeReadModel(
   ]);
   const transactions = selectTransactions(
     context.scopedPeriodTransactions,
-    isIncomeTransaction,
+    hasIncomeContribution,
   );
   const resolvedTransactions = selectTransactions(
     context.resolvedScopedPeriodTransactions,
-    isIncomeTransaction,
+    hasIncomeContribution,
   );
   const incomeMetric = findMetric(summary, "income_mtd_total");
-  const sourceRows = aggregateIncomeSourceRows(resolvedTransactions);
+  const sourceRows = aggregateIncomeSourceRows(transactions);
+  const incomeCategoryRows = aggregateIncomeCategoryRows(
+    transactions,
+    context.categoryByCode,
+  );
   const investmentIncomeRows = resolvedTransactions.filter((transaction) =>
     ["dividend", "interest"].includes(transaction.transactionClass),
   );
@@ -1581,6 +1956,7 @@ export function buildIncomeReadModel(
     transactions,
     incomeMetric,
     sourceRows,
+    incomeCategoryRows,
     investmentIncomeRows,
     trailingThreeMonthAverage,
     monthlyIncomeComposition: buildMonthlyIncomeComposition(
@@ -1589,7 +1965,15 @@ export function buildIncomeReadModel(
       monthlyIncomeWindow.start,
       monthlyIncomeWindow.end,
     ),
+    incomeCategoryMonthlySeries: buildMonthlyIncomeCategorySeries(
+      dataset,
+      input.scope,
+      monthlyIncomeWindow.start,
+      monthlyIncomeWindow.end,
+      context.categoryByCode,
+    ),
     topSourceShare,
+    topCategory: incomeCategoryRows[0] ?? null,
     activeSourceCount: sourceRows.length,
     ytdIncomeTotal: flowMetric(dataset, input.scope, ytdPeriod, "income"),
     projectedYearIncome: new Decimal(trailingThreeMonthAverage)

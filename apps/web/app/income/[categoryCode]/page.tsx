@@ -24,19 +24,39 @@ import {
 } from "../../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../../lib/formatters";
 import { buildHref } from "../../../lib/navigation";
-import { getSpendingCategoryModel } from "../../../lib/queries";
+import { getIncomeCategoryModel } from "../../../lib/queries";
 
-type SpendingCategoryModel = Awaited<
-  ReturnType<typeof getSpendingCategoryModel>
->;
-type SpendingCategoryTransaction =
-  SpendingCategoryModel["transactions"][number];
+type IncomeCategoryModel = Awaited<ReturnType<typeof getIncomeCategoryModel>>;
+type IncomeCategoryTransaction = IncomeCategoryModel["transactions"][number];
+
+const INCOME_SOURCE_COLORS = [
+  "#ff4a22",
+  "#005f73",
+  "#0a9396",
+  "#2a9d8f",
+  "#e9c46a",
+  "#f4a261",
+  "#457b9d",
+  "#3d405b",
+  "#6d597a",
+  "#8d99ae",
+  "#2f3e46",
+  "#bc4749",
+];
+
+function sourceColor(index: number) {
+  return INCOME_SOURCE_COLORS[index % INCOME_SOURCE_COLORS.length]!;
+}
+
+function startOfMonthIso(value: string) {
+  return `${value.slice(0, 7)}-01`;
+}
 
 function formatDisplayAmount(
   amountBaseEur: string | null | undefined,
   currency: string,
   transactionDate: string,
-  dataset: SpendingCategoryModel["dataset"],
+  dataset: IncomeCategoryModel["dataset"],
 ) {
   if (amountBaseEur === null || amountBaseEur === undefined) {
     return "N/A";
@@ -56,87 +76,41 @@ function formatDisplayAmount(
 function formatCategoryLabel(
   categoryCode: string | null | undefined,
   transactionClass: string,
-  model: SpendingCategoryModel,
+  model: IncomeCategoryModel,
 ) {
-  if (!categoryCode) {
-    if (transactionClass === "loan_principal_payment") {
-      return "Loan Principal";
-    }
-    if (transactionClass === "loan_interest_payment") {
-      return "Loan Interest";
-    }
-    if (transactionClass === "fee") {
-      return "Fees";
-    }
-    if (transactionClass === "refund") {
-      return "Refunds";
-    }
-    return model.category?.label ?? "Uncategorized";
+  if (categoryCode) {
+    return (
+      model.dataset.categories.find(
+        (category) => category.code === categoryCode,
+      )?.displayName ??
+      (categoryCode === model.category?.categoryCode
+        ? model.category.label
+        : categoryCode)
+    );
   }
 
+  return model.category?.label ?? transactionClass.replace(/_/g, " ");
+}
+
+function resolveIncomeSourceLabel(transaction: IncomeCategoryTransaction) {
   return (
-    model.dataset.categories.find((category) => category.code === categoryCode)
-      ?.displayName ??
-    (categoryCode === model.category?.categoryCode
-      ? model.category.label
-      : categoryCode)
+    transaction.counterpartyName?.trim() ||
+    transaction.merchantNormalized?.trim() ||
+    transaction.descriptionClean ||
+    transaction.descriptionRaw
   );
 }
 
-const SPENDING_MERCHANT_COLORS = [
-  "#ff4a22",
-  "#005f73",
-  "#0a9396",
-  "#2a9d8f",
-  "#e9c46a",
-  "#f4a261",
-  "#457b9d",
-  "#3d405b",
-  "#6d597a",
-  "#8d99ae",
-  "#2f3e46",
-  "#bc4749",
-];
-
-function merchantColor(index: number) {
-  return SPENDING_MERCHANT_COLORS[index % SPENDING_MERCHANT_COLORS.length]!;
-}
-
-function startOfMonthIso(value: string) {
-  return `${value.slice(0, 7)}-01`;
-}
-
-function resolveMerchantLabel(transaction: SpendingCategoryTransaction) {
-  if (transaction.merchantNormalized?.trim()) {
-    return transaction.merchantNormalized.trim();
-  }
-
-  if (transaction.counterpartyName?.trim()) {
-    return transaction.counterpartyName.trim();
-  }
-
-  return transaction.descriptionClean || transaction.descriptionRaw;
-}
-
-function spendingContributionAmountEur(
-  transaction: SpendingCategoryTransaction,
-) {
+function incomeContributionAmountEur(transaction: IncomeCategoryTransaction) {
   const amount = Number(transaction.amountBaseEur ?? 0);
-  if (!Number.isFinite(amount)) {
-    return 0;
-  }
-
-  const contribution =
-    transaction.transactionClass === "refund" ? -amount : Math.abs(amount);
-
-  return Math.max(contribution, 0);
+  return Number.isFinite(amount) ? Math.max(amount, 0) : 0;
 }
 
 function formatTransactionClass(transactionClass: string) {
   return transactionClass.replace(/_/g, " ");
 }
 
-export default async function SpendingCategoryPage({
+export default async function IncomeCategoryPage({
   params,
   searchParams,
 }: {
@@ -145,50 +119,57 @@ export default async function SpendingCategoryPage({
 }) {
   const { categoryCode: rawCategoryCode } = await params;
   const categoryCode = decodeURIComponent(rawCategoryCode);
-  const model = await getSpendingCategoryModel(searchParams, categoryCode);
+  const model = await getIncomeCategoryModel(searchParams, categoryCode);
 
   if (!model.category) {
     notFound();
   }
+
   const category = model.category;
   const categoryAmountNumber = Number(model.amountEur);
-  const transactionsByMerchant = model.transactions.reduce(
+  const sourceLabelToRowLabel = new Map<string, string>();
+  model.sourceRows.forEach((row) => {
+    sourceLabelToRowLabel.set(row.label, row.label);
+    row.aliases.forEach((alias) => sourceLabelToRowLabel.set(alias, row.label));
+  });
+  const transactionsBySource = model.transactions.reduce(
     (groups, transaction) => {
-      const label = resolveMerchantLabel(transaction);
-      const existing = groups.get(label) ?? [];
+      const sourceLabel = resolveIncomeSourceLabel(transaction);
+      const rowLabel = sourceLabelToRowLabel.get(sourceLabel) ?? sourceLabel;
+      const existing = groups.get(rowLabel) ?? [];
       existing.push(transaction);
-      groups.set(label, existing);
+      groups.set(rowLabel, existing);
       return groups;
     },
-    new Map<string, SpendingCategoryTransaction[]>(),
+    new Map<string, IncomeCategoryTransaction[]>(),
   );
-  const merchantRows = model.merchantRows.map((row, index) => ({
+  const sourceRows = model.sourceRows.map((row, index) => ({
     ...row,
-    color: merchantColor(index),
-    transactions: transactionsByMerchant.get(row.label) ?? [],
+    color: sourceColor(index),
+    transactions: transactionsBySource.get(row.label) ?? [],
   }));
-  const merchantColorByLabel = new Map(
-    merchantRows.map((row) => [row.label, row.color]),
+  const sourceColorByLabel = new Map(
+    sourceRows.map((row) => [row.label, row.color]),
   );
-  const merchantOrderByLabel = new Map(
-    merchantRows.map((row, index) => [row.label, index]),
+  const sourceOrderByLabel = new Map(
+    sourceRows.map((row, index) => [row.label, index]),
   );
-  const monthlyMerchantAmounts = model.transactions.reduce(
+  const monthlySourceAmounts = model.transactions.reduce(
     (monthGroups, transaction) => {
-      const contribution = spendingContributionAmountEur(transaction);
+      const contribution = incomeContributionAmountEur(transaction);
       if (contribution <= 0) {
         return monthGroups;
       }
 
       const month = startOfMonthIso(transaction.transactionDate);
-      const label = resolveMerchantLabel(transaction);
-      const merchantGroups =
-        monthGroups.get(month) ?? new Map<string, number>();
-      merchantGroups.set(
-        label,
-        (merchantGroups.get(label) ?? 0) + contribution,
+      const sourceLabel = resolveIncomeSourceLabel(transaction);
+      const rowLabel = sourceLabelToRowLabel.get(sourceLabel) ?? sourceLabel;
+      const sourceGroups = monthGroups.get(month) ?? new Map<string, number>();
+      sourceGroups.set(
+        rowLabel,
+        (sourceGroups.get(rowLabel) ?? 0) + contribution,
       );
-      monthGroups.set(month, merchantGroups);
+      monthGroups.set(month, sourceGroups);
       return monthGroups;
     },
     new Map<string, Map<string, number>>(),
@@ -200,10 +181,12 @@ export default async function SpendingCategoryPage({
         ? endOfMonthIso(row.month)
         : model.referenceDate;
     let usedFallbackFx = false;
-    const merchants = [...(monthlyMerchantAmounts.get(row.month) ?? new Map())]
+    const sources = [
+      ...(monthlySourceAmounts.get(row.month) ?? new Map<string, number>()),
+    ]
       .sort((left, right) => {
-        const leftOrder = merchantOrderByLabel.get(left[0]) ?? 9999;
-        const rightOrder = merchantOrderByLabel.get(right[0]) ?? 9999;
+        const leftOrder = sourceOrderByLabel.get(left[0]) ?? 9999;
+        const rightOrder = sourceOrderByLabel.get(right[0]) ?? 9999;
         return leftOrder - rightOrder || right[1] - left[1];
       })
       .map(([label, amountEur], index) => {
@@ -221,21 +204,21 @@ export default async function SpendingCategoryPage({
         return {
           label,
           color:
-            merchantColorByLabel.get(label) ??
-            merchantColor(merchantColorByLabel.size + index),
+            sourceColorByLabel.get(label) ??
+            sourceColor(sourceColorByLabel.size + index),
           displayAmount: Math.max(Number(displayAmount.amount ?? 0), 0),
           valueLabel: formatCurrency(displayAmount.amount, model.currency),
         };
       });
-    const spendingDisplay = merchants.reduce(
-      (sum, merchant) => sum + merchant.displayAmount,
+    const incomeDisplay = sources.reduce(
+      (sum, source) => sum + source.displayAmount,
       0,
     );
 
     return {
       ...row,
-      merchants,
-      spendingDisplay,
+      sources,
+      incomeDisplay,
       usedFallbackFx,
     };
   });
@@ -250,23 +233,23 @@ export default async function SpendingCategoryPage({
             fallbackFxMonths[fallbackFxMonths.length - 1]!,
           )}`
       : null;
-  const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
+  const chartMax = Math.max(...chartRows.map((row) => row.incomeDisplay), 1);
   const trendRows = chartRows.map((row) => ({
     month: row.month,
-    segments: row.merchants.map((merchant) => ({
-      color: merchant.color,
-      height: (merchant.displayAmount / chartMax) * 100,
-      label: merchant.label,
-      valueLabel: merchant.valueLabel,
+    segments: row.sources.map((source) => ({
+      color: source.color,
+      height: (source.displayAmount / chartMax) * 100,
+      label: source.label,
+      valueLabel: source.valueLabel,
       shareLabel:
-        row.spendingDisplay > 0
+        row.incomeDisplay > 0
           ? `${formatPercentLabel(
-              (merchant.displayAmount / row.spendingDisplay) * 100,
+              (source.displayAmount / row.incomeDisplay) * 100,
             )} of ${formatMonthLabel(row.month)}`
           : undefined,
     })),
   }));
-  const legendItems = merchantRows
+  const legendItems = sourceRows
     .filter((row) => Number(row.amountEur) > 0)
     .map((row) => ({
       label: row.label,
@@ -293,8 +276,8 @@ export default async function SpendingCategoryPage({
           chartRows[0].month,
           chartRows[chartRows.length - 1].month,
         )
-      : "No category spending data";
-  const backHref = buildHref("/spending", model.navigationState, {});
+      : "No category income data";
+  const backHref = buildHref("/income", model.navigationState, {});
   const categoryAmount = formatBaseEurAmountForDisplay(
     model.dataset,
     model.amountEur,
@@ -318,25 +301,24 @@ export default async function SpendingCategoryPage({
 
   return (
     <AppShell
-      pathname={`/spending/${encodeURIComponent(categoryCode)}`}
+      pathname={`/income/${encodeURIComponent(categoryCode)}`}
       scopeOptions={model.scopeOptions}
       state={model.navigationState}
     >
       <div className="dashboard-grid income-editorial-shell">
         <FlowPageHeader
-          watermark="SPENDING"
-          watermarkClassName="spending-editorial-watermark"
-          title={`${category.label} Spend`}
+          watermark="INCOME"
+          title={`${category.label} Income`}
           subtitle={
             <>
               Category detail for {getPeriodLabel(model.period).toLowerCase()}.
-              The totals, monthly trend, and expanded merchant buckets use the
-              same resolved spending logic as the overview page.
+              The totals, monthly trend, and expanded source buckets use the
+              same resolved income logic as the overview page.
             </>
           }
           notice={
             <a className="btn-ghost spending-back-link" href={backHref}>
-              Back to Spending
+              Back to Income
             </a>
           }
         />
@@ -345,10 +327,10 @@ export default async function SpendingCategoryPage({
           items={[
             {
               accent: true,
-              title: "Category Spend",
+              title: "Category Income",
               icon: <span className="income-kpi-icon">i</span>,
               value: categoryAmount,
-              badge: `${formatPercentLabel(model.periodSharePercent)} of spend`,
+              badge: `${formatPercentLabel(model.periodSharePercent)} of income`,
               badgeTone: "accent",
             },
             {
@@ -358,7 +340,7 @@ export default async function SpendingCategoryPage({
                 : "N/A",
               badge: `${comparisonAmount} prior period`,
               badgeTone:
-                Number(model.comparisonDeltaPercent ?? 0) > 0
+                Number(model.comparisonDeltaPercent ?? 0) >= 0
                   ? "accent"
                   : "neutral",
             },
@@ -376,8 +358,8 @@ export default async function SpendingCategoryPage({
               title: "Largest Transaction",
               value: largestTransactionAmount,
               badge:
-                model.largestTransaction?.merchantNormalized ??
                 model.largestTransaction?.counterpartyName ??
+                model.largestTransaction?.merchantNormalized ??
                 model.largestTransaction?.descriptionClean ??
                 "No transactions",
             },
@@ -386,7 +368,7 @@ export default async function SpendingCategoryPage({
 
         <FlowTrendChart
           title={`${category.label} Monthly Trend`}
-          description="Merchant-level composition for this category in each month."
+          description="Source-level composition for this category in each month."
           rangeLabel={chartRangeLabel}
           fallbackFxRangeLabel={fallbackFxRangeLabel}
           currency={model.currency}
@@ -395,26 +377,26 @@ export default async function SpendingCategoryPage({
           rows={trendRows}
           legendItems={legendItems}
           summary={{
-            title: `${category.label} Period Spend`,
+            title: `${category.label} Period Income`,
             value: categoryAmount,
-            badge: `${formatPercentLabel(model.periodSharePercent)} of spend`,
+            badge: `${formatPercentLabel(model.periodSharePercent)} of income`,
           }}
-          emptyLabel={`No ${category.label.toLowerCase()} spend is available for this period.`}
+          emptyLabel={`No ${category.label.toLowerCase()} income is available for this period.`}
         />
 
         <section className="income-bottom-grid span-12">
           <FlowBreakdownCard
-            title="Merchant Breakdown"
+            title="Source Breakdown"
             periodLabel={getPeriodLabel(model.period)}
-            description="Merchant and counterparty buckets inside this category for the selected period."
-            headers={["Merchant", "Distribution", "Volume", "Share"]}
+            description="Payer and counterparty buckets inside this category for the selected period."
+            headers={["Source", "Distribution", "Volume", "Share"]}
           >
-            {merchantRows.length === 0 ? (
+            {sourceRows.length === 0 ? (
               <div className="table-empty-state">
-                No merchant buckets are available for this category.
+                No source buckets are available for this category.
               </div>
             ) : (
-              merchantRows.map((row) => {
+              sourceRows.map((row) => {
                 const share =
                   categoryAmountNumber > 0
                     ? (Number(row.amountEur) / categoryAmountNumber) * 100
@@ -454,9 +436,14 @@ export default async function SpendingCategoryPage({
                       </span>
                     </summary>
                     <div className="merchant-breakdown-transactions">
+                      {row.aliases.length > 1 ? (
+                        <div className="muted" style={{ marginBottom: 12 }}>
+                          Merged aliases: {row.aliases.join(", ")}
+                        </div>
+                      ) : null}
                       {row.transactions.length === 0 ? (
                         <div className="table-empty-state">
-                          No transactions are attached to this merchant bucket.
+                          No transactions are attached to this source bucket.
                         </div>
                       ) : (
                         row.transactions.map((transaction) => {
@@ -516,9 +503,6 @@ export default async function SpendingCategoryPage({
                                   }
                                   quantity={transaction.quantity}
                                   llmPayload={transaction.llmPayload}
-                                  creditCardStatementStatus={
-                                    transaction.creditCardStatementStatus
-                                  }
                                   descriptionRaw={transaction.descriptionRaw}
                                   descriptionClean={
                                     transaction.descriptionClean
@@ -538,19 +522,19 @@ export default async function SpendingCategoryPage({
 
           <FlowSummaryCard>
             <div className="income-summary-stat">
-              <div className="stat-label">Top Merchant</div>
+              <div className="stat-label">Top Source</div>
               <div className="spending-summary-value">
-                {model.topMerchant?.label ?? "N/A"}
+                {model.topSource?.label ?? "N/A"}
               </div>
               <div className="stat-description">
-                {model.topMerchant
+                {model.topSource
                   ? `${formatBaseEurAmountForDisplay(
                       model.dataset,
-                      model.topMerchant.amountEur,
+                      model.topSource.amountEur,
                       model.currency,
                       model.referenceDate,
                     )} in ${category.label.toLowerCase()}`
-                  : "No merchant totals available."}
+                  : "No source totals available."}
               </div>
             </div>
 
@@ -569,7 +553,7 @@ export default async function SpendingCategoryPage({
                 {model.transactionCount.toString()}
               </div>
               <div className="stat-description">
-                Expand the merchant rows to inspect the transactions that add up
+                Expand the source rows to inspect the transactions that add up
                 to the category total.
               </div>
             </div>

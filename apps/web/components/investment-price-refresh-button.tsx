@@ -3,13 +3,15 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState, useTransition } from "react";
 
-import { refreshOwnedStockPricesAction } from "../app/actions";
+import { refreshOwnedPricesAction } from "../app/actions";
 
 function formatPlural(count: number, noun: string) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function buildRefreshSummary(result: Awaited<ReturnType<typeof refreshOwnedStockPricesAction>>) {
+function buildRefreshSummary(
+  result: Awaited<ReturnType<typeof refreshOwnedPricesAction>>,
+) {
   const pieces: string[] = [];
   if (result.refreshedCount > 0) {
     pieces.push(formatPlural(result.refreshedCount, "holding"));
@@ -18,6 +20,18 @@ function buildRefreshSummary(result: Awaited<ReturnType<typeof refreshOwnedStock
     pieces.push(formatPlural(result.refreshedFxPairs.length, "FX pair"));
   }
   return pieces.join(" and ");
+}
+
+function buildRefreshDetailSummary(
+  result: Awaited<ReturnType<typeof refreshOwnedPricesAction>>,
+) {
+  return [
+    ...result.unchangedDetails,
+    ...result.skippedDetails,
+    ...result.skippedFxPairs,
+  ]
+    .map((item) => `${item.symbol}: ${item.reason}`)
+    .join(" ");
 }
 
 export function InvestmentPriceRefreshButton() {
@@ -31,7 +45,7 @@ export function InvestmentPriceRefreshButton() {
     startTransition(async () => {
       setFeedback(null);
       try {
-        const result = await refreshOwnedStockPricesAction();
+        const result = await refreshOwnedPricesAction();
         const totalTrackedHoldings =
           result.totalTrackedStocks + result.totalTrackedFunds;
 
@@ -47,29 +61,20 @@ export function InvestmentPriceRefreshButton() {
           result.refreshedCount === 0 &&
           result.refreshedFxPairs.length === 0
         ) {
-          const skippedLabel =
-            [...result.skippedDetails, ...result.skippedFxPairs].length > 0
-              ? ` ${result.skippedDetails
-                  .concat(result.skippedFxPairs)
-                  .map((item) => `${item.symbol}: ${item.reason}`)
-                  .join(" ")}`
-              : "";
+          const detailSummary = buildRefreshDetailSummary(result);
           setFeedback(
-            `No fresh market data was returned.${skippedLabel}`,
+            detailSummary
+              ? `No newer prices were returned. ${detailSummary}`
+              : "No newer prices were returned.",
           );
           router.refresh();
           return;
         }
 
-        const skippedNote =
-          result.skippedCount > 0 || result.skippedFxPairs.length > 0
-            ? ` ${result.skippedDetails
-                .concat(result.skippedFxPairs)
-                .map((item) => `${item.symbol}: ${item.reason}`)
-                .join(" ")}`
-            : "";
+        const detailSummary = buildRefreshDetailSummary(result);
+        const detailNote = detailSummary ? ` ${detailSummary}` : "";
         setFeedback(
-          `Updated market data for ${buildRefreshSummary(result)}.${skippedNote}`,
+          `Updated prices for ${buildRefreshSummary(result)}.${detailNote}`,
         );
 
         const currentAsOf = searchParams.get("asOf");
@@ -86,9 +91,7 @@ export function InvestmentPriceRefreshButton() {
         router.refresh();
       } catch (error) {
         setFeedback(
-          error instanceof Error
-            ? error.message
-            : "Current price refresh failed.",
+          error instanceof Error ? error.message : "Price refresh failed.",
         );
       }
     });
@@ -102,7 +105,7 @@ export function InvestmentPriceRefreshButton() {
         disabled={isPending}
         onClick={handleRefresh}
       >
-        {isPending ? "Updating market data..." : "Update market data"}
+        {isPending ? "Updating prices..." : "Update Prices"}
       </button>
       {feedback ? <div className="status-note">{feedback}</div> : null}
     </div>

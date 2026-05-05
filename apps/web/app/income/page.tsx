@@ -21,14 +21,43 @@ import {
   getPeriodLabel,
 } from "../../lib/dashboard";
 import { formatCurrency } from "../../lib/formatters";
+import { buildHref } from "../../lib/navigation";
 import { getIncomeModel } from "../../lib/queries";
+
+const CATEGORY_PAGE_SIZE = 8;
+
+function normalizePageParam(value: string | string[] | undefined) {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  const parsed = Number.parseInt(rawValue ?? "1", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
 
 export default async function IncomePage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const model = await getIncomeModel(searchParams);
+  const params = await searchParams;
+  const model = await getIncomeModel(params);
+  const categoryRows = model.incomeCategoryRows;
+  const requestedCategoryPage = normalizePageParam(params.categoryPage);
+  const categoryPageCount = Math.max(
+    1,
+    Math.ceil(categoryRows.length / CATEGORY_PAGE_SIZE),
+  );
+  const categoryPage = Math.min(requestedCategoryPage, categoryPageCount);
+  const categoryStartIndex = (categoryPage - 1) * CATEGORY_PAGE_SIZE;
+  const visibleCategoryRows = categoryRows.slice(
+    categoryStartIndex,
+    categoryStartIndex + CATEGORY_PAGE_SIZE,
+  );
+  const categoryRangeLabel =
+    categoryRows.length > 0
+      ? `${categoryStartIndex + 1}-${Math.min(
+          categoryStartIndex + CATEGORY_PAGE_SIZE,
+          categoryRows.length,
+        )} of ${categoryRows.length}`
+      : "0 categories";
   const chartRows = model.monthlyIncomeComposition.map((row) => {
     const effectiveDate =
       endOfMonthIso(row.month) <= model.referenceDate
@@ -114,6 +143,7 @@ export default async function IncomePage({
       pathname="/income"
       scopeOptions={model.scopeOptions}
       state={model.navigationState}
+      pageQueryParams={{ categoryPage: String(categoryPage) }}
     >
       <div className="dashboard-grid income-editorial-shell">
         <FlowPageHeader
@@ -183,17 +213,17 @@ export default async function IncomePage({
 
         <section className="income-bottom-grid span-12">
           <FlowBreakdownCard
-            title="Income Source Breakdown"
+            title="Income Category Breakdown"
             periodLabel={getPeriodLabel(model.period)}
-            description="Grouped by normalized payer/counterparty names for the selected period."
-            headers={["Source", "Distribution", "Volume", "Share"]}
+            description="Resolved income categories for the selected period, ordered by current-period share."
+            headers={["Category", "Distribution", "Volume", "Share"]}
           >
-            {model.sourceRows.length === 0 ? (
+            {categoryRows.length === 0 ? (
               <div className="table-empty-state">
-                No resolved income sources are available for this period.
+                No resolved income categories are available for this period.
               </div>
             ) : (
-              model.sourceRows.map((row) => {
+              visibleCategoryRows.map((row) => {
                 const amountDisplay =
                   convertBaseEurToDisplayAmount(
                     model.dataset,
@@ -205,17 +235,19 @@ export default async function IncomePage({
                   currentPeriodIncome > 0
                     ? (Number(row.amountEur) / currentPeriodIncome) * 100
                     : 0;
+                const categoryHref = buildHref(
+                  `/income/${encodeURIComponent(row.categoryCode)}`,
+                  model.navigationState,
+                  {},
+                );
 
                 return (
-                  <div className="income-breakdown-row" key={row.label}>
-                    <div className="source-name">
-                      <div>{row.label}</div>
-                      {row.aliases.length > 1 ? (
-                        <div className="muted" style={{ marginTop: 4 }}>
-                          Merged aliases: {row.aliases.join(", ")}
-                        </div>
-                      ) : null}
-                    </div>
+                  <a
+                    className="income-breakdown-row spending-category-link-row"
+                    href={categoryHref}
+                    key={row.categoryCode}
+                  >
+                    <div className="source-name">{row.label}</div>
                     <div className="source-progress-track">
                       <div
                         className="source-progress-fill"
@@ -226,10 +258,57 @@ export default async function IncomePage({
                       {formatCurrency(amountDisplay, model.currency)}
                     </div>
                     <div className="amount">{share.toFixed(2)}%</div>
-                  </div>
+                  </a>
                 );
               })
             )}
+            {categoryRows.length > CATEGORY_PAGE_SIZE ? (
+              <div className="spending-category-pagination">
+                <span>{categoryRangeLabel}</span>
+                <div>
+                  <a
+                    className={
+                      categoryPage <= 1
+                        ? "spending-page-link disabled"
+                        : "spending-page-link"
+                    }
+                    aria-disabled={categoryPage <= 1}
+                    href={
+                      categoryPage <= 1
+                        ? undefined
+                        : buildHref(
+                            "/income",
+                            model.navigationState,
+                            {},
+                            { categoryPage: String(categoryPage - 1) },
+                          )
+                    }
+                  >
+                    Previous
+                  </a>
+                  <a
+                    className={
+                      categoryPage >= categoryPageCount
+                        ? "spending-page-link disabled"
+                        : "spending-page-link"
+                    }
+                    aria-disabled={categoryPage >= categoryPageCount}
+                    href={
+                      categoryPage >= categoryPageCount
+                        ? undefined
+                        : buildHref(
+                            "/income",
+                            model.navigationState,
+                            {},
+                            { categoryPage: String(categoryPage + 1) },
+                          )
+                    }
+                  >
+                    Next
+                  </a>
+                </div>
+              </div>
+            ) : null}
           </FlowBreakdownCard>
 
           <FlowSummaryCard>

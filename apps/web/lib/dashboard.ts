@@ -16,6 +16,7 @@ export function getPeriodLabel(period: {
 }) {
   if (period.preset === "all") return "All Time";
   if (period.preset === "mtd") return "Month to Date";
+  if (period.preset === "last_month") return "Last Month";
   if (period.preset === "ytd") return "Year to Date";
   if (period.preset === "week") return "Week to Date";
   if (period.preset === "24m") return "Trailing 24 Months";

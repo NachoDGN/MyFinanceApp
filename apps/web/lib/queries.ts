@@ -3,6 +3,7 @@ import { Decimal } from "decimal.js";
 import {
   buildDashboardReadModel,
   buildDashboardSummary,
+  buildIncomeCategoryReadModel,
   buildIncomeReadModel,
   buildInvestmentsReadModel,
   buildSpendingCategoryReadModel,
@@ -194,52 +195,6 @@ export async function resolveAppState(searchParams: RawSearchParams) {
     },
     transactionSearchQuery,
   };
-}
-
-export function buildHref(
-  pathname: string,
-  current: {
-    scopeParam: string;
-    currency: string;
-    period: string;
-    referenceDate?: string;
-    start?: string;
-    end?: string;
-  },
-  overrides: Partial<{
-    scopeParam: string;
-    currency: string;
-    period: string;
-    referenceDate: string;
-    start: string;
-    end: string;
-  }>,
-  extraParams: Record<string, string | undefined> = {},
-) {
-  const period = overrides.period ?? current.period;
-  const query = new URLSearchParams({
-    scope: overrides.scopeParam ?? current.scopeParam,
-    currency: overrides.currency ?? current.currency,
-    period,
-  });
-  const referenceDate = overrides.referenceDate ?? current.referenceDate;
-  if (referenceDate) {
-    query.set("asOf", referenceDate);
-  }
-  const start = overrides.start ?? current.start;
-  const end = overrides.end ?? current.end;
-  if (period === "custom" && start && end) {
-    query.set("start", start);
-    query.set("end", end);
-  }
-  for (const [key, value] of Object.entries(extraParams)) {
-    if (typeof value === "string" && value.trim() !== "") {
-      query.set(key, value);
-    } else {
-      query.delete(key);
-    }
-  }
-  return `${pathname}?${query.toString()}`;
 }
 
 export { formatCurrency, formatDate, formatPercent, formatQuantity };
@@ -476,6 +431,9 @@ export type RulesModel = Awaited<ReturnType<typeof getRulesModel>>;
 export type InvestmentsModel = Awaited<ReturnType<typeof getInvestmentsModel>>;
 export type SpendingModel = Awaited<ReturnType<typeof getSpendingModel>>;
 export type IncomeModel = Awaited<ReturnType<typeof getIncomeModel>>;
+export type IncomeCategoryModel = Awaited<
+  ReturnType<typeof getIncomeCategoryModel>
+>;
 export type InsightsModel = Awaited<ReturnType<typeof getInsightsModel>>;
 export type PromptsModel = Awaited<ReturnType<typeof getPromptsModel>>;
 export type CreditCardStatementModel = Awaited<
@@ -677,6 +635,23 @@ export async function getIncomeModel(searchParams: RawSearchParams) {
     ...buildIncomeReadModel(state.dataset, {
       scope: state.scope,
       displayCurrency: state.currency,
+      period: state.period,
+      referenceDate: state.referenceDate,
+    }),
+  };
+}
+
+export async function getIncomeCategoryModel(
+  searchParams: RawSearchParams,
+  categoryCode: string,
+) {
+  const state = await resolveAppState(searchParams);
+  return {
+    ...state,
+    ...buildIncomeCategoryReadModel(state.dataset, {
+      scope: state.scope,
+      displayCurrency: state.currency,
+      categoryCode,
       period: state.period,
       referenceDate: state.referenceDate,
     }),

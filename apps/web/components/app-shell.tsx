@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 
-import { buildHref } from "../lib/queries";
+import { buildHref, type NavigationState } from "../lib/navigation";
 import { ImportReviewModalHost } from "./import-review-modal-host";
 import { TransactionSearchModalHost } from "./transaction-search-modal-host";
 
@@ -33,15 +33,7 @@ export function AppShell({
 }: {
   children: ReactNode;
   pathname: string;
-  state: {
-    scopeParam: string;
-    currency: string;
-    period: string;
-    referenceDate?: string;
-    latestReferenceDate?: string;
-    start?: string;
-    end?: string;
-  };
+  state: NavigationState;
   scopeOptions: Array<{ value: string; label: string }>;
   pageQueryParams?: Record<string, string | undefined>;
 }) {
@@ -154,6 +146,17 @@ export function AppShell({
                 className={`filter-pill ${state.period === "mtd" ? "active" : ""}`}
               >
                 MTD
+              </a>
+              <a
+                href={buildHref(
+                  pathname,
+                  state,
+                  { period: "last_month" },
+                  pageQueryParams,
+                )}
+                className={`filter-pill ${state.period === "last_month" ? "active" : ""}`}
+              >
+                Last Month
               </a>
               <a
                 href={buildHref(

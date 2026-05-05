@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { accountTypeOptions, canonicalFieldKeys, signModeOptions } from "@myfinance/domain";
+import {
+  accountTypeOptions,
+  canonicalFieldKeys,
+  signModeOptions,
+} from "@myfinance/domain";
 
 function isSupportedTimeZone(value: string) {
   try {
@@ -111,10 +115,7 @@ export const signedAmountStringSchema = z.preprocess(
     .string()
     .trim()
     .min(1)
-    .refine(
-      (value) => Number.isFinite(Number(value)),
-      "Enter a valid amount.",
-    ),
+    .refine((value) => Number.isFinite(Number(value)), "Enter a valid amount."),
 );
 
 export const accountFieldsSchema = z.object({
@@ -177,7 +178,9 @@ export const workspaceProfileSchema = z.object({
     .refine(isSupportedTimeZone, "Choose a valid IANA timezone."),
   preferredScope: z.string().trim().min(1).default("consolidated"),
   defaultDisplayCurrency: z.enum(["EUR", "USD"]).default("EUR"),
-  defaultPeriodPreset: z.enum(["mtd", "ytd", "all"]).default("mtd"),
+  defaultPeriodPreset: z
+    .enum(["mtd", "last_month", "ytd", "all"])
+    .default("mtd"),
   defaultCashStaleAfterDays: z.coerce.number().int().min(1).max(365).default(7),
   defaultInvestmentStaleAfterDays: z.coerce
     .number()

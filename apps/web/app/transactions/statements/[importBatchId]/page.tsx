@@ -2,10 +2,8 @@ import { notFound } from "next/navigation";
 
 import { AppShell } from "../../../../components/app-shell";
 import { ReviewEditorCell } from "../../../../components/review-editor-cell";
-import {
-  buildHref,
-  getCreditCardStatementModel,
-} from "../../../../lib/queries";
+import { buildHref } from "../../../../lib/navigation";
+import { getCreditCardStatementModel } from "../../../../lib/queries";
 import { formatCurrency, formatDate } from "../../../../lib/formatters";
 import { convertBaseEurToDisplayAmount } from "../../../../lib/currency";
 

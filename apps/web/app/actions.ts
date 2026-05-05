@@ -6,7 +6,7 @@ import { z } from "zod";
 import {
   deactivateLearnedReviewExample,
   getDbRuntimeConfig,
-  refreshOwnedStockPrices,
+  refreshOwnedPrices,
   updatePromptProfile,
 } from "@myfinance/db";
 import {
@@ -398,8 +398,12 @@ export async function resetWorkspaceAction() {
   );
 }
 
+export async function refreshOwnedPricesAction() {
+  return revalidated(refreshOwnedPrices(), revalidateWorkspacePaths);
+}
+
 export async function refreshOwnedStockPricesAction() {
-  return revalidated(refreshOwnedStockPrices(), revalidateWorkspacePaths);
+  return refreshOwnedPricesAction();
 }
 
 export async function updatePromptProfileAction(formData: FormData) {

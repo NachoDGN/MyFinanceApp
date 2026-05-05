@@ -135,7 +135,11 @@ program
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
   .option("--currency <currency>", "EUR or USD", "EUR")
-  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
+  .option(
+    "--period <period>",
+    "week, mtd, last_month, ytd, 24m, or custom",
+    "mtd",
+  )
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--start <date>", "Custom period start in YYYY-MM-DD format")
   .option("--end <date>", "Custom period end in YYYY-MM-DD format")
@@ -160,7 +164,11 @@ program
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
   .option("--currency <currency>", "EUR or USD", "EUR")
-  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
+  .option(
+    "--period <period>",
+    "week, mtd, last_month, ytd, 24m, or custom",
+    "mtd",
+  )
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--start <date>", "Custom period start in YYYY-MM-DD format")
   .option("--end <date>", "Custom period end in YYYY-MM-DD format")
@@ -187,7 +195,11 @@ program
     "--scope <scope>",
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
-  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
+  .option(
+    "--period <period>",
+    "week, mtd, last_month, ytd, 24m, or custom",
+    "mtd",
+  )
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--start <date>", "Custom period start in YYYY-MM-DD format")
   .option("--end <date>", "Custom period end in YYYY-MM-DD format")
@@ -212,7 +224,11 @@ program
     "--scope <scope>",
     "consolidated, personal, company_a, company_b, or account:<id>",
   )
-  .option("--period <period>", "week, mtd, ytd, 24m, or custom", "mtd")
+  .option(
+    "--period <period>",
+    "week, mtd, last_month, ytd, 24m, or custom",
+    "mtd",
+  )
   .option("--as-of <date>", "Reference date in YYYY-MM-DD format")
   .option("--start <date>", "Custom period start in YYYY-MM-DD format")
   .option("--end <date>", "Custom period end in YYYY-MM-DD format")

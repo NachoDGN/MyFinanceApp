@@ -1,7 +1,12 @@
 import type { AssetDomain, Entity, Profile } from "./types";
 
 export const supportedDisplayCurrencies = ["EUR", "USD"] as const;
-export const supportedPeriodPresets = ["mtd", "ytd", "all"] as const;
+export const supportedPeriodPresets = [
+  "mtd",
+  "last_month",
+  "ytd",
+  "all",
+] as const;
 
 export type SupportedDisplayCurrency =
   (typeof supportedDisplayCurrencies)[number];
@@ -54,6 +59,9 @@ function readSupportedPeriod(
 ): SupportedPeriodPreset {
   if (value === "all") {
     return "all";
+  }
+  if (value === "last_month") {
+    return "last_month";
   }
   return value === "ytd" ? "ytd" : fallback;
 }
