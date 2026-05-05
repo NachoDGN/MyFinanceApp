@@ -7,6 +7,7 @@ import {
   buildIncomeReadModel,
   buildInvestmentsReadModel,
   buildMetricResult,
+  buildSpendingCategoryReadModel,
   buildSpendingReadModel,
 } from "../packages/analytics/src/index.ts";
 import {
@@ -7541,12 +7542,26 @@ test("default ledger rows respect the selected period even without a search quer
   assert.equal(ledger.totalCount, 1);
 });
 
-test("custom dashboard and income series stay inside the requested custom range", () => {
+test("custom dashboard and flow series stay inside the requested custom range", () => {
   const account = createAccount({
     id: "custom-range-series-account",
   });
+  const baseDataset = createDataset();
   const dataset = createDataset({
     accounts: [account],
+    categories: [
+      ...baseDataset.categories,
+      {
+        code: "subscriptions",
+        displayName: "Subscriptions",
+        parentCode: null,
+        scopeKind: "personal",
+        directionKind: "expense",
+        sortOrder: 25,
+        active: true,
+        metadataJson: {},
+      },
+    ],
     transactions: [
       createTransaction({
         id: "custom-jan-income",
@@ -7559,6 +7574,19 @@ test("custom dashboard and income series stay inside the requested custom range"
         amountBaseEur: "100.00",
         transactionClass: "income",
         categoryCode: "salary",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "custom-jan-subscription",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-01-12",
+        postedDate: "2026-01-12",
+        amountOriginal: "-40.00",
+        amountBaseEur: "-40.00",
+        transactionClass: "expense",
+        categoryCode: "subscriptions",
         needsReview: false,
       }),
       createTransaction({
@@ -7575,6 +7603,19 @@ test("custom dashboard and income series stay inside the requested custom range"
         needsReview: false,
       }),
       createTransaction({
+        id: "custom-feb-subscription",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-02-12",
+        postedDate: "2026-02-12",
+        amountOriginal: "-50.00",
+        amountBaseEur: "-50.00",
+        transactionClass: "expense",
+        categoryCode: "subscriptions",
+        needsReview: false,
+      }),
+      createTransaction({
         id: "custom-mar-income",
         accountId: account.id,
         accountEntityId: account.entityId,
@@ -7585,6 +7626,19 @@ test("custom dashboard and income series stay inside the requested custom range"
         amountBaseEur: "300.00",
         transactionClass: "income",
         categoryCode: "salary",
+        needsReview: false,
+      }),
+      createTransaction({
+        id: "custom-mar-subscription",
+        accountId: account.id,
+        accountEntityId: account.entityId,
+        economicEntityId: account.entityId,
+        transactionDate: "2026-03-12",
+        postedDate: "2026-03-12",
+        amountOriginal: "-60.00",
+        amountBaseEur: "-60.00",
+        transactionClass: "expense",
+        categoryCode: "subscriptions",
         needsReview: false,
       }),
     ],
@@ -7607,6 +7661,19 @@ test("custom dashboard and income series stay inside the requested custom range"
     period,
     referenceDate: "2026-04-11",
   });
+  const spendingModel = buildSpendingReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    period,
+    referenceDate: "2026-04-11",
+  });
+  const subscriptionModel = buildSpendingCategoryReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "EUR",
+    categoryCode: "subscriptions",
+    period,
+    referenceDate: "2026-04-11",
+  });
 
   assert.deepEqual(
     summary.monthlySeries.map((row) => row.month),
@@ -7615,6 +7682,21 @@ test("custom dashboard and income series stay inside the requested custom range"
   assert.deepEqual(
     incomeModel.monthlyIncomeComposition.map((row) => row.month),
     ["2026-01-01", "2026-02-01"],
+  );
+  assert.deepEqual(
+    spendingModel.spendingCategoryMonthlySeries.map((row) => row.month),
+    ["2026-01-01", "2026-02-01"],
+  );
+  assert.deepEqual(
+    subscriptionModel.monthlySeries.map((row) => [row.month, row.amountEur]),
+    [
+      ["2026-01-01", "40.00"],
+      ["2026-02-01", "50.00"],
+    ],
+  );
+  assert.deepEqual(
+    subscriptionModel.transactions.map((transaction) => transaction.id),
+    ["custom-feb-subscription", "custom-jan-subscription"],
   );
 });
 

@@ -335,6 +335,46 @@ textarea {
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
 }
 
+.custom-period-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(243, 244, 246, 0.95);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+}
+
+.custom-period-input {
+  min-height: 40px;
+  min-width: 142px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #111827;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.custom-period-input:focus {
+  border-color: #111827;
+  outline: 2px solid rgba(17, 24, 39, 0.12);
+  outline-offset: 1px;
+}
+
+.custom-period-submit {
+  min-height: 40px;
+  cursor: pointer;
+}
+
+.custom-period-submit.active {
+  background: #f3f4f6;
+  color: #111827;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+}
+
 .transaction-agent-open-button {
   min-height: 44px;
   display: inline-flex;
@@ -4252,6 +4292,17 @@ textarea {
   .filter-pill {
     flex: 1 0 auto;
     text-align: center;
+  }
+
+  .custom-period-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    width: 100%;
+  }
+
+  .custom-period-input {
+    min-width: 0;
+    width: 100%;
   }
 
   .transaction-agent-open-button {

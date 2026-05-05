@@ -9,6 +9,17 @@ export function formatMonthRange(start: string, end: string) {
   return `${formatMonthLabel(start)} ${start.slice(0, 4)} — ${formatMonthLabel(end)} ${end.slice(0, 4)}`;
 }
 
+export function formatDateRange(start: string, end: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+
+  return `${formatter.format(new Date(`${start}T00:00:00Z`))} - ${formatter.format(new Date(`${end}T00:00:00Z`))}`;
+}
+
 export function getPeriodLabel(period: {
   preset: string;
   start: string;
@@ -20,6 +31,8 @@ export function getPeriodLabel(period: {
   if (period.preset === "ytd") return "Year to Date";
   if (period.preset === "week") return "Week to Date";
   if (period.preset === "24m") return "Trailing 24 Months";
+  if (period.preset === "custom")
+    return formatDateRange(period.start, period.end);
   return formatMonthRange(period.start, period.end);
 }
 

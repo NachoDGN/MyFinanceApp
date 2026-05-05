@@ -24,6 +24,15 @@ const secondaryNav = [
   { href: "/settings", label: "Settings" },
 ];
 
+const reservedNavigationParamNames = new Set([
+  "scope",
+  "currency",
+  "period",
+  "asOf",
+  "start",
+  "end",
+]);
+
 export function AppShell({
   children,
   pathname,
@@ -50,6 +59,11 @@ export function AppShell({
     pathname === href ||
     pathname.startsWith(`${href}/`) ||
     (isStatementRoute && href === "/transactions");
+  const supportsCustomPeriod =
+    pathname === "/spending" ||
+    pathname.startsWith("/spending/") ||
+    pathname === "/income" ||
+    pathname.startsWith("/income/");
   const shouldNormalizeReferenceDate =
     Boolean(state.referenceDate) &&
     Boolean(state.latestReferenceDate) &&
@@ -181,6 +195,55 @@ export function AppShell({
                 ALL
               </a>
             </div>
+
+            {supportsCustomPeriod ? (
+              <form className="custom-period-form" action={pathname}>
+                <input type="hidden" name="scope" value={state.scopeParam} />
+                <input type="hidden" name="currency" value={state.currency} />
+                <input type="hidden" name="period" value="custom" />
+                {state.referenceDate ? (
+                  <input
+                    type="hidden"
+                    name="asOf"
+                    value={state.referenceDate}
+                  />
+                ) : null}
+                {Object.entries(pageQueryParams)
+                  .filter(
+                    ([key, value]) =>
+                      !reservedNavigationParamNames.has(key) &&
+                      typeof value === "string" &&
+                      value.trim() !== "",
+                  )
+                  .map(([key, value]) => (
+                    <input key={key} type="hidden" name={key} value={value} />
+                  ))}
+                <input
+                  aria-label="Custom start date"
+                  className="custom-period-input"
+                  name="start"
+                  type="date"
+                  defaultValue={state.start}
+                  required
+                />
+                <input
+                  aria-label="Custom end date"
+                  className="custom-period-input"
+                  name="end"
+                  type="date"
+                  defaultValue={state.end}
+                  required
+                />
+                <button
+                  className={`filter-pill custom-period-submit ${
+                    state.period === "custom" ? "active" : ""
+                  }`}
+                  type="submit"
+                >
+                  Apply
+                </button>
+              </form>
+            ) : null}
 
             <div className="filter-group segmented-filter currency-filter-group">
               <a

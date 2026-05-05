@@ -191,8 +191,8 @@ export async function resolveAppState(searchParams: RawSearchParams) {
       period: period.preset,
       referenceDate,
       latestReferenceDate,
-      start: period.preset === "custom" ? period.start : undefined,
-      end: period.preset === "custom" ? period.end : undefined,
+      start: period.start,
+      end: period.end,
     },
     transactionSearchQuery,
   };
