@@ -2,7 +2,7 @@ import {
   getInvestmentTransactionClassifierConfig,
   getTransactionClassifierConfig,
 } from "@myfinance/classification";
-import { getRuleParserConfig, type AuditEvent } from "@myfinance/domain";
+import type { AuditEvent } from "@myfinance/domain";
 import { getImportTemplateInferenceConfig } from "@myfinance/ingestion";
 import {
   buildPromptProfilePreview,
@@ -20,6 +20,7 @@ import {
   withSeededUserContext,
   type SqlClient,
 } from "./sql-runtime";
+import { getRuleParserConfig } from "./rule-drafts";
 
 export interface PromptProfileModel {
   id: PromptProfileId;

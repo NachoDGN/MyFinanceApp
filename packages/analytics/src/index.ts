@@ -18,14 +18,12 @@ import {
   getLatestAccountBalances,
   getPreviousComparablePeriod,
   needsCreditCardStatementUpload,
-  isCreditCardSettlementTransaction,
   isTransactionResolvedForAnalytics,
   isCryptoCurrency,
   isUnmatchedCreditCardSettlementTransaction,
   needsTransactionManualReview,
   buildHoldingsSnapshot,
   buildQualitySummary,
-  resolveFxRate,
   resolvePeriodSelection,
   resolveScopeEntityIds,
   shiftIsoDate,
@@ -35,6 +33,19 @@ import {
   normalizeMatcherText,
 } from "@myfinance/domain";
 import { metricRegistry } from "./registry";
+import {
+  amountMagnitudeEur,
+  hasFlowContribution,
+  hasIncomeContribution,
+  hasSpendingContribution,
+  humanizeTransactionClass,
+  incomeContributionEur,
+  isUnresolvedCashFlow,
+  safeDividePercent,
+  spendingContributionEur,
+  sumStrings,
+  toDisplayAmount,
+} from "./flow-logic";
 import { buildAnalyticsReadModelContext } from "./read-model-context";
 
 export { metricRegistry } from "./registry";
@@ -53,137 +64,6 @@ const investmentLedgerClasses = [
 const processedInvestmentLedgerClasses = investmentLedgerClasses.filter(
   (transactionClass) => transactionClass !== "unknown",
 ) as Transaction["transactionClass"][];
-
-function sumStrings(values: Array<string | null | undefined>) {
-  return values
-    .reduce((sum, value) => sum.plus(new Decimal(value ?? 0)), new Decimal(0))
-    .toFixed(2);
-}
-
-function safeDividePercent(numerator: Decimal, denominator: Decimal) {
-  if (denominator.eq(0)) return null;
-  return numerator.div(denominator).mul(100).toFixed(2);
-}
-
-function toDisplayAmount(
-  dataset: DomainDataset,
-  amountEur: string | null,
-  currency: string,
-  asOfDate = todayIso(),
-) {
-  if (amountEur === null) return null;
-  if (currency === "EUR") return new Decimal(amountEur).toFixed(2);
-  return new Decimal(amountEur)
-    .mul(resolveFxRate(dataset, "EUR", currency, asOfDate))
-    .toFixed(2);
-}
-
-function amountMagnitudeEur(transaction: Transaction) {
-  return new Decimal(transaction.amountBaseEur).abs();
-}
-
-function humanizeTransactionClass(
-  transactionClass: Transaction["transactionClass"],
-) {
-  return transactionClass
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function isIncomeLike(transaction: Transaction) {
-  return ["income", "dividend", "interest"].includes(
-    transaction.transactionClass,
-  );
-}
-
-function isExcludedIncome(transaction: Transaction) {
-  return [
-    "owner_contribution",
-    "reimbursement",
-    "refund",
-    "transfer_internal",
-    "transfer_external",
-    "loan_inflow",
-    "investment_trade_sell",
-  ].includes(transaction.transactionClass);
-}
-
-function isExcludedFromFlowAnalytics(transaction: Transaction) {
-  return (
-    transaction.excludeFromAnalytics === true ||
-    Boolean(transaction.voidedAt) ||
-    isCreditCardSettlementTransaction(transaction)
-  );
-}
-
-function isUnresolvedCashFlow(transaction: Transaction) {
-  return (
-    transaction.transactionClass === "unknown" &&
-    !isExcludedFromFlowAnalytics(transaction)
-  );
-}
-
-function isSpendingLike(transaction: Transaction) {
-  return [
-    "expense",
-    "fee",
-    "refund",
-    "loan_principal_payment",
-    "loan_interest_payment",
-  ].includes(transaction.transactionClass);
-}
-
-function incomeContributionEur(transaction: Transaction) {
-  if (isExcludedFromFlowAnalytics(transaction)) {
-    return null;
-  }
-
-  if (isUnresolvedCashFlow(transaction)) {
-    const amount = new Decimal(transaction.amountBaseEur);
-    return amount.gt(0) ? amount : null;
-  }
-
-  if (!isIncomeLike(transaction) || isExcludedIncome(transaction)) {
-    return null;
-  }
-
-  return new Decimal(transaction.amountBaseEur);
-}
-
-function spendingContributionEur(transaction: Transaction) {
-  if (isExcludedFromFlowAnalytics(transaction)) {
-    return null;
-  }
-
-  if (isUnresolvedCashFlow(transaction)) {
-    const amount = new Decimal(transaction.amountBaseEur);
-    return amount.lt(0) ? amount.abs() : null;
-  }
-
-  if (!isSpendingLike(transaction)) {
-    return null;
-  }
-
-  if (transaction.transactionClass === "refund") {
-    return new Decimal(transaction.amountBaseEur).neg();
-  }
-
-  return amountMagnitudeEur(transaction);
-}
-
-function hasIncomeContribution(transaction: Transaction) {
-  return incomeContributionEur(transaction) !== null;
-}
-
-function hasSpendingContribution(transaction: Transaction) {
-  return spendingContributionEur(transaction) !== null;
-}
-
-function hasFlowContribution(transaction: Transaction) {
-  return (
-    hasIncomeContribution(transaction) || hasSpendingContribution(transaction)
-  );
-}
 
 function resolveSpendingCategoryBucket(
   categoryByCode: Map<string, DomainDataset["categories"][number]>,

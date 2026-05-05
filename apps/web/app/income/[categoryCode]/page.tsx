@@ -10,7 +10,6 @@ import {
 } from "../../../components/flow-overview";
 import { ReviewEditorCell } from "../../../components/review-editor-cell";
 import {
-  convertBaseEurToDisplayAmount,
   convertBaseEurToDisplayAmountWithFallback,
   endOfMonthIso,
   formatBaseEurAmountForDisplay,
@@ -23,73 +22,31 @@ import {
   getPeriodLabel,
 } from "../../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../../lib/formatters";
+import {
+  flowSeriesColor,
+  formatFallbackFxRange,
+  formatFlowCategoryLabel,
+  formatFlowDisplayAmount,
+  formatTransactionClassLabel,
+  startOfMonthIso,
+} from "../../../lib/flow-page";
 import { buildHref } from "../../../lib/navigation";
 import { getIncomeCategoryModel } from "../../../lib/queries";
 
 type IncomeCategoryModel = Awaited<ReturnType<typeof getIncomeCategoryModel>>;
 type IncomeCategoryTransaction = IncomeCategoryModel["transactions"][number];
 
-const INCOME_SOURCE_COLORS = [
-  "#ff4a22",
-  "#005f73",
-  "#0a9396",
-  "#2a9d8f",
-  "#e9c46a",
-  "#f4a261",
-  "#457b9d",
-  "#3d405b",
-  "#6d597a",
-  "#8d99ae",
-  "#2f3e46",
-  "#bc4749",
-];
-
-function sourceColor(index: number) {
-  return INCOME_SOURCE_COLORS[index % INCOME_SOURCE_COLORS.length]!;
-}
-
-function startOfMonthIso(value: string) {
-  return `${value.slice(0, 7)}-01`;
-}
-
-function formatDisplayAmount(
-  amountBaseEur: string | null | undefined,
-  currency: string,
-  transactionDate: string,
-  dataset: IncomeCategoryModel["dataset"],
-) {
-  if (amountBaseEur === null || amountBaseEur === undefined) {
-    return "N/A";
-  }
-
-  return formatCurrency(
-    convertBaseEurToDisplayAmount(
-      dataset,
-      amountBaseEur,
-      currency,
-      transactionDate,
-    ),
-    currency,
-  );
-}
-
 function formatCategoryLabel(
   categoryCode: string | null | undefined,
   transactionClass: string,
   model: IncomeCategoryModel,
 ) {
-  if (categoryCode) {
-    return (
-      model.dataset.categories.find(
-        (category) => category.code === categoryCode,
-      )?.displayName ??
-      (categoryCode === model.category?.categoryCode
-        ? model.category.label
-        : categoryCode)
-    );
-  }
-
-  return model.category?.label ?? transactionClass.replace(/_/g, " ");
+  const category = model.category;
+  const fallbackLabel =
+    category && categoryCode === category.categoryCode
+      ? category.label
+      : (category?.label ?? formatTransactionClassLabel(transactionClass));
+  return formatFlowCategoryLabel(model.dataset, categoryCode, fallbackLabel);
 }
 
 function resolveIncomeSourceLabel(transaction: IncomeCategoryTransaction) {
@@ -104,10 +61,6 @@ function resolveIncomeSourceLabel(transaction: IncomeCategoryTransaction) {
 function incomeContributionAmountEur(transaction: IncomeCategoryTransaction) {
   const amount = Number(transaction.amountBaseEur ?? 0);
   return Number.isFinite(amount) ? Math.max(amount, 0) : 0;
-}
-
-function formatTransactionClass(transactionClass: string) {
-  return transactionClass.replace(/_/g, " ");
 }
 
 export default async function IncomeCategoryPage({
@@ -145,7 +98,7 @@ export default async function IncomeCategoryPage({
   );
   const sourceRows = model.sourceRows.map((row, index) => ({
     ...row,
-    color: sourceColor(index),
+    color: flowSeriesColor(index),
     transactions: transactionsBySource.get(row.label) ?? [],
   }));
   const sourceColorByLabel = new Map(
@@ -205,7 +158,7 @@ export default async function IncomeCategoryPage({
           label,
           color:
             sourceColorByLabel.get(label) ??
-            sourceColor(sourceColorByLabel.size + index),
+            flowSeriesColor(sourceColorByLabel.size + index),
           displayAmount: Math.max(Number(displayAmount.amount ?? 0), 0),
           valueLabel: formatCurrency(displayAmount.amount, model.currency),
         };
@@ -225,14 +178,7 @@ export default async function IncomeCategoryPage({
   const fallbackFxMonths = chartRows
     .filter((row) => row.usedFallbackFx)
     .map((row) => row.month);
-  const fallbackFxRangeLabel =
-    fallbackFxMonths.length > 0
-      ? fallbackFxMonths.length === 1
-        ? formatMonthLabel(fallbackFxMonths[0]!)
-        : `${formatMonthLabel(fallbackFxMonths[0]!)}-${formatMonthLabel(
-            fallbackFxMonths[fallbackFxMonths.length - 1]!,
-          )}`
-      : null;
+  const fallbackFxRangeLabel = formatFallbackFxRange(fallbackFxMonths);
   const chartMax = Math.max(...chartRows.map((row) => row.incomeDisplay), 1);
   const trendRows = chartRows.map((row) => ({
     month: row.month,
@@ -291,11 +237,11 @@ export default async function IncomeCategoryPage({
     model.referenceDate,
   );
   const largestTransactionAmount = model.largestTransaction
-    ? formatDisplayAmount(
+    ? formatFlowDisplayAmount(
+        model.dataset,
         model.largestTransaction.amountBaseEur,
         model.currency,
         model.largestTransaction.transactionDate,
-        model.dataset,
       )
     : "N/A";
 
@@ -467,7 +413,7 @@ export default async function IncomeCategoryPage({
                                   </span>
                                   <span>{accountName}</span>
                                   <span>
-                                    {formatTransactionClass(
+                                    {formatTransactionClassLabel(
                                       transaction.transactionClass,
                                     )}
                                   </span>
@@ -482,11 +428,11 @@ export default async function IncomeCategoryPage({
                               </div>
                               <div className="merchant-breakdown-transaction-actions">
                                 <strong>
-                                  {formatDisplayAmount(
+                                  {formatFlowDisplayAmount(
+                                    model.dataset,
                                     transaction.amountBaseEur,
                                     model.currency,
                                     transaction.transactionDate,
-                                    model.dataset,
                                   )}
                                 </strong>
                                 <ReviewEditorCell

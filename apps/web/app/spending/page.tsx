@@ -10,7 +10,6 @@ import {
 import { SimpleTable } from "../../components/primitives";
 import { ReviewEditorCell } from "../../components/review-editor-cell";
 import {
-  convertBaseEurToDisplayAmount,
   convertBaseEurToDisplayAmountWithFallback,
   endOfMonthIso,
   formatBaseEurAmountForDisplay,
@@ -23,29 +22,13 @@ import {
   getPeriodLabel,
 } from "../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../lib/formatters";
+import {
+  flowSeriesColor,
+  formatFlowDisplayAmount,
+  paginateFlowRows,
+} from "../../lib/flow-page";
 import { buildHref } from "../../lib/navigation";
 import { getSpendingModel } from "../../lib/queries";
-
-function formatDisplayAmount(
-  amountBaseEur: string | null | undefined,
-  currency: string,
-  transactionDate: string,
-  dataset: Awaited<ReturnType<typeof getSpendingModel>>["dataset"],
-) {
-  if (amountBaseEur === null || amountBaseEur === undefined) {
-    return "N/A";
-  }
-
-  return formatCurrency(
-    convertBaseEurToDisplayAmount(
-      dataset,
-      amountBaseEur,
-      currency,
-      transactionDate,
-    ),
-    currency,
-  );
-}
 
 function formatCategoryLabel(
   categoryCode: string | null | undefined,
@@ -99,33 +82,6 @@ function formatStatementDateParts(value: string) {
   };
 }
 
-const SPENDING_CATEGORY_COLORS = [
-  "#ff4a22",
-  "#005f73",
-  "#0a9396",
-  "#2a9d8f",
-  "#e9c46a",
-  "#f4a261",
-  "#457b9d",
-  "#3d405b",
-  "#6d597a",
-  "#8d99ae",
-  "#2f3e46",
-  "#bc4749",
-];
-
-const CATEGORY_PAGE_SIZE = 8;
-
-function normalizePageParam(value: string | string[] | undefined) {
-  const rawValue = Array.isArray(value) ? value[0] : value;
-  const parsed = Number.parseInt(rawValue ?? "1", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-}
-
-function categoryColor(index: number) {
-  return SPENDING_CATEGORY_COLORS[index % SPENDING_CATEGORY_COLORS.length]!;
-}
-
 export default async function SpendingPage({
   searchParams,
 }: {
@@ -141,7 +97,7 @@ export default async function SpendingPage({
       return existing;
     }
 
-    const color = categoryColor(categoryColorByCode.size);
+    const color = flowSeriesColor(categoryColorByCode.size);
     categoryColorByCode.set(categoryCode, color);
     return color;
   };
@@ -274,24 +230,17 @@ export default async function SpendingPage({
       .filter((batch) => batch.creditCardSettlementTransactionId)
       .map((batch) => [batch.creditCardSettlementTransactionId!, batch]),
   );
-  const requestedCategoryPage = normalizePageParam(params.categoryPage);
-  const categoryPageCount = Math.max(
-    1,
-    Math.ceil(categoryRows.length / CATEGORY_PAGE_SIZE),
+  const categoryPagination = paginateFlowRows(
+    categoryRows,
+    params.categoryPage,
   );
-  const categoryPage = Math.min(requestedCategoryPage, categoryPageCount);
-  const categoryStartIndex = (categoryPage - 1) * CATEGORY_PAGE_SIZE;
-  const visibleCategoryRows = categoryRows.slice(
-    categoryStartIndex,
-    categoryStartIndex + CATEGORY_PAGE_SIZE,
-  );
-  const categoryRangeLabel =
-    categoryRows.length > 0
-      ? `${categoryStartIndex + 1}-${Math.min(
-          categoryStartIndex + CATEGORY_PAGE_SIZE,
-          categoryRows.length,
-        )} of ${categoryRows.length}`
-      : "0 categories";
+  const {
+    page: categoryPage,
+    pageCount: categoryPageCount,
+    rangeLabel: categoryRangeLabel,
+    visibleRows: visibleCategoryRows,
+    hasMultiplePages: hasMultipleCategoryPages,
+  } = categoryPagination;
   const largestTransactions = [...model.transactions]
     .sort(
       (left, right) =>
@@ -461,7 +410,7 @@ export default async function SpendingPage({
                 );
               })
             )}
-            {categoryRows.length > CATEGORY_PAGE_SIZE ? (
+            {hasMultipleCategoryPages ? (
               <div className="spending-category-pagination">
                 <span>{categoryRangeLabel}</span>
                 <div>
@@ -676,11 +625,11 @@ export default async function SpendingPage({
                         Payment
                       </span>
                       <div className="statement-resolution-amount">
-                        {formatDisplayAmount(
+                        {formatFlowDisplayAmount(
+                          model.dataset,
                           row.amountBaseEur,
                           model.currency,
                           row.transactionDate,
-                          model.dataset,
                         )}
                       </div>
                     </div>
@@ -765,11 +714,11 @@ export default async function SpendingPage({
               row.descriptionRaw,
               model.dataset,
             ),
-            formatDisplayAmount(
+            formatFlowDisplayAmount(
+              model.dataset,
               row.amountBaseEur,
               model.currency,
               row.transactionDate,
-              model.dataset,
             ),
             <ReviewEditorCell
               transactionId={row.id}

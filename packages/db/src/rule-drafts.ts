@@ -5,7 +5,7 @@ import {
   type PromptProfileOverrides,
 } from "@myfinance/llm";
 
-import type { DomainDataset, RuleDraftParseResult } from "./types";
+import type { DomainDataset, RuleDraftParseResult } from "@myfinance/domain";
 
 const supportedConditionKeys = [
   "normalized_description_regex",
@@ -29,7 +29,10 @@ const supportedOutputKeys = [
 
 export function getRuleParserConfig() {
   return {
-    model: process.env.LLM_RULES_MODEL ?? process.env.OPENAI_RULES_MODEL ?? "gpt-4.1-mini",
+    model:
+      process.env.LLM_RULES_MODEL ??
+      process.env.OPENAI_RULES_MODEL ??
+      "gpt-4.1-mini",
   };
 }
 
@@ -37,19 +40,31 @@ export function isRuleParserConfigured() {
   return isModelConfigured(getRuleParserConfig().model);
 }
 
-function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDraftParseResult {
+function fallbackRuleDraft(
+  requestText: string,
+  dataset: DomainDataset,
+): RuleDraftParseResult {
   const normalized = requestText.toUpperCase();
   const merchantMatch =
-    requestText.match(/contains\s+["']?([^,"'\n]+?)["']?(?:\sand\b|\son\b|\sclassify\b|,|$)/i)?.[1] ??
-    requestText.match(/merchant\s+["']?([^,"'\n]+?)["']?(?:\sand\b|\son\b|\sclassify\b|,|$)/i)?.[1] ??
-    requestText.match(/description\s+["']?([^,"'\n]+?)["']?(?:\sand\b|\son\b|\sclassify\b|,|$)/i)?.[1] ??
+    requestText.match(
+      /contains\s+["']?([^,"'\n]+?)["']?(?:\sand\b|\son\b|\sclassify\b|,|$)/i,
+    )?.[1] ??
+    requestText.match(
+      /merchant\s+["']?([^,"'\n]+?)["']?(?:\sand\b|\son\b|\sclassify\b|,|$)/i,
+    )?.[1] ??
+    requestText.match(
+      /description\s+["']?([^,"'\n]+?)["']?(?:\sand\b|\son\b|\sclassify\b|,|$)/i,
+    )?.[1] ??
     requestText.match(/"([^"]+)"/)?.[1] ??
     requestText.match(/'([^']+)'/)?.[1] ??
     null;
 
   const matchedCategory = dataset.categories.find((category) => {
     const label = category.displayName.toUpperCase().replace(/&/g, "AND");
-    return normalized.includes(category.code.toUpperCase()) || normalized.includes(label);
+    return (
+      normalized.includes(category.code.toUpperCase()) ||
+      normalized.includes(label)
+    );
   });
   const matchedEntity = [...dataset.entities]
     .map((entity) => ({
@@ -57,12 +72,16 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
       score: [
         normalized.includes(entity.slug.toUpperCase()) ? 2 : 0,
         normalized.includes(entity.displayName.toUpperCase()) ? 3 : 0,
-        entity.entityKind === "company" && normalized.includes(entity.displayName.toUpperCase()) ? 3 : 0,
+        entity.entityKind === "company" &&
+        normalized.includes(entity.displayName.toUpperCase())
+          ? 3
+          : 0,
       ].reduce((sum, score) => sum + score, 0),
     }))
     .sort(
       (left, right) =>
-        right.score - left.score || right.entity.displayName.length - left.entity.displayName.length,
+        right.score - left.score ||
+        right.entity.displayName.length - left.entity.displayName.length,
     )
     .find((item) => item.score > 0)?.entity;
   const matchedAccount = [...dataset.accounts]
@@ -71,7 +90,11 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
       score: [
         normalized.includes(account.institutionName.toUpperCase()) ? 2 : 0,
         normalized.includes(account.displayName.toUpperCase()) ? 3 : 0,
-        account.accountSuffix ? (normalized.includes(account.accountSuffix.toUpperCase()) ? 2 : 0) : 0,
+        account.accountSuffix
+          ? normalized.includes(account.accountSuffix.toUpperCase())
+            ? 2
+            : 0
+          : 0,
       ].reduce((sum, score) => sum + score, 0),
     }))
     .sort((left, right) => right.score - left.score)
@@ -85,8 +108,18 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
         : "expense";
 
   const conditionsJson: Record<string, unknown> = merchantMatch
-    ? { normalized_description_regex: merchantMatch.toUpperCase().trim().replace(/\s+/g, ".*") }
-    : { normalized_description_regex: normalized.split(/\s+/).slice(0, 4).join(".*") };
+    ? {
+        normalized_description_regex: merchantMatch
+          .toUpperCase()
+          .trim()
+          .replace(/\s+/g, ".*"),
+      }
+    : {
+        normalized_description_regex: normalized
+          .split(/\s+/)
+          .slice(0, 4)
+          .join(".*"),
+      };
   const scopeJson: Record<string, unknown> = matchedAccount
     ? { account_id: matchedAccount.id }
     : matchedEntity
@@ -97,7 +130,9 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
     transaction_class: transactionClass,
     category_code:
       matchedCategory?.code ??
-      (transactionClass === "income" ? "uncategorized_income" : "uncategorized_expense"),
+      (transactionClass === "income"
+        ? "uncategorized_income"
+        : "uncategorized_expense"),
   };
   if (merchantMatch) {
     outputsJson.merchant_normalized = merchantMatch.trim().toUpperCase();
@@ -105,7 +140,8 @@ function fallbackRuleDraft(requestText: string, dataset: DomainDataset): RuleDra
 
   return {
     title: merchantMatch ? `Rule for ${merchantMatch}` : "Drafted rule",
-    summary: "Fallback parser created a narrow draft because no LLM credentials are configured.",
+    summary:
+      "Fallback parser created a narrow draft because no LLM credentials are configured.",
     priority: 60,
     scopeJson,
     conditionsJson,

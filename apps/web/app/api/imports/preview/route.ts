@@ -1,17 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
+import type { NextRequest } from "next/server";
 
 import { domain } from "../../../../lib/action-service";
+import { importExecutionSchema } from "../../../../lib/action-schemas";
+import {
+  jsonResponse,
+  parseJsonRequest,
+  withApiErrors,
+} from "../../../../lib/api-handlers";
 
-const importSchema = z.object({
-  accountId: z.string(),
-  templateId: z.string(),
-  originalFilename: z.string().optional(),
-  filePath: z.string().optional(),
-});
-
-export async function POST(request: NextRequest) {
-  const body = importSchema.parse(await request.json());
+export const POST = withApiErrors(async (request: NextRequest) => {
+  const body = await parseJsonRequest(request, importExecutionSchema);
   const result = await domain.previewImport(body);
-  return NextResponse.json(result);
-}
+  return jsonResponse(result);
+});

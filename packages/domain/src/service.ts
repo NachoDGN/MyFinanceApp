@@ -41,42 +41,41 @@ import {
 } from "./finance";
 import { buildHoldingsSnapshot } from "./holdings";
 import { buildQualitySummary } from "./quality";
-import { isRuleParserConfigured } from "./rule-drafts";
 
 function toIsoTimestamp(value: string | Date | null | undefined) {
   if (!value) return "";
   return value instanceof Date ? value.toISOString() : value;
 }
 
+export function mapRuleDraftJobs(drafts: Job[]): RuleDraft[] {
+  return drafts
+    .filter((job) => job.jobType === "rule_parse")
+    .map((job) => ({
+      id: job.id,
+      requestText:
+        typeof job.payloadJson.requestText === "string"
+          ? job.payloadJson.requestText
+          : "",
+      status: job.status,
+      attempts: job.attempts,
+      createdAt: toIsoTimestamp(job.createdAt),
+      finishedAt: toIsoTimestamp(job.finishedAt) || null,
+      lastError: job.lastError ?? null,
+      parsedRule:
+        job.payloadJson.parsedRule &&
+        typeof job.payloadJson.parsedRule === "object"
+          ? (job.payloadJson.parsedRule as RuleDraft["parsedRule"])
+          : null,
+      appliedRuleId:
+        typeof job.payloadJson.appliedRuleId === "string"
+          ? job.payloadJson.appliedRuleId
+          : null,
+    }))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
 export class FinanceDomainService {
   constructor(private readonly repository: FinanceRepository) {}
-
-  private mapRuleDrafts(drafts: Job[]): RuleDraft[] {
-    return drafts
-      .filter((job) => job.jobType === "rule_parse")
-      .map((job) => ({
-        id: job.id,
-        requestText:
-          typeof job.payloadJson.requestText === "string"
-            ? job.payloadJson.requestText
-            : "",
-        status: job.status,
-        attempts: job.attempts,
-        createdAt: toIsoTimestamp(job.createdAt),
-        finishedAt: toIsoTimestamp(job.finishedAt) || null,
-        lastError: job.lastError ?? null,
-        parsedRule:
-          job.payloadJson.parsedRule &&
-          typeof job.payloadJson.parsedRule === "object"
-            ? (job.payloadJson.parsedRule as RuleDraft["parsedRule"])
-            : null,
-        appliedRuleId:
-          typeof job.payloadJson.appliedRuleId === "string"
-            ? job.payloadJson.appliedRuleId
-            : null,
-      }))
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  }
 
   async listTransactions(
     scope: Scope,
@@ -209,8 +208,8 @@ export class FinanceDomainService {
     const dataset = await this.repository.getDataset();
     return {
       schemaVersion: "v1",
-      parserConfigured: isRuleParserConfigured(),
-      drafts: this.mapRuleDrafts(dataset.jobs),
+      parserConfigured: this.repository.isRuleDraftParserConfigured(),
+      drafts: mapRuleDraftJobs(dataset.jobs),
       generatedAt: new Date().toISOString(),
     };
   }

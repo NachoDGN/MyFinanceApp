@@ -5,7 +5,6 @@ export * from "./fund-order-history";
 export * from "./holdings";
 export * from "./repository";
 export * from "./quality";
-export * from "./rule-drafts";
 export * from "./service";
 export * from "./template-config";
 export * from "./text";

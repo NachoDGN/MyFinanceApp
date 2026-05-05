@@ -23,6 +23,11 @@ export const importFieldsSchema = z.object({
   templateId: z.string(),
 });
 
+export const importExecutionSchema = importFieldsSchema.extend({
+  originalFilename: z.string().optional(),
+  filePath: z.string().optional(),
+});
+
 export const creditCardStatementFieldsSchema = z.object({
   settlementTransactionId: z.string().uuid(),
   templateId: z.string(),

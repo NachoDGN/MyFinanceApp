@@ -1,7 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { domain } from "../../../lib/action-service";
+import {
+  jsonResponse,
+  parseJsonRequest,
+  withApiErrors,
+} from "../../../lib/api-handlers";
 import { revalidateRulesPaths } from "../../../lib/api-revalidate";
 
 const bodySchema = z.object({
@@ -12,13 +17,13 @@ const bodySchema = z.object({
   apply: z.boolean().default(true),
 });
 
-export async function GET() {
+export const GET = withApiErrors(async () => {
   const rules = await domain.listRules();
-  return NextResponse.json(rules);
-}
+  return jsonResponse(rules);
+});
 
-export async function POST(request: NextRequest) {
-  const body = bodySchema.parse(await request.json());
+export const POST = withApiErrors(async (request: NextRequest) => {
+  const body = await parseJsonRequest(request, bodySchema);
   const result = await domain.createRule({
     ...body,
     actorName: "web-api",
@@ -27,5 +32,5 @@ export async function POST(request: NextRequest) {
   if (result.applied) {
     revalidateRulesPaths();
   }
-  return NextResponse.json(result);
-}
+  return jsonResponse(result);
+});

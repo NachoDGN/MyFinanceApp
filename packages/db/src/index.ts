@@ -15,7 +15,6 @@ import {
   assertTransactionClassAllowedForAccount,
   isUncategorizedCategoryCode,
   needsCreditCardStatementUpload,
-  parseRuleDraftRequest,
   isCreditCardSettlementTransaction,
   UNCATEGORIZED_TRANSACTION_REVIEW_REASON,
   type AddOpeningPositionInput,
@@ -103,6 +102,11 @@ export {
 } from "./import-review-queue";
 import { loadPromptOverrides } from "./prompt-profiles";
 import { runFinanceJobQueue } from "./job-runner";
+import { isRuleParserConfigured } from "./rule-drafts";
+import {
+  applyRuleDraftForUser,
+  queueRuleDraftForUser,
+} from "./rule-draft-repository";
 export {
   deactivateLearnedReviewExample,
   listLearnedReviewExamples,
@@ -860,6 +864,10 @@ class SqlFinanceRepository implements FinanceRepository {
     return withSeededUserSession((sql) =>
       searchTransactions(sql, this.userId, input),
     );
+  }
+
+  isRuleDraftParserConfigured() {
+    return isRuleParserConfigured();
   }
 
   async answerTransactionQuestion(input: AnswerTransactionQuestionInput) {
@@ -2535,95 +2543,13 @@ class SqlFinanceRepository implements FinanceRepository {
   }
 
   async queueRuleDraft(input: QueueRuleDraftInput) {
-    return withSeededUserContext(async (sql) => {
-      const jobId = randomUUID();
-      if (input.apply) {
-        await sql`
-          insert into public.jobs (
-            id,
-            job_type,
-            payload_json,
-            status,
-            attempts,
-            available_at
-          ) values (
-            ${jobId},
-            ${"rule_parse"},
-            ${serializeJson(sql, { requestText: input.requestText })}::jsonb,
-            ${"queued"},
-            0,
-            ${new Date().toISOString()}
-          )
-        `;
-        const auditEvent = createAuditEvent(
-          input.sourceChannel,
-          input.actorName,
-          "rules.queue-draft",
-          "job",
-          jobId,
-          null,
-          { requestText: input.requestText },
-        );
-        await insertAuditEventRecord(sql, auditEvent);
-      }
-      return { applied: input.apply, jobId };
-    });
+    return queueRuleDraftForUser(this.userId, input);
   }
 
   async applyRuleDraft(input: ApplyRuleDraftInput) {
-    return withSeededUserContext(async (sql) => {
-      const rows = await sql`
-        select * from public.jobs
-        where id = ${input.jobId}
-          and job_type = 'rule_parse'
-        limit 1
-      `;
-      const job = rows[0];
-      if (!job) {
-        throw new Error(`Rule draft job ${input.jobId} not found.`);
-      }
-
-      const payloadJson = parseJsonColumn<Record<string, unknown>>(
-        job.payload_json ?? {},
-      );
-      const parsedRule =
-        payloadJson &&
-        typeof payloadJson === "object" &&
-        "parsedRule" in payloadJson &&
-        typeof payloadJson.parsedRule === "object"
-          ? (payloadJson.parsedRule as Record<string, unknown>)
-          : null;
-
-      if (!parsedRule) {
-        throw new Error("Rule draft has not been parsed yet.");
-      }
-
-      const createResult = await this.createRule({
-        priority: Number(parsedRule.priority ?? 60),
-        scopeJson: (parsedRule.scopeJson ?? {}) as Record<string, unknown>,
-        conditionsJson: (parsedRule.conditionsJson ?? {}) as Record<
-          string,
-          unknown
-        >,
-        outputsJson: (parsedRule.outputsJson ?? {}) as Record<string, unknown>,
-        actorName: input.actorName,
-        sourceChannel: input.sourceChannel,
-        apply: input.apply,
-      });
-
-      if (input.apply) {
-        await sql`
-          update public.jobs
-          set payload_json = ${serializeJson(sql, {
-            ...payloadJson,
-            appliedRuleId: createResult.ruleId,
-          })}::jsonb
-          where id = ${input.jobId}
-        `;
-      }
-
-      return { applied: input.apply, ruleId: createResult.ruleId };
-    });
+    return applyRuleDraftForUser(this.userId, input, (createInput) =>
+      this.createRule(createInput),
+    );
   }
 
   async previewImport(

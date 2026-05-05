@@ -10,7 +10,6 @@ import {
 } from "../../../components/flow-overview";
 import { ReviewEditorCell } from "../../../components/review-editor-cell";
 import {
-  convertBaseEurToDisplayAmount,
   convertBaseEurToDisplayAmountWithFallback,
   endOfMonthIso,
   formatBaseEurAmountForDisplay,
@@ -23,6 +22,14 @@ import {
   getPeriodLabel,
 } from "../../../lib/dashboard";
 import { formatCurrency, formatDate } from "../../../lib/formatters";
+import {
+  flowSeriesColor,
+  formatFallbackFxRange,
+  formatFlowCategoryLabel,
+  formatFlowDisplayAmount,
+  formatTransactionClassLabel,
+  startOfMonthIso,
+} from "../../../lib/flow-page";
 import { buildHref } from "../../../lib/navigation";
 import { getSpendingCategoryModel } from "../../../lib/queries";
 
@@ -31,27 +38,6 @@ type SpendingCategoryModel = Awaited<
 >;
 type SpendingCategoryTransaction =
   SpendingCategoryModel["transactions"][number];
-
-function formatDisplayAmount(
-  amountBaseEur: string | null | undefined,
-  currency: string,
-  transactionDate: string,
-  dataset: SpendingCategoryModel["dataset"],
-) {
-  if (amountBaseEur === null || amountBaseEur === undefined) {
-    return "N/A";
-  }
-
-  return formatCurrency(
-    convertBaseEurToDisplayAmount(
-      dataset,
-      amountBaseEur,
-      currency,
-      transactionDate,
-    ),
-    currency,
-  );
-}
 
 function formatCategoryLabel(
   categoryCode: string | null | undefined,
@@ -74,36 +60,13 @@ function formatCategoryLabel(
     return model.category?.label ?? "Uncategorized";
   }
 
-  return (
-    model.dataset.categories.find((category) => category.code === categoryCode)
-      ?.displayName ??
-    (categoryCode === model.category?.categoryCode
+  return formatFlowCategoryLabel(
+    model.dataset,
+    categoryCode,
+    categoryCode === model.category?.categoryCode
       ? model.category.label
-      : categoryCode)
+      : categoryCode,
   );
-}
-
-const SPENDING_MERCHANT_COLORS = [
-  "#ff4a22",
-  "#005f73",
-  "#0a9396",
-  "#2a9d8f",
-  "#e9c46a",
-  "#f4a261",
-  "#457b9d",
-  "#3d405b",
-  "#6d597a",
-  "#8d99ae",
-  "#2f3e46",
-  "#bc4749",
-];
-
-function merchantColor(index: number) {
-  return SPENDING_MERCHANT_COLORS[index % SPENDING_MERCHANT_COLORS.length]!;
-}
-
-function startOfMonthIso(value: string) {
-  return `${value.slice(0, 7)}-01`;
 }
 
 function resolveMerchantLabel(transaction: SpendingCategoryTransaction) {
@@ -130,10 +93,6 @@ function spendingContributionAmountEur(
     transaction.transactionClass === "refund" ? -amount : Math.abs(amount);
 
   return Math.max(contribution, 0);
-}
-
-function formatTransactionClass(transactionClass: string) {
-  return transactionClass.replace(/_/g, " ");
 }
 
 export default async function SpendingCategoryPage({
@@ -164,7 +123,7 @@ export default async function SpendingCategoryPage({
   );
   const merchantRows = model.merchantRows.map((row, index) => ({
     ...row,
-    color: merchantColor(index),
+    color: flowSeriesColor(index),
     transactions: transactionsByMerchant.get(row.label) ?? [],
   }));
   const merchantColorByLabel = new Map(
@@ -222,7 +181,7 @@ export default async function SpendingCategoryPage({
           label,
           color:
             merchantColorByLabel.get(label) ??
-            merchantColor(merchantColorByLabel.size + index),
+            flowSeriesColor(merchantColorByLabel.size + index),
           displayAmount: Math.max(Number(displayAmount.amount ?? 0), 0),
           valueLabel: formatCurrency(displayAmount.amount, model.currency),
         };
@@ -242,14 +201,7 @@ export default async function SpendingCategoryPage({
   const fallbackFxMonths = chartRows
     .filter((row) => row.usedFallbackFx)
     .map((row) => row.month);
-  const fallbackFxRangeLabel =
-    fallbackFxMonths.length > 0
-      ? fallbackFxMonths.length === 1
-        ? formatMonthLabel(fallbackFxMonths[0]!)
-        : `${formatMonthLabel(fallbackFxMonths[0]!)}-${formatMonthLabel(
-            fallbackFxMonths[fallbackFxMonths.length - 1]!,
-          )}`
-      : null;
+  const fallbackFxRangeLabel = formatFallbackFxRange(fallbackFxMonths);
   const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
   const trendRows = chartRows.map((row) => ({
     month: row.month,
@@ -308,11 +260,11 @@ export default async function SpendingCategoryPage({
     model.referenceDate,
   );
   const largestTransactionAmount = model.largestTransaction
-    ? formatDisplayAmount(
+    ? formatFlowDisplayAmount(
+        model.dataset,
         model.largestTransaction.amountBaseEur,
         model.currency,
         model.largestTransaction.transactionDate,
-        model.dataset,
       )
     : "N/A";
 
@@ -480,7 +432,7 @@ export default async function SpendingCategoryPage({
                                   </span>
                                   <span>{accountName}</span>
                                   <span>
-                                    {formatTransactionClass(
+                                    {formatTransactionClassLabel(
                                       transaction.transactionClass,
                                     )}
                                   </span>
@@ -495,11 +447,11 @@ export default async function SpendingCategoryPage({
                               </div>
                               <div className="merchant-breakdown-transaction-actions">
                                 <strong>
-                                  {formatDisplayAmount(
+                                  {formatFlowDisplayAmount(
+                                    model.dataset,
                                     transaction.amountBaseEur,
                                     model.currency,
                                     transaction.transactionDate,
-                                    model.dataset,
                                   )}
                                 </strong>
                                 <ReviewEditorCell

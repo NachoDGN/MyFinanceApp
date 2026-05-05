@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { parseRuleDraftRequest, type JobRunResult } from "@myfinance/domain";
+import type { JobRunResult } from "@myfinance/domain";
 import type { PromptProfileOverrides } from "@myfinance/llm";
 
 import { processClassificationJob } from "./classification-batch-job";
@@ -25,6 +25,7 @@ import { processReviewPropagationJob } from "./review-propagation-job";
 import { refreshFinanceAnalyticsArtifacts } from "./review-propagation-support";
 import { parseJsonColumn } from "./sql-json";
 import { withSeededUserSession, type SqlClient } from "./sql-runtime";
+import { parseRuleDraftRequest } from "./rule-drafts";
 import { processTransactionSearchIndexJob } from "./transaction-search-index";
 
 type ReviewReanalyzeJobHandler = (input: {

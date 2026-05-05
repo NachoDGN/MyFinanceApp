@@ -21,16 +21,9 @@ import {
   getPeriodLabel,
 } from "../../lib/dashboard";
 import { formatCurrency } from "../../lib/formatters";
+import { paginateFlowRows } from "../../lib/flow-page";
 import { buildHref } from "../../lib/navigation";
 import { getIncomeModel } from "../../lib/queries";
-
-const CATEGORY_PAGE_SIZE = 8;
-
-function normalizePageParam(value: string | string[] | undefined) {
-  const rawValue = Array.isArray(value) ? value[0] : value;
-  const parsed = Number.parseInt(rawValue ?? "1", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-}
 
 export default async function IncomePage({
   searchParams,
@@ -40,24 +33,17 @@ export default async function IncomePage({
   const params = await searchParams;
   const model = await getIncomeModel(params);
   const categoryRows = model.incomeCategoryRows;
-  const requestedCategoryPage = normalizePageParam(params.categoryPage);
-  const categoryPageCount = Math.max(
-    1,
-    Math.ceil(categoryRows.length / CATEGORY_PAGE_SIZE),
+  const categoryPagination = paginateFlowRows(
+    categoryRows,
+    params.categoryPage,
   );
-  const categoryPage = Math.min(requestedCategoryPage, categoryPageCount);
-  const categoryStartIndex = (categoryPage - 1) * CATEGORY_PAGE_SIZE;
-  const visibleCategoryRows = categoryRows.slice(
-    categoryStartIndex,
-    categoryStartIndex + CATEGORY_PAGE_SIZE,
-  );
-  const categoryRangeLabel =
-    categoryRows.length > 0
-      ? `${categoryStartIndex + 1}-${Math.min(
-          categoryStartIndex + CATEGORY_PAGE_SIZE,
-          categoryRows.length,
-        )} of ${categoryRows.length}`
-      : "0 categories";
+  const {
+    page: categoryPage,
+    pageCount: categoryPageCount,
+    rangeLabel: categoryRangeLabel,
+    visibleRows: visibleCategoryRows,
+    hasMultiplePages: hasMultipleCategoryPages,
+  } = categoryPagination;
   const chartRows = model.monthlyIncomeComposition.map((row) => {
     const effectiveDate =
       endOfMonthIso(row.month) <= model.referenceDate
@@ -262,7 +248,7 @@ export default async function IncomePage({
                 );
               })
             )}
-            {categoryRows.length > CATEGORY_PAGE_SIZE ? (
+            {hasMultipleCategoryPages ? (
               <div className="spending-category-pagination">
                 <span>{categoryRangeLabel}</span>
                 <div>

@@ -21,6 +21,7 @@ import {
   type Entity,
   filterTransactionsByScope,
   getLatestAccountBalances,
+  mapRuleDraftJobs,
   getScopeLatestDate,
   needsTransactionManualReview,
   parseWorkspaceSettings,
@@ -542,9 +543,12 @@ export async function getCreditCardStatementModel(
 
 export async function getAccountsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const accounts = await domainService.listAccounts({
-    referenceDate: state.referenceDate,
-  });
+  const accounts = {
+    schemaVersion: "v1" as const,
+    accounts: state.dataset.accounts,
+    balances: getLatestAccountBalances(state.dataset, state.referenceDate),
+    generatedAt: new Date().toISOString(),
+  };
   return {
     ...state,
     accounts,
@@ -554,30 +558,48 @@ export async function getAccountsModel(searchParams: RawSearchParams) {
 
 export async function getImportsModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const templates = await domainService.listTemplates();
   return {
     ...state,
-    templates,
+    templates: {
+      schemaVersion: "v1" as const,
+      templates: state.dataset.templates,
+      generatedAt: new Date().toISOString(),
+    },
     importBatches: state.dataset.importBatches,
   };
 }
 
 export async function getRulesModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const rules = await domainService.listRules();
-  const drafts = await domainService.listRuleDrafts();
   return {
     ...state,
-    rules,
-    drafts,
+    rules: {
+      schemaVersion: "v1" as const,
+      rules: [...state.dataset.rules].sort(
+        (left, right) => left.priority - right.priority,
+      ),
+      generatedAt: new Date().toISOString(),
+    },
+    drafts: {
+      schemaVersion: "v1" as const,
+      parserConfigured: repository.isRuleDraftParserConfigured(),
+      drafts: mapRuleDraftJobs(state.dataset.jobs),
+      generatedAt: new Date().toISOString(),
+    },
     deterministicSummaries: NON_AI_RULE_SUMMARIES,
   };
 }
 
 export async function getTemplatesModel(searchParams: RawSearchParams) {
   const state = await resolveAppState(searchParams);
-  const templates = await domainService.listTemplates();
-  return { ...state, templates };
+  return {
+    ...state,
+    templates: {
+      schemaVersion: "v1" as const,
+      templates: state.dataset.templates,
+      generatedAt: new Date().toISOString(),
+    },
+  };
 }
 
 export async function getInvestmentsModel(searchParams: RawSearchParams) {

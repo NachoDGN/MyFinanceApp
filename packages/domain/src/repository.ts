@@ -39,6 +39,7 @@ import type {
 
 export interface FinanceRepository {
   getDataset(): Promise<DomainDataset>;
+  isRuleDraftParserConfigured(): boolean;
   searchTransactions(input: {
     dataset: DomainDataset;
     scope: Scope;
