@@ -225,6 +225,40 @@ function createSimilaritySql(
   return sql;
 }
 
+function createHoldingDatasetFixture({
+  account: accountOverrides = {},
+  security: securityOverrides = {},
+  securityPrices,
+  fxRates = [],
+  position: positionOverrides = {},
+}: {
+  account?: Parameters<typeof createInvestmentAccount>[0];
+  security?: Parameters<typeof createSecurity>[0];
+  securityPrices: Array<Parameters<typeof createSecurityPrice>[0]>;
+  fxRates?: Array<Parameters<typeof createFxRate>[0]>;
+  position?: Parameters<typeof createInvestmentPosition>[0];
+}) {
+  const account = createInvestmentAccount(accountOverrides);
+  const security = createSecurity(securityOverrides);
+
+  return createDataset({
+    accounts: [account],
+    securities: [security],
+    securityPrices: securityPrices.map((price) =>
+      createSecurityPrice({ securityId: security.id, ...price }),
+    ),
+    fxRates: fxRates.map((rate) => createFxRate(rate)),
+    investmentPositions: [
+      createInvestmentPosition({
+        accountId: account.id,
+        entityId: account.entityId,
+        securityId: security.id,
+        ...positionOverrides,
+      }),
+    ],
+  });
+}
+
 test("import building deduplicates by fingerprint and keeps the dataset user id", () => {
   const input = {
     accountId: "account-1",
@@ -6037,62 +6071,45 @@ test("template config builder converts typed inputs into stored JSON rules", () 
 });
 
 test("holding valuation is computed from positions, quotes, and FX instead of hardcoded values", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-1",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-1",
-        providerName: "twelve_data",
-        providerSymbol: "ABC",
-        canonicalSymbol: "ABC",
-        displaySymbol: "ABC",
-        name: "ABC Corp",
-        exchangeName: "NYSE",
-        micCode: "XNYS",
-        quoteCurrency: "USD",
-        country: "US",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { defaultCurrency: "USD" },
+    security: {
+      providerName: "twelve_data",
+      providerSymbol: "ABC",
+      canonicalSymbol: "ABC",
+      displaySymbol: "ABC",
+      name: "ABC Corp",
+      exchangeName: "NYSE",
+      micCode: "XNYS",
+      quoteCurrency: "USD",
+      country: "US",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-1",
+      {
         priceDate: "2026-04-03",
         quoteTimestamp: "2026-04-03T15:00:00Z",
         price: "10.00",
         currency: "USD",
         sourceName: "twelve_data",
-      }),
+      },
     ],
     fxRates: [
-      createFxRate({
+      {
         baseCurrency: "USD",
         quoteCurrency: "EUR",
         asOfDate: "2026-04-03",
         asOfTimestamp: "2026-04-03T15:00:00Z",
         rate: "0.500000",
         sourceName: "ecb",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-1",
-        securityId: "security-1",
-        openQuantity: "4.00",
-        openCostBasisEur: "15.00",
-        avgCostEur: "3.75",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-04-01",
-        lastRebuiltAt: "2026-04-03T16:00:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "4.00",
+      openCostBasisEur: "15.00",
+      avgCostEur: "3.75",
+      lastTradeDate: "2026-04-01",
+      lastRebuiltAt: "2026-04-03T16:00:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(
@@ -6258,59 +6275,42 @@ test("manual investment comparisons use the latest valuation snapshot available 
 });
 
 test("holding valuation uses as-of FX even when the latest quote is older than the FX series", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-1",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-1",
-        providerName: "twelve_data",
-        providerSymbol: "AMD",
-        canonicalSymbol: "AMD",
-        displaySymbol: "AMD",
-        name: "Advanced Micro Devices Inc",
-        exchangeName: "NASDAQ",
-        micCode: "XNAS",
-        quoteCurrency: "USD",
-        country: "US",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { defaultCurrency: "USD" },
+    security: {
+      providerName: "twelve_data",
+      providerSymbol: "AMD",
+      canonicalSymbol: "AMD",
+      displaySymbol: "AMD",
+      name: "Advanced Micro Devices Inc",
+      exchangeName: "NASDAQ",
+      micCode: "XNAS",
+      quoteCurrency: "USD",
+      country: "US",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-1",
+      {
         priceDate: "2026-04-01",
         quoteTimestamp: "2026-04-01T15:00:00Z",
         price: "100.00",
         sourceName: "twelve_data",
-      }),
+      },
     ],
     fxRates: [
-      createFxRate({
+      {
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-1",
-        securityId: "security-1",
-        openQuantity: "10.00",
-        openCostBasisEur: "900.00",
-        avgCostEur: "90.00",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-04-01",
-        lastRebuiltAt: "2026-04-04T16:00:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "10.00",
+      openCostBasisEur: "900.00",
+      avgCostEur: "90.00",
+      lastTradeDate: "2026-04-01",
+      lastRebuiltAt: "2026-04-04T16:00:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(
@@ -6325,37 +6325,29 @@ test("holding valuation uses as-of FX even when the latest quote is older than t
 });
 
 test("holding rows ignore placeholder seed quotes when a real market-data row exists", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-placeholder",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-placeholder",
-        providerName: "twelve_data",
-        providerSymbol: "AMD",
-        canonicalSymbol: "AMD",
-        displaySymbol: "AMD",
-        name: "Advanced Micro Devices Inc",
-        exchangeName: "NASDAQ",
-        micCode: "XNAS",
-        quoteCurrency: "USD",
-        country: "US",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { id: "brokerage-placeholder", defaultCurrency: "USD" },
+    security: {
+      id: "security-placeholder",
+      providerName: "twelve_data",
+      providerSymbol: "AMD",
+      canonicalSymbol: "AMD",
+      displaySymbol: "AMD",
+      name: "Advanced Micro Devices Inc",
+      exchangeName: "NASDAQ",
+      micCode: "XNAS",
+      quoteCurrency: "USD",
+      country: "US",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-placeholder",
+      {
         priceDate: "2026-04-03",
         quoteTimestamp: "2026-04-03T08:20:00Z",
         price: "152.40",
         sourceName: "twelve_data",
         createdAt: "2026-04-03T12:37:43Z",
-      }),
-      createSecurityPrice({
-        securityId: "security-placeholder",
+      },
+      {
         priceDate: "2026-04-02",
         quoteTimestamp: "2026-04-02T19:59:00Z",
         price: "217.50",
@@ -6366,32 +6358,23 @@ test("holding rows ignore placeholder seed quotes when a real market-data row ex
           datetime: "2026-04-02",
         },
         createdAt: "2026-04-03T20:08:02Z",
-      }),
+      },
     ],
     fxRates: [
-      createFxRate({
+      {
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-placeholder",
-        securityId: "security-placeholder",
-        openQuantity: "1.00",
-        openCostBasisEur: "100.00",
-        avgCostEur: "100.00",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-03-24",
-        lastRebuiltAt: "2026-04-04T16:00:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "1.00",
+      openCostBasisEur: "100.00",
+      avgCostEur: "100.00",
+      lastTradeDate: "2026-03-24",
+      lastRebuiltAt: "2026-04-04T16:00:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(
@@ -6406,31 +6389,24 @@ test("holding rows ignore placeholder seed quotes when a real market-data row ex
 });
 
 test("holding rows prefer official fund NAVs over later lower-quality web quotes on the same day", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-fund-nav-priority",
-    defaultCurrency: "EUR",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-vanguard-us500",
-        providerName: "manual_fund_nav",
-        providerSymbol: "IE0032126645",
-        canonicalSymbol: "VANUIEI",
-        displaySymbol: "VANUIEI",
-        name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
-        exchangeName: "VANGUARD",
-        micCode: null,
-        assetType: "other",
-        quoteCurrency: "EUR",
-        country: "IE",
-        isin: "IE0032126645",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { id: "brokerage-fund-nav-priority" },
+    security: {
+      id: "security-vanguard-us500",
+      providerName: "manual_fund_nav",
+      providerSymbol: "IE0032126645",
+      canonicalSymbol: "VANUIEI",
+      displaySymbol: "VANUIEI",
+      name: "Vanguard U.S. 500 Stock Index Fund EUR Acc",
+      exchangeName: "VANGUARD",
+      micCode: null,
+      assetType: "other",
+      quoteCurrency: "EUR",
+      country: "IE",
+      isin: "IE0032126645",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-vanguard-us500",
+      {
         priceDate: "2026-04-02",
         quoteTimestamp: "2026-04-02T19:59:00Z",
         price: "217.50",
@@ -6442,9 +6418,8 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
           priceType: "delayed",
         },
         createdAt: "2026-04-05T19:09:47Z",
-      }),
-      createSecurityPrice({
-        securityId: "security-vanguard-us500",
+      },
+      {
         priceDate: "2026-04-02",
         quoteTimestamp: "2026-04-02T16:00:00Z",
         price: "69.39",
@@ -6455,24 +6430,15 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
           priceType: "nav",
         },
         createdAt: "2026-04-05T16:20:43Z",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-fund-nav-priority",
-        securityId: "security-vanguard-us500",
-        openQuantity: "10.00",
-        openCostBasisEur: "600.00",
-        avgCostEur: "60.00",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-04-02",
-        lastRebuiltAt: "2026-04-05T19:20:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "10.00",
+      openCostBasisEur: "600.00",
+      avgCostEur: "60.00",
+      lastTradeDate: "2026-04-02",
+      lastRebuiltAt: "2026-04-05T19:20:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(
@@ -6488,31 +6454,24 @@ test("holding rows prefer official fund NAVs over later lower-quality web quotes
 });
 
 test("holding rows prefer official fund NAVs over newer portfolio snapshot quotes from the next day", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-fund-nav-next-day-priority",
-    defaultCurrency: "EUR",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-vanguard-small-cap",
-        providerName: "manual_fund_nav",
-        providerSymbol: "IE00B42W4L06",
-        canonicalSymbol: "VANIEUI",
-        displaySymbol: "VANIEUI",
-        name: "Vanguard Global Small-cap Index Fund EUR Acc",
-        exchangeName: "VANGUARD",
-        micCode: null,
-        assetType: "other",
-        quoteCurrency: "EUR",
-        country: "IE",
-        isin: "IE00B42W4L06",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { id: "brokerage-fund-nav-next-day-priority" },
+    security: {
+      id: "security-vanguard-small-cap",
+      providerName: "manual_fund_nav",
+      providerSymbol: "IE00B42W4L06",
+      canonicalSymbol: "VANIEUI",
+      displaySymbol: "VANIEUI",
+      name: "Vanguard Global Small-cap Index Fund EUR Acc",
+      exchangeName: "VANGUARD",
+      micCode: null,
+      assetType: "other",
+      quoteCurrency: "EUR",
+      country: "IE",
+      isin: "IE00B42W4L06",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-vanguard-small-cap",
+      {
         priceDate: "2026-04-17",
         quoteTimestamp: "2026-04-17T08:00:00Z",
         price: "395.358",
@@ -6524,9 +6483,8 @@ test("holding rows prefer official fund NAVs over newer portfolio snapshot quote
           priceType: "delayed",
         },
         createdAt: "2026-04-17T08:00:00Z",
-      }),
-      createSecurityPrice({
-        securityId: "security-vanguard-small-cap",
+      },
+      {
         priceDate: "2026-04-16",
         quoteTimestamp: "2026-04-16T18:00:00Z",
         price: "398.03",
@@ -6537,24 +6495,15 @@ test("holding rows prefer official fund NAVs over newer portfolio snapshot quote
           priceType: "nav",
         },
         createdAt: "2026-04-16T18:00:00Z",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-fund-nav-next-day-priority",
-        securityId: "security-vanguard-small-cap",
-        openQuantity: "5.87",
-        openCostBasisEur: "1707.01",
-        avgCostEur: "290.80",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-04-10",
-        lastRebuiltAt: "2026-04-17T08:10:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "5.87",
+      openCostBasisEur: "1707.01",
+      avgCostEur: "290.80",
+      lastTradeDate: "2026-04-10",
+      lastRebuiltAt: "2026-04-17T08:10:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(
@@ -6570,59 +6519,42 @@ test("holding rows prefer official fund NAVs over newer portfolio snapshot quote
 });
 
 test("holding freshness is stale when the latest delayed quote is older than five days", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-1",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-1",
-        providerName: "twelve_data",
-        providerSymbol: "INTC",
-        canonicalSymbol: "INTC",
-        displaySymbol: "INTC",
-        name: "Intel Corporation",
-        exchangeName: "NASDAQ",
-        micCode: "XNAS",
-        quoteCurrency: "USD",
-        country: "US",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { defaultCurrency: "USD" },
+    security: {
+      providerName: "twelve_data",
+      providerSymbol: "INTC",
+      canonicalSymbol: "INTC",
+      displaySymbol: "INTC",
+      name: "Intel Corporation",
+      exchangeName: "NASDAQ",
+      micCode: "XNAS",
+      quoteCurrency: "USD",
+      country: "US",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-1",
+      {
         priceDate: "2026-03-20",
         quoteTimestamp: "2026-03-20T15:00:00Z",
         price: "50.00",
         sourceName: "twelve_data",
-      }),
+      },
     ],
     fxRates: [
-      createFxRate({
+      {
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-1",
-        securityId: "security-1",
-        openQuantity: "15.00",
-        openCostBasisEur: "450.00",
-        avgCostEur: "30.00",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-03-20",
-        lastRebuiltAt: "2026-04-04T16:00:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "15.00",
+      openCostBasisEur: "450.00",
+      avgCostEur: "30.00",
+      lastTradeDate: "2026-03-20",
+      lastRebuiltAt: "2026-04-04T16:00:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(
@@ -6636,59 +6568,43 @@ test("holding freshness is stale when the latest delayed quote is older than fiv
 });
 
 test("holding rows do not expose current pricing when the last quote is more than thirty days old", () => {
-  const investmentAccount = createInvestmentAccount({
-    id: "brokerage-old-quote",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [investmentAccount],
-    securities: [
-      createSecurity({
-        id: "security-old-quote",
-        providerName: "twelve_data",
-        providerSymbol: "INTC",
-        canonicalSymbol: "INTC",
-        displaySymbol: "INTC",
-        name: "Intel Corporation",
-        exchangeName: "NASDAQ",
-        micCode: "XNGS",
-        quoteCurrency: "USD",
-        country: "US",
-      }),
-    ],
+  const dataset = createHoldingDatasetFixture({
+    account: { id: "brokerage-old-quote", defaultCurrency: "USD" },
+    security: {
+      id: "security-old-quote",
+      providerName: "twelve_data",
+      providerSymbol: "INTC",
+      canonicalSymbol: "INTC",
+      displaySymbol: "INTC",
+      name: "Intel Corporation",
+      exchangeName: "NASDAQ",
+      micCode: "XNGS",
+      quoteCurrency: "USD",
+      country: "US",
+    },
     securityPrices: [
-      createSecurityPrice({
-        securityId: "security-old-quote",
+      {
         priceDate: "2026-01-15",
         quoteTimestamp: "2026-01-15T15:00:00Z",
         price: "24.90",
         sourceName: "twelve_data",
-      }),
+      },
     ],
     fxRates: [
-      createFxRate({
+      {
         asOfDate: "2026-04-04",
         asOfTimestamp: "2026-04-04T15:00:00Z",
         rate: "0.920000",
         sourceName: "ecb",
-      }),
+      },
     ],
-    investmentPositions: [
-      createInvestmentPosition({
-        accountId: "brokerage-old-quote",
-        securityId: "security-old-quote",
-        openQuantity: "15.00",
-        openCostBasisEur: "450.00",
-        avgCostEur: "30.00",
-        realizedPnlEur: "0.00",
-        dividendsEur: "0.00",
-        interestEur: "0.00",
-        feesEur: "0.00",
-        lastTradeDate: "2026-01-15",
-        lastRebuiltAt: "2026-04-04T16:00:00Z",
-        unrealizedComplete: true,
-      }),
-    ],
+    position: {
+      openQuantity: "15.00",
+      openCostBasisEur: "450.00",
+      avgCostEur: "30.00",
+      lastTradeDate: "2026-01-15",
+      lastRebuiltAt: "2026-04-04T16:00:00Z",
+    },
   });
 
   const [holding] = buildHoldingRows(

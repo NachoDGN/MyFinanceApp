@@ -1,5 +1,6 @@
 import { AppShell } from "../../components/app-shell";
 import { CreditCardStatementUploadCell } from "../../components/credit-card-statement-upload-cell";
+import { FlowCategoryBreakdownList } from "../../components/flow-category-breakdown-list";
 import {
   FlowBreakdownCard,
   FlowKpiGrid,
@@ -28,7 +29,6 @@ import {
   formatFlowDisplayAmount,
   paginateFlowRows,
 } from "../../lib/flow-page";
-import { buildHref } from "../../lib/navigation";
 import { getSpendingModel } from "../../lib/queries";
 
 function formatCategoryLabel(
@@ -141,6 +141,13 @@ export default async function SpendingPage({
   );
   const chartMax = Math.max(...chartRows.map((row) => row.spendingDisplay), 1);
   const spendTotal = Number(model.spendMetric?.valueBaseEur ?? "0");
+  const formatSpendingAmount = (amountEur: string) =>
+    formatBaseEurAmountForDisplay(
+      model.dataset,
+      amountEur,
+      model.currency,
+      model.referenceDate,
+    );
   const chartLegendTotals = [
     ...chartRows
       .flatMap((row) => row.categories)
@@ -261,11 +268,8 @@ export default async function SpendingPage({
                 settlement payment
                 {model.excludedCreditCardSettlementCount === 1 ? "" : "s"}{" "}
                 totaling{" "}
-                {formatBaseEurAmountForDisplay(
-                  model.dataset,
+                {formatSpendingAmount(
                   model.excludedCreditCardSettlementAmountEur,
-                  model.currency,
-                  model.referenceDate,
                 )}
                 . Their underlying card purchases stay out of the KPI layer
                 until the matching statement is uploaded against the settlement
@@ -293,12 +297,7 @@ export default async function SpendingPage({
             },
             {
               title: "Trailing 3-Month Avg",
-              value: formatBaseEurAmountForDisplay(
-                model.dataset,
-                model.trailingThreeMonthAverage,
-                model.currency,
-                model.referenceDate,
-              ),
+              value: formatSpendingAmount(model.trailingThreeMonthAverage),
               badge: "Average baseline",
             },
             {
@@ -348,99 +347,19 @@ export default async function SpendingPage({
             description="Resolved spending categories for the selected period, ordered by current-period share."
             headers={["Category", "Distribution", "Volume", "Share"]}
           >
-            {model.summary.spendingByCategory.length === 0 ? (
-              <div className="table-empty-state">
-                No resolved spending categories are available for this period.
-              </div>
-            ) : (
-              visibleCategoryRows.map((row) => {
-                const share =
-                  spendTotal > 0
-                    ? (Number(row.amountEur) / spendTotal) * 100
-                    : 0;
-                const categoryHref = buildHref(
-                  `/spending/${encodeURIComponent(row.categoryCode)}`,
-                  model.navigationState,
-                  {},
-                );
-
-                return (
-                  <a
-                    className="income-breakdown-row spending-category-link-row"
-                    href={categoryHref}
-                    key={row.categoryCode}
-                  >
-                    <div className="source-name">{row.label}</div>
-                    <div className="source-progress-track">
-                      <div
-                        className="source-progress-fill"
-                        style={{ width: `${Math.max(share, 0)}%` }}
-                      />
-                    </div>
-                    <div className="amount">
-                      {formatBaseEurAmountForDisplay(
-                        model.dataset,
-                        row.amountEur,
-                        model.currency,
-                        model.referenceDate,
-                      )}
-                    </div>
-                    <div className="amount">{formatPercentLabel(share)}</div>
-                  </a>
-                );
-              })
-            )}
-            {hasMultipleCategoryPages ? (
-              <div className="spending-category-pagination">
-                <span>{categoryRangeLabel}</span>
-                <div>
-                  <a
-                    className={
-                      categoryPage <= 1
-                        ? "spending-page-link disabled"
-                        : "spending-page-link"
-                    }
-                    aria-disabled={categoryPage <= 1}
-                    href={
-                      categoryPage <= 1
-                        ? undefined
-                        : buildHref(
-                            "/spending",
-                            model.navigationState,
-                            {},
-                            {
-                              categoryPage: String(categoryPage - 1),
-                            },
-                          )
-                    }
-                  >
-                    Previous
-                  </a>
-                  <a
-                    className={
-                      categoryPage >= categoryPageCount
-                        ? "spending-page-link disabled"
-                        : "spending-page-link"
-                    }
-                    aria-disabled={categoryPage >= categoryPageCount}
-                    href={
-                      categoryPage >= categoryPageCount
-                        ? undefined
-                        : buildHref(
-                            "/spending",
-                            model.navigationState,
-                            {},
-                            {
-                              categoryPage: String(categoryPage + 1),
-                            },
-                          )
-                    }
-                  >
-                    Next
-                  </a>
-                </div>
-              </div>
-            ) : null}
+            <FlowCategoryBreakdownList
+              basePath="/spending"
+              rows={categoryRows}
+              visibleRows={visibleCategoryRows}
+              totalAmount={spendTotal}
+              navigationState={model.navigationState}
+              emptyLabel="No resolved spending categories are available for this period."
+              page={categoryPage}
+              pageCount={categoryPageCount}
+              rangeLabel={categoryRangeLabel}
+              hasMultiplePages={hasMultipleCategoryPages}
+              formatAmount={formatSpendingAmount}
+            />
           </FlowBreakdownCard>
 
           <FlowSummaryCard>
@@ -451,12 +370,7 @@ export default async function SpendingPage({
               </div>
               <div className="stat-description">
                 {model.topCategory
-                  ? `${formatBaseEurAmountForDisplay(
-                      model.dataset,
-                      model.topCategory.amountEur,
-                      model.currency,
-                      model.referenceDate,
-                    )} · ${topCategoryShare.toFixed(0)}% of current-period spend`
+                  ? `${formatSpendingAmount(model.topCategory.amountEur)} · ${topCategoryShare.toFixed(0)}% of current-period spend`
                   : "No categorized spend available."}
               </div>
             </div>
@@ -468,12 +382,7 @@ export default async function SpendingPage({
               </div>
               <div className="stat-description">
                 {model.topMerchant
-                  ? `${formatBaseEurAmountForDisplay(
-                      model.dataset,
-                      model.topMerchant.amountEur,
-                      model.currency,
-                      model.referenceDate,
-                    )} · ${topMerchantShare.toFixed(0)}% of current-period spend`
+                  ? `${formatSpendingAmount(model.topMerchant.amountEur)} · ${topMerchantShare.toFixed(0)}% of current-period spend`
                   : "No merchant totals available."}
               </div>
             </div>
@@ -481,12 +390,7 @@ export default async function SpendingPage({
             <div className="income-summary-stat">
               <div className="stat-label">Uncategorized Spend</div>
               <div className="stat-value accent">
-                {formatBaseEurAmountForDisplay(
-                  model.dataset,
-                  model.uncategorizedSpendEur,
-                  model.currency,
-                  model.referenceDate,
-                )}
+                {formatSpendingAmount(model.uncategorizedSpendEur)}
               </div>
               <div className="stat-description">
                 {spendTotal > 0
@@ -523,12 +427,7 @@ export default async function SpendingPage({
                   </p>
                 </div>
                 <div className="spending-merchant-amount">
-                  {formatBaseEurAmountForDisplay(
-                    model.dataset,
-                    row.amountEur,
-                    model.currency,
-                    model.referenceDate,
-                  )}
+                  {formatSpendingAmount(row.amountEur)}
                 </div>
               </div>
             ))}

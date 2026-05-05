@@ -16,10 +16,200 @@ import {
   createFxRate,
   createInvestmentAccount,
   createInvestmentTransaction,
+  createManualInvestment,
+  createManualInvestmentValuation,
   createSecurity,
   createSecurityPrice,
   createTransaction,
 } from "./support/create-dataset";
+
+function createAccountTransaction(
+  account: ReturnType<typeof createAccount>,
+  overrides: Parameters<typeof createTransaction>[0] = {},
+) {
+  return createTransaction({
+    accountId: account.id,
+    accountEntityId: account.entityId,
+    economicEntityId: account.entityId,
+    ...overrides,
+  });
+}
+
+function buildUsdInvestmentPageFixture({
+  accountId,
+  transactionId,
+  securityId,
+  symbol,
+  description,
+}: {
+  accountId: string;
+  transactionId: string;
+  securityId: string;
+  symbol: string;
+  description: string;
+}) {
+  const account = createInvestmentAccount({ id: accountId, defaultCurrency: "USD" });
+  const dataset = createDataset({
+    accounts: [account],
+    transactions: [
+      createInvestmentTransaction(account, {
+        id: transactionId,
+        transactionDate: "2026-04-01",
+        postedDate: "2026-04-01",
+        amountOriginal: "-100.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-100.00",
+        transactionClass: "investment_trade_buy",
+        categoryCode: "stock_buy",
+        securityId,
+        quantity: "1.00000000",
+        needsReview: false,
+        reviewReason: null,
+        classificationStatus: "rule",
+        classificationSource: "user_rule",
+        classificationConfidence: "1.00",
+        descriptionRaw: description,
+        descriptionClean: description.toUpperCase(),
+      }),
+    ],
+    securities: [
+      createSecurity({
+        id: securityId,
+        displaySymbol: symbol,
+        providerSymbol: symbol,
+        canonicalSymbol: symbol,
+        quoteCurrency: "USD",
+      }),
+    ],
+    securityPrices: [
+      createSecurityPrice({
+        securityId,
+        priceDate: "2026-04-03",
+        quoteTimestamp: "2026-04-03T15:00:00Z",
+        price: "300.00",
+        currency: "USD",
+      }),
+    ],
+    fxRates: [
+      createFxRate({
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T12:00:00Z",
+        rate: "0.500000",
+        sourceName: "ecb",
+      }),
+    ],
+  });
+  const period = resolvePeriodSelection({
+    preset: "mtd",
+    referenceDate: "2026-04-03",
+  });
+  const model = buildInvestmentsReadModel(dataset, {
+    scope: { kind: "consolidated" },
+    displayCurrency: "USD",
+    period,
+    referenceDate: "2026-04-03",
+  });
+  const pageModel = buildInvestmentsPageModel(
+    {
+      ...model,
+      dataset,
+      scopeParam: "consolidated",
+      currency: "USD",
+      referenceDate: "2026-04-03",
+      period,
+      navigationState: {
+        scopeParam: "consolidated",
+        currency: "USD",
+        period: "mtd",
+        referenceDate: "2026-04-03",
+      },
+      scopeOptions: [{ value: "consolidated", label: "Consolidated" }],
+    },
+    {},
+  );
+  return { model, pageModel };
+}
+
+function createManualFundDisplayDataset(idSuffix = "") {
+  const cashAccount = createAccount({
+    id: `revolut-company-usd${idSuffix}`,
+    accountType: "company_bank",
+    assetDomain: "cash",
+    institutionName: "Revolut Business",
+    displayName: "Revolut USD Main",
+    defaultCurrency: "USD",
+  });
+  const manualInvestmentId = `manual-bond-fund${idSuffix}`;
+
+  return createDataset({
+    accounts: [cashAccount],
+    transactions: [
+      createAccountTransaction(cashAccount, {
+        id: `fund-october${idSuffix}`,
+        transactionDate: "2025-10-14",
+        postedDate: "2025-10-14",
+        amountOriginal: "-2500.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-2426.88",
+        fxRateToEur: "0.97075200",
+        descriptionRaw: "To USD SP:b9611010-6e70-49bd-b353-0f959610715d",
+        descriptionClean: "TO USD SP:B9611010-6E70-49BD-B353-0F959610715D",
+        transactionClass: "transfer_internal",
+      }),
+      createAccountTransaction(cashAccount, {
+        id: `fund-march${idSuffix}`,
+        transactionDate: "2026-03-31",
+        postedDate: "2026-03-31",
+        amountOriginal: "-20000.00",
+        currencyOriginal: "USD",
+        amountBaseEur: "-19415.00",
+        fxRateToEur: "0.97075000",
+        descriptionRaw: "To Inversión riesgo bajo",
+        descriptionClean: "TO INVERSION RIESGO BAJO",
+        transactionClass: "transfer_internal",
+      }),
+    ],
+    manualInvestments: [
+      createManualInvestment({
+        id: manualInvestmentId,
+        userId: cashAccount.userId,
+        entityId: cashAccount.entityId,
+        fundingAccountId: cashAccount.id,
+        label: "Inversión en bonos",
+        matcherText:
+          "Inversión riesgo bajo, SP:b9611010-6e70-49bd-b353-0f959610715d",
+      }),
+    ],
+    manualInvestmentValuations: [
+      createManualInvestmentValuation({
+        id: `manual-bond-fund-valuation${idSuffix}`,
+        userId: cashAccount.userId,
+        manualInvestmentId,
+        snapshotDate: "2026-04-11",
+        currentValueOriginal: "22765.66",
+        currentValueCurrency: "USD",
+      }),
+    ],
+    fxRates: [
+      createFxRate({
+        baseCurrency: "EUR",
+        quoteCurrency: "USD",
+        asOfDate: "2026-04-03",
+        asOfTimestamp: "2026-04-03T16:00:00Z",
+        rate: "1.08695700",
+        sourceName: "twelve_data",
+      }),
+      createFxRate({
+        baseCurrency: "USD",
+        quoteCurrency: "EUR",
+        asOfDate: "2026-04-11",
+        asOfTimestamp: "2026-04-11T16:00:00Z",
+        rate: "0.85288000",
+        sourceName: "twelve_data",
+      }),
+    ],
+  });
+}
 
 test("historical transaction display conversion uses the transaction date instead of the page reference date", () => {
   const dataset = createDataset({
@@ -158,89 +348,13 @@ test("formatted base-EUR aggregates are converted before rendering in the select
 });
 
 test("investments page unrealized KPI uses the canonical metric display amount", () => {
-  const account = createInvestmentAccount({
-    id: "brokerage-fx-kpi",
-    defaultCurrency: "USD",
+  const { model, pageModel } = buildUsdInvestmentPageFixture({
+    accountId: "brokerage-fx-kpi",
+    transactionId: "buy-1",
+    securityId: "security-fx",
+    symbol: "FX",
+    description: "Buy FX",
   });
-  const dataset = createDataset({
-    accounts: [account],
-    transactions: [
-      createInvestmentTransaction(account, {
-        id: "buy-1",
-        transactionDate: "2026-04-01",
-        postedDate: "2026-04-01",
-        amountOriginal: "-100.00",
-        currencyOriginal: "USD",
-        amountBaseEur: "-100.00",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        securityId: "security-fx",
-        quantity: "1.00000000",
-        needsReview: false,
-        reviewReason: null,
-        classificationStatus: "rule",
-        classificationSource: "user_rule",
-        classificationConfidence: "1.00",
-        descriptionRaw: "Buy FX",
-        descriptionClean: "BUY FX",
-      }),
-    ],
-    securities: [
-      createSecurity({
-        id: "security-fx",
-        displaySymbol: "FX",
-        providerSymbol: "FX",
-        canonicalSymbol: "FX",
-        quoteCurrency: "USD",
-      }),
-    ],
-    securityPrices: [
-      createSecurityPrice({
-        securityId: "security-fx",
-        priceDate: "2026-04-03",
-        quoteTimestamp: "2026-04-03T15:00:00Z",
-        price: "300.00",
-        currency: "USD",
-      }),
-    ],
-    fxRates: [
-      createFxRate({
-        asOfDate: "2026-04-03",
-        asOfTimestamp: "2026-04-03T12:00:00Z",
-        rate: "0.500000",
-        sourceName: "ecb",
-      }),
-    ],
-  });
-
-  const period = resolvePeriodSelection({
-    preset: "mtd",
-    referenceDate: "2026-04-03",
-  });
-  const model = buildInvestmentsReadModel(dataset, {
-    scope: { kind: "consolidated" },
-    displayCurrency: "USD",
-    period,
-    referenceDate: "2026-04-03",
-  });
-  const pageModel = buildInvestmentsPageModel(
-    {
-      ...model,
-      dataset,
-      scopeParam: "consolidated",
-      currency: "USD",
-      referenceDate: "2026-04-03",
-      period,
-      navigationState: {
-        scopeParam: "consolidated",
-        currency: "USD",
-        period: "mtd",
-        referenceDate: "2026-04-03",
-      },
-      scopeOptions: [{ value: "consolidated", label: "Consolidated" }],
-    },
-    {},
-  );
   const unrealizedCard = pageModel.metricCards.find(
     (card) => card.label === "Unrealized Gain",
   );
@@ -250,89 +364,13 @@ test("investments page unrealized KPI uses the canonical metric display amount",
 });
 
 test("investment KPI spark bars use display-currency magnitudes", () => {
-  const account = createInvestmentAccount({
-    id: "brokerage-fx-spark",
-    defaultCurrency: "USD",
+  const { pageModel } = buildUsdInvestmentPageFixture({
+    accountId: "brokerage-fx-spark",
+    transactionId: "buy-spark",
+    securityId: "security-spark",
+    symbol: "SPRK",
+    description: "Buy Spark",
   });
-  const dataset = createDataset({
-    accounts: [account],
-    transactions: [
-      createInvestmentTransaction(account, {
-        id: "buy-spark",
-        transactionDate: "2026-04-01",
-        postedDate: "2026-04-01",
-        amountOriginal: "-100.00",
-        currencyOriginal: "USD",
-        amountBaseEur: "-100.00",
-        transactionClass: "investment_trade_buy",
-        categoryCode: "stock_buy",
-        securityId: "security-spark",
-        quantity: "1.00000000",
-        needsReview: false,
-        reviewReason: null,
-        classificationStatus: "rule",
-        classificationSource: "user_rule",
-        classificationConfidence: "1.00",
-        descriptionRaw: "Buy Spark",
-        descriptionClean: "BUY SPARK",
-      }),
-    ],
-    securities: [
-      createSecurity({
-        id: "security-spark",
-        displaySymbol: "SPRK",
-        providerSymbol: "SPRK",
-        canonicalSymbol: "SPRK",
-        quoteCurrency: "USD",
-      }),
-    ],
-    securityPrices: [
-      createSecurityPrice({
-        securityId: "security-spark",
-        priceDate: "2026-04-03",
-        quoteTimestamp: "2026-04-03T15:00:00Z",
-        price: "300.00",
-        currency: "USD",
-      }),
-    ],
-    fxRates: [
-      createFxRate({
-        asOfDate: "2026-04-03",
-        asOfTimestamp: "2026-04-03T12:00:00Z",
-        rate: "0.500000",
-        sourceName: "ecb",
-      }),
-    ],
-  });
-
-  const period = resolvePeriodSelection({
-    preset: "mtd",
-    referenceDate: "2026-04-03",
-  });
-  const model = buildInvestmentsReadModel(dataset, {
-    scope: { kind: "consolidated" },
-    displayCurrency: "USD",
-    period,
-    referenceDate: "2026-04-03",
-  });
-  const pageModel = buildInvestmentsPageModel(
-    {
-      ...model,
-      dataset,
-      scopeParam: "consolidated",
-      currency: "USD",
-      referenceDate: "2026-04-03",
-      period,
-      navigationState: {
-        scopeParam: "consolidated",
-        currency: "USD",
-        period: "mtd",
-        referenceDate: "2026-04-03",
-      },
-      scopeOptions: [{ value: "consolidated", label: "Consolidated" }],
-    },
-    {},
-  );
   const marketValueCard = pageModel.metricCards.find(
     (card) => card.label === "Portfolio Market Value",
   );
@@ -621,96 +659,7 @@ test("holding display metrics fall back to reference-date FX when historical tra
 });
 
 test("manual fund display metrics preserve canonical unrealized returns across display currencies", () => {
-  const cashAccount = createAccount({
-    id: "revolut-company-usd",
-    accountType: "company_bank",
-    assetDomain: "cash",
-    institutionName: "Revolut Business",
-    displayName: "Revolut USD Main",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [cashAccount],
-    transactions: [
-      createTransaction({
-        id: "fund-october",
-        accountId: cashAccount.id,
-        accountEntityId: cashAccount.entityId,
-        economicEntityId: cashAccount.entityId,
-        transactionDate: "2025-10-14",
-        postedDate: "2025-10-14",
-        amountOriginal: "-2500.00",
-        currencyOriginal: "USD",
-        amountBaseEur: "-2426.88",
-        fxRateToEur: "0.97075200",
-        descriptionRaw: "To USD SP:b9611010-6e70-49bd-b353-0f959610715d",
-        descriptionClean: "TO USD SP:B9611010-6E70-49BD-B353-0F959610715D",
-        transactionClass: "transfer_internal",
-      }),
-      createTransaction({
-        id: "fund-march",
-        accountId: cashAccount.id,
-        accountEntityId: cashAccount.entityId,
-        economicEntityId: cashAccount.entityId,
-        transactionDate: "2026-03-31",
-        postedDate: "2026-03-31",
-        amountOriginal: "-20000.00",
-        currencyOriginal: "USD",
-        amountBaseEur: "-19415.00",
-        fxRateToEur: "0.97075000",
-        descriptionRaw: "To Inversión riesgo bajo",
-        descriptionClean: "TO INVERSION RIESGO BAJO",
-        transactionClass: "transfer_internal",
-      }),
-    ],
-    manualInvestments: [
-      {
-        id: "manual-bond-fund",
-        userId: cashAccount.userId,
-        entityId: cashAccount.entityId,
-        fundingAccountId: cashAccount.id,
-        label: "Inversión en bonos",
-        matcherText:
-          "Inversión riesgo bajo, SP:b9611010-6e70-49bd-b353-0f959610715d",
-        note: null,
-        createdAt: "2026-04-11T08:00:00Z",
-        updatedAt: "2026-04-11T08:00:00Z",
-      },
-    ],
-    manualInvestmentValuations: [
-      {
-        id: "manual-bond-fund-valuation",
-        userId: cashAccount.userId,
-        manualInvestmentId: "manual-bond-fund",
-        snapshotDate: "2026-04-11",
-        currentValueOriginal: "22765.66",
-        currentValueCurrency: "USD",
-        note: "Manual mark-to-market",
-        createdAt: "2026-04-11T09:00:00Z",
-        updatedAt: "2026-04-11T09:00:00Z",
-      },
-    ],
-    fxRates: [
-      {
-        baseCurrency: "EUR",
-        quoteCurrency: "USD",
-        asOfDate: "2026-04-03",
-        asOfTimestamp: "2026-04-03T16:00:00Z",
-        rate: "1.08695700",
-        sourceName: "twelve_data",
-        rawJson: {},
-      },
-      {
-        baseCurrency: "USD",
-        quoteCurrency: "EUR",
-        asOfDate: "2026-04-11",
-        asOfTimestamp: "2026-04-11T16:00:00Z",
-        rate: "0.85288000",
-        sourceName: "twelve_data",
-        rawJson: {},
-      },
-    ],
-  });
+  const dataset = createManualFundDisplayDataset();
 
   const model = buildInvestmentsReadModel(dataset, {
     scope: { kind: "consolidated" },
@@ -732,96 +681,7 @@ test("manual fund display metrics preserve canonical unrealized returns across d
 });
 
 test("manual fund unrealized return direction stays the same across EUR and USD display modes", () => {
-  const cashAccount = createAccount({
-    id: "revolut-company-usd-parity",
-    accountType: "company_bank",
-    assetDomain: "cash",
-    institutionName: "Revolut Business",
-    displayName: "Revolut USD Main",
-    defaultCurrency: "USD",
-  });
-  const dataset = createDataset({
-    accounts: [cashAccount],
-    transactions: [
-      createTransaction({
-        id: "fund-october-parity",
-        accountId: cashAccount.id,
-        accountEntityId: cashAccount.entityId,
-        economicEntityId: cashAccount.entityId,
-        transactionDate: "2025-10-14",
-        postedDate: "2025-10-14",
-        amountOriginal: "-2500.00",
-        currencyOriginal: "USD",
-        amountBaseEur: "-2426.88",
-        fxRateToEur: "0.97075200",
-        descriptionRaw: "To USD SP:b9611010-6e70-49bd-b353-0f959610715d",
-        descriptionClean: "TO USD SP:B9611010-6E70-49BD-B353-0F959610715D",
-        transactionClass: "transfer_internal",
-      }),
-      createTransaction({
-        id: "fund-march-parity",
-        accountId: cashAccount.id,
-        accountEntityId: cashAccount.entityId,
-        economicEntityId: cashAccount.entityId,
-        transactionDate: "2026-03-31",
-        postedDate: "2026-03-31",
-        amountOriginal: "-20000.00",
-        currencyOriginal: "USD",
-        amountBaseEur: "-19415.00",
-        fxRateToEur: "0.97075000",
-        descriptionRaw: "To Inversión riesgo bajo",
-        descriptionClean: "TO INVERSION RIESGO BAJO",
-        transactionClass: "transfer_internal",
-      }),
-    ],
-    manualInvestments: [
-      {
-        id: "manual-bond-fund-parity",
-        userId: cashAccount.userId,
-        entityId: cashAccount.entityId,
-        fundingAccountId: cashAccount.id,
-        label: "Inversión en bonos",
-        matcherText:
-          "Inversión riesgo bajo, SP:b9611010-6e70-49bd-b353-0f959610715d",
-        note: null,
-        createdAt: "2026-04-11T08:00:00Z",
-        updatedAt: "2026-04-11T08:00:00Z",
-      },
-    ],
-    manualInvestmentValuations: [
-      {
-        id: "manual-bond-fund-valuation-parity",
-        userId: cashAccount.userId,
-        manualInvestmentId: "manual-bond-fund-parity",
-        snapshotDate: "2026-04-11",
-        currentValueOriginal: "22765.66",
-        currentValueCurrency: "USD",
-        note: "Manual mark-to-market",
-        createdAt: "2026-04-11T09:00:00Z",
-        updatedAt: "2026-04-11T09:00:00Z",
-      },
-    ],
-    fxRates: [
-      {
-        baseCurrency: "EUR",
-        quoteCurrency: "USD",
-        asOfDate: "2026-04-03",
-        asOfTimestamp: "2026-04-03T16:00:00Z",
-        rate: "1.08695700",
-        sourceName: "twelve_data",
-        rawJson: {},
-      },
-      {
-        baseCurrency: "USD",
-        quoteCurrency: "EUR",
-        asOfDate: "2026-04-11",
-        asOfTimestamp: "2026-04-11T16:00:00Z",
-        rate: "0.85288000",
-        sourceName: "twelve_data",
-        rawJson: {},
-      },
-    ],
-  });
+  const dataset = createManualFundDisplayDataset("-parity");
 
   const eurModel = buildInvestmentsReadModel(dataset, {
     scope: { kind: "consolidated" },

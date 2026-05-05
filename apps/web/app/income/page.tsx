@@ -1,4 +1,5 @@
 import { AppShell } from "../../components/app-shell";
+import { FlowCategoryBreakdownList } from "../../components/flow-category-breakdown-list";
 import {
   FlowBreakdownCard,
   FlowKpiGrid,
@@ -21,7 +22,6 @@ import {
   formatFlowChartRange,
   paginateFlowRows,
 } from "../../lib/flow-page";
-import { buildHref } from "../../lib/navigation";
 import { getIncomeModel } from "../../lib/queries";
 
 export default async function IncomePage({
@@ -191,97 +191,29 @@ export default async function IncomePage({
             description="Resolved income categories for the selected period, ordered by current-period share."
             headers={["Category", "Distribution", "Volume", "Share"]}
           >
-            {categoryRows.length === 0 ? (
-              <div className="table-empty-state">
-                No resolved income categories are available for this period.
-              </div>
-            ) : (
-              visibleCategoryRows.map((row) => {
-                const amountDisplay =
+            <FlowCategoryBreakdownList
+              basePath="/income"
+              rows={categoryRows}
+              visibleRows={visibleCategoryRows}
+              totalAmount={currentPeriodIncome}
+              navigationState={model.navigationState}
+              emptyLabel="No resolved income categories are available for this period."
+              page={categoryPage}
+              pageCount={categoryPageCount}
+              rangeLabel={categoryRangeLabel}
+              hasMultiplePages={hasMultipleCategoryPages}
+              formatAmount={(amountEur) =>
+                formatCurrency(
                   convertBaseEurToDisplayAmount(
                     model.dataset,
-                    row.amountEur,
+                    amountEur,
                     model.currency,
                     model.referenceDate,
-                  ) ?? "0.00";
-                const share =
-                  currentPeriodIncome > 0
-                    ? (Number(row.amountEur) / currentPeriodIncome) * 100
-                    : 0;
-                const categoryHref = buildHref(
-                  `/income/${encodeURIComponent(row.categoryCode)}`,
-                  model.navigationState,
-                  {},
-                );
-
-                return (
-                  <a
-                    className="income-breakdown-row spending-category-link-row"
-                    href={categoryHref}
-                    key={row.categoryCode}
-                  >
-                    <div className="source-name">{row.label}</div>
-                    <div className="source-progress-track">
-                      <div
-                        className="source-progress-fill"
-                        style={{ width: `${Math.max(share, 0)}%` }}
-                      />
-                    </div>
-                    <div className="amount">
-                      {formatCurrency(amountDisplay, model.currency)}
-                    </div>
-                    <div className="amount">{share.toFixed(2)}%</div>
-                  </a>
-                );
-              })
-            )}
-            {hasMultipleCategoryPages ? (
-              <div className="spending-category-pagination">
-                <span>{categoryRangeLabel}</span>
-                <div>
-                  <a
-                    className={
-                      categoryPage <= 1
-                        ? "spending-page-link disabled"
-                        : "spending-page-link"
-                    }
-                    aria-disabled={categoryPage <= 1}
-                    href={
-                      categoryPage <= 1
-                        ? undefined
-                        : buildHref(
-                            "/income",
-                            model.navigationState,
-                            {},
-                            { categoryPage: String(categoryPage - 1) },
-                          )
-                    }
-                  >
-                    Previous
-                  </a>
-                  <a
-                    className={
-                      categoryPage >= categoryPageCount
-                        ? "spending-page-link disabled"
-                        : "spending-page-link"
-                    }
-                    aria-disabled={categoryPage >= categoryPageCount}
-                    href={
-                      categoryPage >= categoryPageCount
-                        ? undefined
-                        : buildHref(
-                            "/income",
-                            model.navigationState,
-                            {},
-                            { categoryPage: String(categoryPage + 1) },
-                          )
-                    }
-                  >
-                    Next
-                  </a>
-                </div>
-              </div>
-            ) : null}
+                  ) ?? "0.00",
+                  model.currency,
+                )
+              }
+            />
           </FlowBreakdownCard>
 
           <FlowSummaryCard>
