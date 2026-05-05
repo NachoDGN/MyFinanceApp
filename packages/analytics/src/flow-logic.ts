@@ -3,6 +3,7 @@ import { Decimal } from "decimal.js";
 import type { DomainDataset, Transaction } from "@myfinance/domain";
 import {
   isCreditCardSettlementTransaction,
+  isTransactionResolvedForAnalytics,
   resolveFxRate,
   todayIso,
 } from "@myfinance/domain";
@@ -96,6 +97,10 @@ export function incomeContributionEur(transaction: Transaction) {
     return amount.gt(0) ? amount : null;
   }
 
+  if (!isTransactionResolvedForAnalytics(transaction)) {
+    return null;
+  }
+
   if (!isIncomeLike(transaction) || isExcludedIncome(transaction)) {
     return null;
   }
@@ -111,6 +116,10 @@ export function spendingContributionEur(transaction: Transaction) {
   if (isUnresolvedCashFlow(transaction)) {
     const amount = new Decimal(transaction.amountBaseEur);
     return amount.lt(0) ? amount.abs() : null;
+  }
+
+  if (!isTransactionResolvedForAnalytics(transaction)) {
+    return null;
   }
 
   if (!isSpendingLike(transaction)) {

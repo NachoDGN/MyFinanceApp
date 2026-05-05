@@ -769,7 +769,7 @@ function compareImportedBalanceSourceRows(
   const rightHasSourceRow = Number.isFinite(rightSourceRow);
 
   if (leftHasSourceRow && rightHasSourceRow) {
-    return leftSourceRow - rightSourceRow;
+    return rightSourceRow - leftSourceRow;
   }
   if (leftHasSourceRow) {
     return -1;
